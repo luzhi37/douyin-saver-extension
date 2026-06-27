@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>抖音数据管理</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <!-- ====== 固定顶栏 ====== -->
+    <header id="topBar" class="flex-row">
+      <div class="domain-switch">
+        <div class="ds-slider"></div>
+        <button class="ds-btn active" data-domain="works">作品</button>
+        <button class="ds-btn" data-domain="followings">关注</button>
+      </div>
+      <div class="group-selector">
+        <div class="group-tabs-slider"></div>
+        <div class="group-tabs" id="groupTabs"></div>
+      </div>
+      <div class="topbar-right flex-row">
+        <span class="topbar-divider"></span>
+        <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove">移动</button>
+        <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete">移除</button>
+        <button class="dy-btn flex-inline-center dy-btn-ghost batch-action" id="btnBatchSelectAll">全选</button>
+        <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch" title="批量管理作品">批量</button>
+        <div class="menu-container">
+          <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnMenu">菜单 <svg width="16" height="16" style="vertical-align:middle"><use href="#icon-arrow-down"/></svg></button>
+          <div class="menu-dropdown hidden" id="menuDropdown">
+            <button class="menu-item" id="btnSync">同步</button>
+            <button class="menu-item" id="btnImport">导入</button>
+            <button class="menu-item" id="btnExport">导出</button>
+            <button class="menu-item" id="btnGroupManage">分组</button>
+            <button class="menu-item" id="btnFavorites">扫描点赞</button>
+            <button class="menu-item" id="btnCollections">扫描收藏</button>
+            <div class="menu-divider"></div>
+            <button class="menu-item" id="btnSecurityStatus">安全状态</button>
+            <div class="menu-divider"></div>
+            <button class="menu-item danger" id="btnReset">重置</button>
+            <div class="menu-storage" id="menuStorage">— MB</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ====== 主体内容 ====== -->
+    <div id="appBody">
+      <main id="mainGrid">
+        <div class="empty-state state-message hidden" id="emptyState">
+          <div class="empty-icon flex-center">
+            <svg width="48" height="48"><use href="#icon-download"/></svg>
+          </div>
+          <p>还没有保存的作品</p>
+          <p class="empty-hint">浏览抖音时，作品会自动被捕获</p>
+        </div>
+        <div class="main-container" id="mainContainer"></div>
+        <div class="error-state state-message hidden" id="errorState">
+          <div class="error-icon">
+            <svg width="48" height="48"><use href="#icon-error"/></svg>
+          </div>
+          <p>数据加载失败</p>
+          <p class="error-hint">请检查网络后重试</p>
+          <button class="dy-btn dy-btn-primary" id="btnRetry">重试</button>
+        </div>
+      </main>
+      <div id="sidebarResizeHandle" class="sidebar-resize-handle"></div>
+      <aside id="sidebar" class="sidebar">
+        <div id="sidebarBody" class="sidebar-body">
+          <div id="sidebarWorksGrid" class="sidebar-works-grid"></div>
+          <div id="sidebarLoader" class="sidebar-loader hidden flex-center">
+            <div class="spinner"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- ====== 详情报覆盖层（类似抖音刷作品） ====== -->
+    <div id="detailOverlay" class="flex-col hidden">
+      <div id="detailTopBar">
+        <button id="detailClose" class="flex-center">✕</button>
+      </div>
+      <div class="detail-body">
+        <div id="detailVideoContainer" class="flex-col hidden">
+          <div id="detailVideoWrap" class="flex-center">
+            <video id="detailVideo" playsinline></video>
+          </div>
+        </div>
+        <div id="detailImageContainer" class="hidden">
+          <div class="detail-image-container flex-center">
+            <img id="detailImage" style="transition: opacity 0.2s" />
+            <audio id="detailAudio" style="display: none" loop></audio>
+            <div id="detailImgCounter" class="hidden"></div>
+            <div id="detailNavLeft" class="detail-nav-btn flex-center hidden">
+              <svg width="24" height="24"><use href="#icon-nav-left"/></svg>
+            </div>
+            <div id="detailNavRight" class="detail-nav-btn flex-center hidden">
+              <svg width="24" height="24"><use href="#icon-nav-right"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+      <input type="range" id="detailProgressSlider" class="detail-progress-slider hidden" min="0" max="100" value="0" />
+      <div id="detailBottomBar" class="flex-row">
+        <button id="detailPlayBtn" class="detail-bar-btn icon-btn flex-center"></button>
+        <span id="detailTime" class="detail-bar-text detail-bar-time">0:00 / 0:00</span>
+        <span id="detailAuthor" class="detail-bar-text detail-bar-author hidden"></span>
+        <span id="detailTitle" class="detail-bar-title text-ellipsis"></span>
+        <span style="flex: 1; min-width: 0"></span>
+        <button id="detailMuteBtn" class="detail-bar-btn icon-btn flex-center"></button>
+        <button id="detailRemoveBtn" class="detail-bar-btn icon-btn flex-center" title="移除">
+          <svg width="24" height="24"><use href="#icon-delete"/></svg>
+        </button>
+        <button id="detailLoopBtn" class="detail-bar-btn icon-btn flex-center"></button>
+        <button id="detailSyncBtn" class="detail-bar-btn icon-btn flex-center" title="同步">
+          <svg width="24" height="24"><use href="#icon-sync"/></svg>
+        </button>
+        <button id="detailDownloadBtn" class="detail-bar-btn icon-btn flex-center" title="下载">
+          <svg width="24" height="24"><use href="#icon-download"/></svg>
+        </button>
+        <span id="detailCounter" class="detail-bar-text detail-bar-counter hidden"></span>
+      </div>
+    </div>
+
+    <!-- ====== 自定义弹窗容器（抖音风格） ====== -->
+    <div id="dialogOverlay" class="hidden">
+      <div class="dy-dialog flex-col">
+        <div class="dy-dialog-header flex-row">
+          <span id="dialogTitle"></span>
+          <button class="dy-dialog-close icon-btn flex-center" id="dialogClose">✕</button>
+        </div>
+        <div class="dy-dialog-body" id="dialogBody"></div>
+        <div class="dy-dialog-footer" id="dialogFooter"></div>
+      </div>
+    </div>
+
+    <!-- ====== 关注者卡片模板 ====== -->
+    <template id="followingCardTemplate">
+      <div class="following-card" data-uid="">
+        <div class="following-checkbox"></div>
+        <img class="following-avatar" alt="" loading="lazy" />
+        <div class="following-info">
+          <div class="following-nickname"></div>
+          <div class="following-stats">
+            <span class="stat-followers"></span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template id="followingSkeletonTemplate">
+      <div class="following-card following-skeleton" data-uid="">
+        <div class="following-skeleton-avatar"></div>
+        <div class="following-skeleton-info">
+          <div class="following-skeleton-line"></div>
+          <div class="following-skeleton-line short"></div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ====== 侧边栏作品模板 ====== -->
+    <template id="sidebarWorkTemplate">
+      <div class="sidebar-work-item">
+        <a target="_blank" rel="noopener" class="sidebar-work-link">
+          <img class="sidebar-work-cover" loading="lazy" onerror="this.style.display='none'"/>
+          <div class="sidebar-work-cover-placeholder">📹</div>
+          <div class="sidebar-work-plays"></div>
+        </a>
+      </div>
+    </template>
+
+    <!-- ====== 点赞/收藏作品模板 ====== -->
+    <template id="favWorkTemplate">
+      <div class="fav-work-item">
+        <img class="fav-work-thumb" alt="" loading="lazy" />
+      </div>
+    </template>
+
+    <!-- ====== 作品卡片模板 ====== -->
+    <template id="workCardTemplate">
+      <div class="work-card flex-col">
+        <div class="work-media">
+          <div class="work-type-badge flex-row hidden">
+            <svg width="12" height="12"><use href="#icon-image-badge"/></svg>
+          </div>
+          <img class="work-thumb" alt="" loading="lazy" />
+          <video class="work-video-player" muted playsinline preload="none"></video>
+          <div class="work-video-controls">
+            <div class="video-controls-top">
+              <button class="video-play-btn icon-btn"></button>
+              <span class="video-time">0:00 / 0:00</span>
+              <button class="video-mute-btn icon-btn"></button>
+            </div>
+            <input type="range" class="video-progress" min="0" max="100" value="0" />
+          </div>
+        </div>
+        <div class="work-checkbox"></div>
+        <div class="work-title flex-row">
+          <span class="work-title-text text-ellipsis">无文案</span>
+          <button class="work-action-btn icon-btn flex-center" title="同步">
+            <svg width="24" height="24"><use href="#icon-sync"/></svg>
+          </button>
+          <button class="work-action-btn icon-btn flex-center" title="下载">
+            <svg width="24" height="24"><use href="#icon-download"/></svg>
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <template id="workSkeletonTemplate">
+      <div class="work-card work-skeleton flex-col">
+        <div class="work-media"></div>
+        <div class="work-checkbox"></div>
+        <div class="work-title flex-row">
+          <span class="work-title-text text-ellipsis"></span>
+        </div>
+      </div>
+    </template>
+
+    <!-- ====== 分组 tab 模板 ====== -->
+    <template id="groupTabTemplate">
+      <button class="group-tab"></button>
+    </template>
+
+    <!-- ====== 分组管理列表项模板 ====== -->
+    <template id="groupListItemTemplate">
+      <div class="group-list-item flex-row" draggable="true">
+        <span class="drag-handle">⠿</span>
+        <span class="group-name"></span>
+        <div class="group-actions">
+          <button class="dy-btn flex-inline-center dy-btn-sm dy-btn-ghost rename-btn">
+            <span class="btn-icon flex-inline-center"><svg width="14" height="14"><use href="#icon-edit"/></svg></span>
+          </button>
+          <button class="dy-btn flex-inline-center dy-btn-sm dy-btn-ghost dy-btn-danger delete-btn">
+            <span class="btn-icon flex-inline-center"><svg width="24" height="24"><use href="#icon-delete"/></svg></span>
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <!-- ====== 分组选择列表项模板 ====== -->
+    <template id="groupSelectItemTemplate">
+      <div class="group-select-item flex-row">
+        <span class="btn-icon flex-inline-center"><svg width="14" height="14"><use href="#icon-folder"/></svg></span>
+      </div>
+    </template>
+
+    <!-- ====== 同步弹窗 body 骨架模板 ====== -->
+    <template id="syncDialogBodyTemplate">
+      <div class="sync-section">
+        <div class="sync-section-header">
+          <span class="sync-progress-text"></span>
+          <div class="sync-section-title">⚠️ 失败 (<span class="sync-error-count">0</span>)</div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ====== 无抖音标签页提示模板 ====== -->
+    <template id="noDouyinTabTemplate">
+      <p class="no-tab-hint">
+        同步需要至少一个打开的 https://www.douyin.com/user/self 标签页来提供登录态和请求签名。
+      </p>
+    </template>
+
+    <!-- ====== 同步错误提示模板 ====== -->
+    <template id="syncErrorTemplate">
+      <p class="sync-error-text"></p>
+    </template>
+
+    <!-- ====== 确认删除分组模板 ====== -->
+    <template id="confirmDeleteGroupTemplate">
+      <p class="confirm-delete-msg">
+        确定删除分组「<strong class="confirm-delete-group-name"></strong>」？<br />该分组下的作品将移回「未分组」。
+      </p>
+    </template>
+
+    <!-- ====== 分组管理模板 ====== -->
+    <template id="groupManageTemplate">
+      <div class="group-mgmt-input">
+        <input type="text" id="newGroupInput" placeholder="输入新分组名称..." maxlength="20" />
+        <button class="dy-btn flex-inline-center dy-btn-primary" id="addGroupBtn">添加</button>
+      </div>
+      <div class="group-list" id="groupList"></div>
+    </template>
+
+    <!-- ====== 点赞/收藏弹窗容器模板 ====== -->
+    <template id="favDialogTemplate">
+      <div class="fav-dialog-body">
+        <div class="fav-stats"></div>
+        <div class="fav-grid" id="favGrid"></div>
+      </div>
+    </template>
+
+    <!-- ====== 导入结果模板 ====== -->
+    <template id="importResultTemplate">
+      <div class="import-result">
+        <p>文件路径：<code class="import-file-name"></code></p>
+        <p>✅ 新增作品：<span class="stat stat-ok import-added"></span> 条</p>
+        <p>🔄 更新作品：<span class="stat stat-dup import-updated"></span> 条</p>
+        <p>❌ 无效数据：<span class="stat stat-invalid import-invalid"></span> 条</p>
+        <p>📊 当前总计：<span class="stat stat-total import-total"></span> 条</p>
+      </div>
+    </template>
+
+    <!-- ====== 安全状态面板模板 ====== -->
+    <template id="securityStatusTemplate">
+      <div class="security-status">
+        <div class="sec-section">
+          <div class="sec-section-title">密钥</div>
+          <div class="sec-item">
+            <span class="sec-label">密钥</span>
+            <span class="sec-value" id="secKeyStatus"></span>
+          </div>
+          <div class="sec-item sec-clickable" id="secKeyValue">
+            <span class="sec-value sec-truncate" id="secKeyValueText"></span>
+            <span class="sec-expand-hint hidden">[展开]</span>
+          </div>
+          <div class="sec-hint hidden" id="secKeyHint"></div>
+        </div>
+
+        <div class="sec-section">
+          <div class="sec-section-title">签名缓存</div>
+          <div class="sec-item">
+            <span class="sec-label">关注签名</span>
+            <span class="sec-value" id="secSigFollowingStatus"></span>
+          </div>
+          <div class="sec-item sec-clickable" id="secSigFollowing">
+            <span class="sec-value sec-truncate" id="secSigFollowingValue"></span>
+            <span class="sec-expand-hint hidden">[展开]</span>
+          </div>
+          <div class="sec-hint hidden" id="secSigFollowingHint"></div>
+          <div class="sec-item">
+            <span class="sec-label">作品签名</span>
+            <span class="sec-value" id="secSigPostStatus"></span>
+          </div>
+          <div class="sec-item sec-clickable" id="secSigPost">
+            <span class="sec-value sec-truncate" id="secSigPostValue"></span>
+            <span class="sec-expand-hint hidden">[展开]</span>
+          </div>
+          <div class="sec-hint hidden" id="secSigPostHint"></div>
+          <div class="sec-item">
+            <span class="sec-label">点赞签名</span>
+            <span class="sec-value" id="secSigFavoriteStatus"></span>
+          </div>
+          <div class="sec-item sec-clickable" id="secSigFavorite">
+            <span class="sec-value sec-truncate" id="secSigFavoriteValue"></span>
+            <span class="sec-expand-hint hidden">[展开]</span>
+          </div>
+          <div class="sec-hint hidden" id="secSigFavoriteHint"></div>
+          <div class="sec-item">
+            <span class="sec-label">收藏签名</span>
+            <span class="sec-value" id="secSigCollectionStatus"></span>
+          </div>
+          <div class="sec-item sec-clickable" id="secSigCollection">
+            <span class="sec-value sec-truncate" id="secSigCollectionValue"></span>
+            <span class="sec-expand-hint hidden">[展开]</span>
+          </div>
+          <div class="sec-hint hidden" id="secSigCollectionHint"></div>
+        </div>
+
+        <div class="sec-section">
+          <div class="sec-section-title">Hook 状态</div>
+          <div class="sec-item">
+            <span class="sec-label">Fetch Hook</span>
+            <span class="sec-value" id="secHookFetch"></span>
+          </div>
+          <div class="sec-item">
+            <span class="sec-label">XHR Hook</span>
+            <span class="sec-value" id="secHookXhr"></span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ====== 图标模板（JS 动态使用，通过 ICONS.xxx → innerHTML） ====== -->
+    <template id="icon-pause">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
+        <path d="M10 8C9.44772 8 9 8.44772 9 9V23C9 23.5523 9.44772 24 10 24H13C13.5523 24 14 23.5523 14 23V9C14 8.44772 13.5523 8 13 8H10Z"/>
+        <path d="M19 8C18.4477 8 18 8.44772 18 9V23C18 23.5523 18.4477 24 19 24H22C22.5523 24 23 23.5523 23 23V9C23 8.44772 22.5523 8 22 8H19Z"/>
+      </svg>
+    </template>
+    <template id="icon-play">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
+        <path d="M23.5 15.134C24.1667 15.5189 24.1667 16.4811 23.5 16.866L12.25 23.3612C11.5833 23.7461 10.75 23.265 10.75 22.4952L10.75 9.50481C10.75 8.73501 11.5833 8.25388 12.25 8.63878L23.5 15.134Z"/>
+      </svg>
+    </template>
+    <template id="icon-mute">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+      </svg>
+    </template>
+    <template id="icon-unmute">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+      </svg>
+    </template>
+    <template id="icon-loopSingle">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+        <text x="12" y="14" text-anchor="middle" font-size="8" font-weight="bold">1</text>
+      </svg>
+    </template>
+    <template id="icon-loopGroup">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+      </svg>
+    </template>
+    <template id="icon-noLoop">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z"/>
+      </svg>
+    </template>
+    <template id="icon-check">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/>
+      </svg>
+    </template>
+
+    <!-- ====== SVG 符号（HTML 专用，通过 <use href="#icon-xxx"/> 引用） ====== -->
+    <svg style="display:none">
+      <defs>
+        <symbol id="icon-download" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+        </symbol>
+        <symbol id="icon-sync" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+        </symbol>
+        <symbol id="icon-delete" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+        </symbol>
+        <symbol id="icon-error" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+        </symbol>
+        <symbol id="icon-nav-left" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12l4.58-4.59z"/>
+        </symbol>
+        <symbol id="icon-nav-right" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z"/>
+        </symbol>
+        <symbol id="icon-image-badge" viewBox="0 0 12 12">
+          <path fill="currentColor" d="M1.455 0C.65 0 0 .651 0 1.455V8c0 .803.651 1.455 1.455 1.455H8c.803 0 1.455-.652 1.455-1.455V1.455C9.455.65 8.803 0 8 0H1.455z"/>
+          <path fill="currentColor" d="M4 12a1.455 1.455 0 0 1-1.455-1.454h5.819a2.182 2.182 0 0 0 2.181-2.182V2.545C11.35 2.545 12 3.197 12 4v5.09A2.909 2.909 0 0 1 9.09 12H4z"/>
+        </symbol>
+        <symbol id="icon-edit" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+        </symbol>
+        <symbol id="icon-folder" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+        </symbol>
+        <symbol id="icon-arrow-down" viewBox="0 0 24 24">
+          <path fill="currentColor" d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/>
+        </symbol>
+      </defs>
+    </svg>
+    <!-- ====== Toast 提示 ====== -->
+    <div id="dy-options-toast" class="toast"></div>
+
+    <!-- ====== 隐藏的文件输入 ====== -->
+    <input type="file" id="fileInput" accept=".json,.txt" style="display: none" />
+
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "抖音数据管理",
+  "version": "2.0.0",
+  "description": "统一管理抖音作品、关注、点赞与收藏数据",
+  "permissions": [
+    "storage",
+    "declarativeNetRequest",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.douyin.com/*",
+    "*://*.douyinvod.com/*",
+    "*://*.douyinpic.com/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.douyin.com/*"],
+      "exclude_matches": ["*://creator.douyin.com/*"],
+      "js": ["content/content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/inject.js"],
+      "matches": ["*://*.douyin.com/*"]
+    }
+  ],
+  "action": {
+    "default_title": "抖音数据管理"
+  },
+  "options_page": "options/options.html",
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  }
+}
