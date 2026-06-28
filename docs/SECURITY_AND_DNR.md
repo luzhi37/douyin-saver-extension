@@ -60,6 +60,7 @@ options.js (SecurityStatus.openPanel)
   key: string,                  // 来自 localStorage[SECURITY_KEY]，剥离 pub. 前缀
   keyUpdatedAt: number,         // 读取时刻 (Date.now())；key 为空时为 0
   signatures: {
+    detail:    { value, updatedAt },
     following: { value, updatedAt },
     post:      { value, updatedAt },
     favorite:  { value, updatedAt },
@@ -77,6 +78,6 @@ options.js (SecurityStatus.openPanel)
 |---|---|---|
 | 密钥过期 | localStorage 中的 `SECURITY_KEY` 可能过期，取消请求被拒绝 | options.js 检测 `AUTH_FAILED` 时弹 toast 提示用户刷新抖音页面 |
 | 登出风险 | 服务器可能因无效 ticket-guard 密钥拒绝请求，极端情况下导致登出 | 同上 |
-| 无重试机制 | `runCancelLoop` 中任一失败即退出 | 批量取消场景下用户需重试；可手动多次执行 |
+| 部分失败可继续 | 单条 XHR 失败不中断，由 background 收集到 `errors[]`；`CANCEL_DONE` 报告汇总 | 用户可看 toast 中的成功/失败数量，失败的项仍在数据库中可手动处理 |
 | 前端耦合 | 按钮注入依赖 CSS 选择器；React fiber 遍历获取 `awemeInfo` | 抖音 React 升级可能失效，需重新适配 |
-| 签名依赖 | 需从页面真实请求中捕获 a_bogus 等签名参数 | 冷启动无签名时等待（最长 8s）或报 `NO_SIGNATURE` 错误 |
+| 签名依赖 | 需从页面真实请求中捕获 a_bogus 等签名参数 | 冷启动无签名时立即报 `NO_SIGNATURE` 错误，无等待 |

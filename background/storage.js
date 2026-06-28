@@ -1,13 +1,13 @@
 // background/storage.js — IndexedDB 封装层
 
-const DB_NAME = 'douyin-saver';
+const DB_NAME = "douyin-saver";
 const DB_VERSION = 1;
 
 const STORES = {
-  works:             { keyPath: 'awemeId', indexes: ['groupId'] },
-  works_groups:      { keyPath: 'id' },
-  followings:        { keyPath: 'uid', indexes: ['groupId'] },
-  followings_groups: { keyPath: 'id' },
+  works: { keyPath: "awemeId", indexes: ["groupId"] },
+  works_groups: { keyPath: "id" },
+  followings: { keyPath: "uid", indexes: ["groupId"] },
+  followings_groups: { keyPath: "id" },
 };
 
 // 单例连接
@@ -51,7 +51,7 @@ export const storage = {
     const db = await openDB();
     const keyField = STORES[storeName].keyPath;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
+      const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).getAll();
       req.onsuccess = () => resolve(toMap(req.result, keyField));
       req.onerror = () => reject(req.error);
@@ -61,7 +61,7 @@ export const storage = {
   async get(storeName, key) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
+      const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).get(key);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
@@ -71,7 +71,7 @@ export const storage = {
   async putBatch(storeName, items) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readwrite');
+      const tx = db.transaction(storeName, "readwrite");
       const store = tx.objectStore(storeName);
       for (const item of items) store.put(item);
       tx.oncomplete = () => resolve();
@@ -82,7 +82,7 @@ export const storage = {
   async deleteBatch(storeName, keys) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readwrite');
+      const tx = db.transaction(storeName, "readwrite");
       const store = tx.objectStore(storeName);
       for (const key of keys) store.delete(key);
       tx.oncomplete = () => resolve();
@@ -93,7 +93,7 @@ export const storage = {
   async clear(storeName) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readwrite');
+      const tx = db.transaction(storeName, "readwrite");
       tx.objectStore(storeName).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -103,7 +103,7 @@ export const storage = {
   async count(storeName) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
+      const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).count();
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -114,7 +114,7 @@ export const storage = {
     const db = await openDB();
     const keyField = STORES[storeName].keyPath;
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
+      const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).index(indexName).getAll(value);
       req.onsuccess = () => resolve(toMap(req.result, keyField));
       req.onerror = () => reject(req.error);
@@ -125,7 +125,7 @@ export const storage = {
   async getGroups(storeName) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
+      const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
@@ -136,7 +136,7 @@ export const storage = {
   async putGroups(storeName, groups) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readwrite');
+      const tx = db.transaction(storeName, "readwrite");
       tx.objectStore(storeName).clear();
       for (const g of groups) tx.objectStore(storeName).put(g);
       tx.oncomplete = () => resolve();
@@ -150,5 +150,4 @@ export const storage = {
     }
     return null;
   },
-
 };

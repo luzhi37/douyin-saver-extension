@@ -4,7 +4,7 @@
 
 ## 1. CSS 架构
 
-`options/options.css` 约 1200 行，23+ 区块。
+`options/options.css` 约 1220 行，23+ 区块。
 
 ### 变量（`--dy-*` 命名空间）
 - 背景：`--dy-bg: #161823` / `--dy-surface: #252632` / `--dy-surface-elevated: #2c2d3a`
@@ -66,8 +66,8 @@
 
 - 侧边栏 snap point 650px，仅两档：展开和折叠
 - `secUid` 运行时从 `profileUrl.split('/user/')[1]` 解析，不持久化
-- 导出按域类型分文件：`works-日期.json` / `followings-日期.json`（含版本号 `EXPORT_VERSION` 和 `groups`）
-- 点赞/收藏取消弹窗：无进度条、无复选框、无全选按钮，一键取消所有未关注作品；右上角 X 全程可见，点击中止
+- 导出按域类型分文件：`works-日期.json` / `followings-日期.json`（含 `groups`）
+- 点赞/收藏取消弹窗：无进度条、无复选框、无全选按钮，一键取消所有未关注作品；右上角 X 全程可见，点击中止。取消按钮点击后显示 `.dy-btn-loading` 旋转圆圈（`::before` 伪元素，纯 CSS spinner）
 - 弹窗模板全部使用 `<template>` 元素，无 JS 字符串拼接
 - `.dy-btn-primary` **不使用红色**，改为 ghost 风格透明背景
 - 弹窗布局复用公共 `.dy-dialog-*` 类，点赞/收藏弹窗无专用 `.fav-dialog-content` / `.fav-dialog-footer`

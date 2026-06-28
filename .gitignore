@@ -4,3 +4,8 @@ node_modules/
 .codegraph/
 .opencode/
 .agent/
+.qoder/
+.mimocode/
+.superpowers/
+docs/superpowers/
+docs/openspec/
