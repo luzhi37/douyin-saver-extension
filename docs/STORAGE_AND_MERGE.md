@@ -35,7 +35,7 @@ function mergeWork(w, old) {
 - 新数据覆盖旧数据的所有字段
 - **保留**旧 `groupId`（用户手动分组不丢失）
 - **保留**旧 `savedAt`（首次保存时间不变）
-- 最后调用 `storage.putBatch('works', Object.values(store))` 全量写入
+- 最后调用 `storage.putBatch('works', toWrite)` 写入（`toWrite` 仅包含传入的新数据 + 旧数据合并结果，非全库写入）
 
 ## 3. 关注合并与丢失检测（`handleSaveFollowings`）
 

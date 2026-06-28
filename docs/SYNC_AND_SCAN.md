@@ -9,35 +9,54 @@
 ### 触发
 `sync.syncCurrentGroup()` → `sync.syncAwemeIds(awemeIds)` → `sync.openSyncDialog(total)` → `sync.startSync(awemeIds)` → `services.bgMsg({ type: 'SYNC_WORKS', awemeIds })`
 
-### background.js 接收
+### background.js 循环（`handleSyncWorks`）
 - 生成 `requestId = crypto.randomUUID()`
 - `syncSessions.set(requestId, true)` 记录会话
-- `sendToTab('SYNC_WORKS', { awemeIds, requestId, timeout: 300000 })`
 - 立即返回 `{ ok: true, requestId, total: awemeIds.length }`
+- 逐作品 for 循环：
+  1. `sendToTabAsync('FETCH_SINGLE_WORK', { awemeId, timeout: CONFIG.TIMEOUT.REQUEST })` — 每次请求独立 requestId
+  2. 收集成功的结果到 `allWorks[]`
+  3. 发送 `SYNC_PROGRESS` 到 options（含 `index`、`total`、`status`）
+  4. 页间随机延迟 500–1200ms（`CONFIG.DELAY.MIN/MAX`）
+  5. 每完成 `BATCH_SIZE`（默认 30）条后暂停 20–30s 随机（`CONFIG.SYNC.BATCH_PAUSE_MIN/MAX`），避免命中滑动窗口限流。暂停期间每 `KEEPALIVE_INTERVAL`（5s）调用一次 `chrome.storage.local.get`，防止 Chrome MV3 因无扩展 API 活动而终止 Service Worker 导致异步状态丢失。
+- 循环中检查 `cancelled` 标志（来自 `CANCEL_ACTIVE_TASK`）
+- 循环结束调用 `mergeAndSaveWorks(allWorks)` 写入存储
+- `sendSyncDone()` 发送完成消息
+
+#### 错误分类与处理
+
+`FATAL_ERRORS`（终止整个批次）：
+| 错误 | 含义 |
+|---|---|
+| `NO_DOUYIN_TAB` | 找不到抖音标签页 |
+| `TAB_QUERY_FAILED` | chrome.tabs.query 异常 |
+| `NO_LISTENER` | content.js 未注入 |
+| `EMPTY_RESPONSE` | 返回空响应 |
+| `RATE_LIMITED` | 服务器返回空 body（限流信号） |
+| `CANCELLED` | 用户主动取消 |
+| `HTTP 401` | 认证失效（cookie 过期） |
+| `HTTP 429` | 明确限流 |
+
+非致命错误（跳过该作品，继续下一个）：
+| 错误 | 含义 |
+|---|---|
+| `TIMEOUT` | 单次请求超时 |
+| `HTTP 403` | 作品不可访问（私密/删除） |
+| `HTTP 5xx` | 服务器偶发错误 |
+| `status_code=xxx` | API 业务错误 |
+| 网络异常 | 单次网络抖动 |
+
+终止时，剩余未同步的 awemeId 均标记为 `BATCH_TERMINATED`。
 
 ### content.js 桥接
-`requestResponse('DY_SYNC_WORKS_REQUEST', 'DY_SYNC_WORKS_RESULT', 300000, buildDetail)`
+`requestResponse('DY_FETCH_SINGLE_WORK_REQUEST', 'DY_FETCH_SINGLE_WORK_RESULT', message.timeout, ...)`
 
-### inject.js 执行
-**防重入**：`document.__dy_sync_requests` Set 防止重复 requestId。
-
-**`syncWorks()`**（concurrency 池）：
-- worker 池并发：`CONCURRENCY = 5`
-- 每作品调用 `fetchOneDetail(awemeId)`
-- 每请求间延迟 250ms
-- dispatch `DY_SYNC_WORKS_PROGRESS` 进度事件
-- 完成后 dispatch `DY_SYNC_WORKS_RESULT`
-
-**`fetchOneDetail()`**：
-- 构建 `/aweme/v1/web/aweme/detail/` URL
+### inject.js 执行（`fetchOneDetail`）
+- 构建 `CONFIG.API.DETAIL` URL
 - 合并 `CONFIG.DEVICE_PARAMS` 和缓存的 `__lastCapturedDetailQuery`
-- `origFetch` 发起请求，超时 8s（`CONFIG.TIMEOUT.FETCH_DETAIL`）
-
-### 回传与存储
-- inject → content：`DY_SYNC_WORKS_RESULT` CustomEvent
-- content → background：`requestResponse` 的 `onResult` handler 调用 `sendResponse`
-- background → options：`sendToTab` callback → `mergeAndSaveWorks(incoming)` 写入存储
-- `sendSyncDone()` 发送完成消息
+- `origFetch` 发起请求，超时 `CONFIG.TIMEOUT.FETCH_DETAIL`（8s）
+- 返回单个 work 对象
+- 空 body 时抛出 `RATE_LIMITED`（由 background 判定为致命错误，终止批次）
 
 **`mergeAndSaveWorks()`**（background.js）：
 - 逐条 `storage.get` 读取旧数据（仅 incoming 的 awemeId），保留旧 `groupId` 与 `savedAt`
@@ -46,7 +65,6 @@
 
 ### options.js 接收进度
 - `SYNC_PROGRESS` → `sync.onSyncProgress(message)` 更新弹窗进度
-  - 进度计数使用 `#doneCount` 单调递增计数器（非 `index + 1`），避免并发 worker 完成顺序不同导致数字回跳
 - `SYNC_DONE` → `sync.onSyncDone(message)` 显示结果
 
 ## 2. 同步关注机制
@@ -54,42 +72,34 @@
 ### 触发
 `sync.syncFollowings()` → `sync.vmSyncFollowings()` → `services.findSecUid()` 解析 secUid → `services.bgMsg({ type: 'FETCH_FOLLOWING', secUid })`
 
-### background.js → content.js → inject.js
-```js
-sendToTab('FETCH_FOLLOWING', { secUid, timeout: 300000 })
-requestResponse('DY_FETCH_FOLLOWING_REQUEST', 'DY_FETCH_FOLLOWING_RESULT', 300000)
-```
-
-### inject.js 抓取（`fetchAllFollowings(secUid, requestId)`）
-- **等待签名**：循环等待 80 次 × 100ms，若 `__capturedFollowingQuery` 为空
-- **分页**：offset 从 0 开始，count = 20
-- **API**：`/aweme/v1/web/user/following/list` + DEVICE_PARAMS + 签名
-- **每页延迟**：300-400ms 随机
-- **重试**：最多 3 次，间隔 3000ms（`CONFIG.RETRY.FOLLOWING`）
-- **标准化**：`{ uid, nickname, avatarLarger, followerCount, profileUrl }`（仅 5 字段，**不含** `signature` / `secUid` 等易变字段）
-- **AbortController**：创建 `cancelController`，`setActiveTask` 回调中 `cancelController.abort()`，`cancelController.signal` 作为 `externalSignal` 传入 `fetchFollowingPage`。修复前只有 `cancelled = true` 标志位，无即时 abort 能力。
-
-### progress 时序差异（常见 bug 来源）
-`SYNC_WORKS` 与 `FETCH_FOLLOWING` 的 `requestId` 返回时序不同：
-
-| 操作 | background handler | requestId 返回时机 | progress 过滤策略 |
-|---|---|---|---|
-| 作品同步 | `handleSyncWorks` 用 `sendToTab` 回调 + `sendResponse` 立即返回 | `startSync` 中 await bgMsg 返回后立即拿到 `#requestId` | onSyncProgress 直接 `msg.requestId !== this.getRequestId()` |
-| 关注同步 | `sendToTab` 直接把 `sendResponse` 传入 `chrome.tabs.sendMessage` 回调 | 等 fetch 完成后才拿到 `#followingsRequestId` | onFollowingProgress 必须兼容 `null`：`this.#followingsRequestId !== null && msg.requestId !== this.#followingsRequestId` |
+### background.js 循环（`handleFetchFollowing`）
+- 生成 `requestId = crypto.randomUUID()`
+- 立即返回 `{ ok: true, requestId, followings, total }`（注：`sendResponse` 在循环完成后才调用，但 options 层的 `bgMsg` await 等全部完成才会拿到结果）
+- 逐页 for 循环：
+  1. `sendToTabAsync('FETCH_FOLLOWING_PAGE', { secUid, offset, timeout: CONFIG.TIMEOUT.REQUEST })`
+  2. 每页结果中的 `items` 追加到 `all[]`，`hasMore` / `cursor` 更新
+  3. 发送 `FOLLOWING_PROGRESS` 到 options（含 `collected`、`hasMore`、`total`、`requestId`）
+  4. 页间随机延迟 500–1200ms（`CONFIG.DELAY.MIN/MAX`）
+- 循环中检查 `cancelled` 标志
+- 标准化（inject.js 中完成）：`{ uid, nickname, avatarLarger, followerCount, profileUrl }`（仅 5 字段）
+- 最终调用 `handleSaveFollowings` 写入存储（在 vmSyncFollowings 的调用方进行）
 
 ### 进度回传
 ```
-inject dispatch DY_FOLLOWING_PROGRESS
-→ content forwardEvent('FOLLOWING_PROGRESS')
-→ background registerProgressForwarder
+background 循环内 chrome.runtime.sendMessage({ type: 'FOLLOWING_PROGRESS', ... })
 → options chrome.runtime.onMessage → sync.onFollowingProgress()
 ```
+
+### inject.js 执行（`FETCH_FOLLOWING_PAGE` 单页 handler）
+- **签名**：仅使用 `__capturedFollowingQuery`（签名与端点一一对应，不可混用），为空时立即返回 `{ ok: false, error: 'NO_SIGNATURE' }`
+- **fetchFollowingPage**：发送 `/aweme/v1/web/user/following/list` + DEVICE_PARAMS + 签名；内部不重试，失败由 background 循环 handler 的 `sendToTabAsync` 超时兜底
+- **返回**：`{ items, hasMore, cursor, total, ok }`
 
 ## 3. 扫描点赞/收藏机制
 
 两个流程高度相似，共用 `Favorites.openScanDialog(cfg)`，通过 cfg 参数驱动差异。
 
-### 点赞（`options.js:3035`）
+### 点赞（`options.js:3151`）
 ```js
 favorites.openScanDialog({
   title: '扫描点赞',
@@ -108,7 +118,7 @@ favorites.openScanDialog({
 });
 ```
 
-### 收藏（`options.js:3050`）
+### 收藏（`options.js:3167`）
 ```js
 favorites.openScanDialog({
   title: '扫描收藏',
@@ -134,30 +144,39 @@ favorites.openScanDialog({
 4. `#renderGrid()` 渲染未关注作品网格
 5. 添加 `cfg.cancelLabel` 按钮，点击触发 `services.bgMsg({ type: cfg.cancelType, awemeIds })` 取消
 
-### inject.js 抓取差异
+### background.js 循环（`handleFetchFavorites` / `handleFetchCollection`）
 
-| 项 | 点赞（`fetchFavoriteWorks`） | 收藏（`fetchCollectionWorks`） |
+两个函数结构相同，差异仅在转发的消息类型和目标 API：
+
+| 项 | 点赞 | 收藏 |
+|---|---|---|
+| background handler | `handleFetchFavorites` | `handleFetchCollection` |
+| 转发消息类型 | `FETCH_FAVORITES_PAGE` | `FETCH_COLLECTION_PAGE` |
+| 进度消息 | `FAVORITES_PROGRESS` | `COLLECTION_PROGRESS` |
+
+循环流程：
+1. 生成 `requestId = crypto.randomUUID()`
+2. `sendToTabAsync('FETCH_FAVORITES_PAGE' / 'FETCH_COLLECTION_PAGE', { secUid, cursor, timeout })`
+3. 每页结果追加到 `all[]`，更新 `hasMore` / `cursor`
+4. 发送进度消息到 options（含 `collected`、`unfollowedCount`、`hasMore`、`total`、`requestId`）
+  5. 页间随机延迟 500–1200ms（`CONFIG.DELAY.MIN/MAX`）
+6. 最终返回 `{ ok: true, works, requestId, timedOut }`
+
+### inject.js 单页 handler（`fetchOneFavoritesPage` / `fetchOneCollectionPage`）
+
+| 项 | 点赞 | 收藏 |
 |---|---|---|
 | API | `/aweme/v1/web/aweme/favorite/` | `/aweme/v1/web/aweme/listcollection/` |
 | method | GET | POST |
 | headers | 仅 Referer | `content-type: COLLECTION_CONTENT_TYPE` |
-| cursorKey | `'max_cursor'` | `'cursor'` |
-| extractCursor | `data.cursor \|\| data.max_cursor \|\| (cur + 18)` | 同左 |
+| 签名来源 | `__capturedFavoriteQuery` | `__capturedCollectionQuery` |
 | transformAwemeItem | `includeAuthorFollowed: true` | `includeAuthorFollowed: true` |
-| 进度事件 | `EVENTS.FAVORITES_PROGRESS` | `EVENTS.COLLECTION_PROGRESS` |
+| 超时 | 15s（`CONFIG.TIMEOUT.FETCH_PAGE`） | 同左 |
+| 返回 | `{ items, hasMore, cursor, total, ok }` | 同左 |
 
-两者都使用 `paginatedFetcher`，签名取 `stripPageKeys(__capturedFavoriteQuery || __capturedPostQuery || __capturedFollowingQuery)`（收藏取 collection 优先）。
-
-### paginatedFetcher 工作流程
-- 循环：`while (hasMore && retries < CONFIG.RETRY.MAX)`
-- 构建 URL + 合并签名
-- `origFetch` 请求，超时 15s（`CONFIG.TIMEOUT.FETCH_PAGE`）
-- 提取作品列表和 hasMore
-- 去重：`seenIds` Set
-- cursor 更新，若不变则终止
-- 页间延迟 300-400ms（`CONFIG.PAGE.DELAY_MIN`/`DELAY_MAX`）
-- 重试延迟 2000ms（`CONFIG.RETRY.PAGINATION`）
-- 进度事件发送增量 `newWorks`（仅新采集的作品）+ 预计算 `unfollowedCount`，不再发送全量 works 数组
+- 每次请求合并 `stripPageKeys(capturedQuery)` 剥离分页参数、只保留签名
+- `origFetch` 发起请求
+- 超时 15s（`CONFIG.TIMEOUT.FETCH_PAGE`）
 
 ## 4. 取消点赞/收藏机制
 
@@ -168,25 +187,56 @@ ids = targets.map(w => w.awemeId);
 services.bgMsg({ type: cfg.cancelType, awemeIds: ids });
 ```
 
-### background.js → content.js → inject.js
+### background.js → content.js → inject.js（background-driven per-awemeId 循环）
 ```js
-sendToTab('CANCEL_LIKE', { awemeIds, timeout: 120000 })    // 或 CANCEL_COLLECTION
-requestResponse('DY_CANCEL_LIKE_REQUEST', 'DY_CANCEL_LIKE_COMPLETE', 120000)
+// background.js handleCancelLike / handleCancelCollection
+for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+  const resp = await sendToTabAsync('CANCEL_ONE_LIKE', {
+    awemeId: awemeIds[i],
+    timeout: CONFIG.TIMEOUT.REQUEST,  // 单条超时 30s,与批大小无关
+  });
+  // ...
+}
+
+// content.js 路由:每次单条转发
+requestResponse('DY_CANCEL_ONE_LIKE_REQUEST', 'DY_CANCEL_ONE_LIKE_RESULT', 30000)
 ```
 
-### runCancelLoop（inject.js）
+**与早期实现的差异**：早期使用 `runCancelLoop`（inject.js 内循环）+ `TIMEOUT.CANCEL=120000` 一次性派发。N>120 时必然 TIMEOUT 但 inject.js 循环仍在跑,状态不一致。新实现与 SYNC_WORKS / FETCH_FOLLOWING 等长操作一致,逐条派发 + 实时进度 + 完成消息。
+
+### inject.js 单条取消（cancelOneLike / cancelOneCollection）
 ```js
-const xhr = new XMLHttpRequest();
-xhr.open('POST', url);
-xhr.withCredentials = true;
-xhr.setRequestHeader('content-type', CONFIG.CANCEL_CONTENT_TYPE);
-xhr.setRequestHeader('Referer', window.location.origin + '/');
-const key = getSecurityKey();  // 每次 XHR 前重读
-if (key) xhr.setRequestHeader('bd-ticket-guard-ree-public-key', key);
-xhr.send(bodyFn(ids[i]));
+function cancelOne(awemeId, url, bodyFn, referrer, signal) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    // ... signal 监听 abort ...
+    const key = getSecurityKey();
+    xhr.open('POST', url);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('content-type', CONFIG.CANCEL_CONTENT_TYPE);
+    xhr.setRequestHeader('Referer', referrer);
+    if (key) xhr.setRequestHeader('bd-ticket-guard-ree-public-key', key);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else if (xhr.status === 401 || xhr.status === 403) reject(new Error('AUTH_FAILED'));
+      else reject(new Error('HTTP_' + xhr.status));
+    };
+    xhr.onerror = () => reject(new Error('NETWORK_ERROR'));
+    xhr.onabort = () => reject(new Error('CANCELLED'));
+    xhr.send(bodyFn(awemeId));
+  });
+}
 ```
 
 **为什么用 XHR 而非 fetch**：抖音的 a_bogus 签名绑定在 XHR 原型链上。
+
+### 进度与完成消息
+| 消息 | 触发时机 | 字段 |
+|---|---|---|
+| `CANCEL_PROGRESS` | 每条 XHR 完成后 | `requestId, index, total, status, awemeId` |
+| `CANCEL_DONE` | 整个批次完成(或用户取消) | `requestId, ok, cancelled, refreshed, failed, failedAwemeIds` |
+
+options.js 通过 `favorites.onCancelProgress` / `favorites.onCancelDone` 监听,实时更新按钮文字(取消中... (5/200))和最终 UI。
 
 ### 点赞 vs 收藏参数对比
 
@@ -197,10 +247,16 @@ xhr.send(bodyFn(ids[i]));
 | Referrer | `https://www.douyin.com/user/self?showTab=like` | `https://www.douyin.com/user/self?showTab=favorite_collection` |
 | ContentType | `application/x-www-form-urlencoded; charset=UTF-8` | 同左 |
 | bd-ticket-guard 公钥 | `getSecurityKey()`（每次请求前重读） | 同左 |
-| 请求间延迟 | 800-1200ms 随机 | 同左 |
-| 错误处理 | 任一失败立即退出整个流程 | 同左 |
+| 请求间延迟 | `CONFIG.DELAY.MIN/MAX` 500-1200ms 随机（位于 background.js） | 同左 |
+| 错误处理 | 失败项记入 `failedAwemeIds`,继续后续项 | 同左 |
 
-**AUTH_FAILED 提示**：`options.js:1599-1604` 检测到 `cancelRes.error.includes('AUTH_FAILED')` 时，弹出 toast「密钥已过期，请刷新抖音页面后重试」。
+**AUTH_FAILED 提示**：单个 XHR 返回 401/403 时抛 `AUTH_FAILED` 错误,该项记入失败列表但不中断整个批次。最终 toast 显示成功/失败数量。
+
+### TIMEOUT 概览
+background 侧单次 Tab 请求超时使用 `CONFIG.TIMEOUT.REQUEST = 30000`（由 `sendToTab` 主导）。inject.js 侧另有独立超时：`TIMEOUT.FETCH_PAGE = 15000`（单页 fetch 超时）、`TIMEOUT.FETCH_DETAIL = 8000`（详情 fetch）。安全面板查询保留独立的 `SECURITY_STATUS = 5000`（UI 阻塞场景）。
+
+### Service Worker 保活
+作品同步的批次暂停（20–30s）是唯一可能触发 SW 终止的长空闲窗口。`CONFIG.SYNC.KEEPALIVE_INTERVAL = 5000` 控制保活间隔：暂停被拆分为 5s 分段，每段结束后调用 `chrome.storage.local.get` 重置 SW 空闲计时器。其余循环（关注同步、点赞/收藏扫描、取消操作）每次延迟前均有 `chrome.*` API 调用，无需额外处理。
 
 ## 5. 作者主页作品分页
 
@@ -223,10 +279,10 @@ services.bgMsg({ type: 'FETCH_WORKS_PAGE', secUid, cursor })
 - 若内容不足以填满容器，递归调用 `#loadMoreWorks()`
 
 ### 超时分级
-`sendToTab('FETCH_WORKS_PAGE', { secUid, cursor, timeout: 60000 })`（60s，因为是单页请求）
+`sendToTab('FETCH_WORKS_PAGE', { secUid, cursor, timeout: CONFIG.TIMEOUT.REQUEST })`（background 侧 30s 超时；content.js 侧 `requestResponse` 硬编码 60s 兜底）
 
 ### inject.js 抓取（`fetchAuthorWorks(secUid, startCursor)`）
 - **API**：`/aweme/v1/web/aweme/post/`
-- **参数**：`sec_user_id, max_cursor, count(18), DEVICE_PARAMS`
-- **签名合并**：`mergeParams(url, __capturedPostQuery || __capturedFollowingQuery)`
-- **重试**：最多 3 次，延迟 2000ms（`CONFIG.RETRY.AUTHOR`）
+- **参数**：`sec_user_id, max_cursor, count(CONFIG.PAGE.AUTHOR), DEVICE_PARAMS`
+- **签名**：仅使用 `__capturedPostQuery`（签名与端点一一对应，不可混用）
+- 失败由 background 的 `sendToTabAsync` 超时兜底，侧边栏不再加载该页，用户重滚触发重新请求

@@ -6,13 +6,13 @@
 
 | 文件 | 行数 | 角色 | 能否 Vue 化 |
 |---|---:|---|:---:|
-| `background/background.js` | 753 | Service Worker：消息路由、DNR、存储操作 | ❌ |
-| `background/storage.js` | — | IndexedDB 封装 | ❌ |
-| `content/content.js` | 232 | 隔离世界桥接：CustomEvent ↔ chrome.runtime.sendMessage | ❌ |
-| `content/inject.js` | 1109 | **主世界脚本**：fetch hook、XHR hook、签名捕获、抓取分页 | ❌ |
-| `options/options.html` | 462 | 管理 UI 结构 | ✅ |
-| `options/options.js` | 3194 | 管理 UI 逻辑（11 个 class） | ✅（但只 50% 适合） |
-| `options/options.css` | ~1200 | UI 样式 | ⚠️ 局部 |
+| `background/background.js` | 1055 | Service Worker：消息路由、DNR、存储操作 | ❌ |
+| `background/storage.js` | 153 | IndexedDB 封装 | ❌ |
+| `content/content.js` | 236 | 隔离世界桥接：CustomEvent ↔ chrome.runtime.sendMessage | ❌ |
+| `content/inject.js` | 1170 | **主世界脚本**：fetch hook、XHR hook、签名捕获、抓取分页 | ❌ |
+| `options/options.html` | — | 管理 UI 结构 | ✅ |
+| `options/options.js` | 3315 | 管理 UI 逻辑（12 个 class） | ✅（但只 50% 适合） |
+| `options/options.css` | ~1500 | UI 样式 | ⚠️ 局部 |
 
 **能 Vue 化的代码量 < 30%**（约 4500 / ~7000 行）。inject.js / content.js / background.js 三者合计 ~2100 行承载了核心抓取能力，受 Manifest V3 强制分层限制（主世界 fetch hook、隔离世界桥接、Service Worker），任何 UI 框架都动不了。
 

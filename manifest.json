@@ -7,7 +7,8 @@
     "storage",
     "declarativeNetRequest",
     "tabs",
-    "scripting"
+    "scripting",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "*://*.douyin.com/*",
