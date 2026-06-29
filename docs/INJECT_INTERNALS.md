@@ -4,7 +4,7 @@
 
 ## 1. 数据提取
 
-### transformAwemeItem（`inject.js:153`）
+### transformAwemeItem（`inject.js:154`）
 
 **输入**：原始 aweme JSON（API 返回的 `aweme_list` 中单个 item），委托给 `normalizeWork(aw, "api")` 提取核心字段。
 
@@ -21,7 +21,7 @@
 
 **`includeAuthorFollowed` 选项**：通过 `extractAuthorFollowed` 读取 `author.follow_status`（`1`/`2` 视为已关注；字段不存在返回 `null`），用于判断作者是否被当前用户关注（点赞/收藏场景必需）。
 
-### extractWorkFromRaw（`inject.js:404`，委托给 `normalizeWork`）
+### extractWorkFromRaw（`inject.js:401`，委托给 `normalizeWork`）
 
 薄包装，委托给 `normalizeWork(awemeData, fromFiber ? "fiber" : "api")`。
 
@@ -117,7 +117,7 @@ getAwemeInfoFromButton(btn)
 ### 签名是什么
 抖音 Web API 请求需要在 URL query 中携带签名参数（如 `a_bogus` / `msToken` / `X-Bogus` / `_signature` 等），这些参数由抖音前端 JS 动态生成、具有时效性。扩展无法自行生成签名，因此必须从页面真实请求中**捕获并复用**。
 
-### captureFromUrl 工作流程（`inject.js:98`）
+### captureFromUrl 工作流程（`inject.js:99`）
 ```js
 function captureFromUrl(url, parsedUrl) {
   if (!url.startsWith('http')) return;
@@ -156,7 +156,7 @@ function mergeParams(url, captured) {
   return url;
 }
 
-const PAGE_KEYS = new Set(['cursor', 'max_cursor', 'min_cursor', 'offset', 'count']);
+const PAGE_KEYS = new Set(['offset', 'count']);
 function stripPageKeys(captured) {
   if (!captured) return null;
   const out = new Map();
@@ -203,20 +203,23 @@ Fetch Hook 检测到该标志后完全跳过 `captureFromUrl` 和 `dispatchWorks
 
 ## 3. Hook 实现细节
 
-### Fetch Hook（`inject.js:460`）
+### Fetch Hook（`inject.js:458`）
 ```js
 const origFetch = window.fetch;
 window.fetch = function (...args) {
-  const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+  const request = args[0];
+  const url = typeof request === "string" ? request : request?.url;
   const options = args[1] || {};
   const isInternal = options._dyInternal === true;  // 扩展内部请求跳过 capture
   const parsedUrl = !isInternal && url && typeof url === 'string' && url.startsWith('http') ? shouldCapture(url) : null;
-  return origFetch.apply(this, args).then(async (response) => {
+  return origFetch.apply(this, args).then((response) => {
     if (response.ok && parsedUrl) {
       captureFromUrl(url, parsedUrl);
-      const data = await response.clone().json();
-      const works = await extractWorksFromResponse(url, data, parsedUrl);
-      dispatchWorks(works);  // dispatch DY_CAPTURE_WORKS
+      response.clone().json().then((data) => {
+        extractWorksFromResponse(url, data, parsedUrl).then((works) => {
+          dispatchWorks(works);  // dispatch DY_CAPTURE_WORKS
+        }).catch(() => {});
+      }).catch(() => {});
     } else if (response.ok && !isInternal && url && typeof url === 'string' && url.startsWith('http')) {
       captureFromUrl(url);  // 非 API 请求也捕获签名
     }
@@ -228,10 +231,11 @@ window.__dyManagerFetchHooked = true;
 - 替换全局 `window.fetch`
 - `shouldCapture(url)` 返回解析后的 `URL` 对象（非 boolean），传递给下游避免重复解析
 - 对匹配 `CONFIG.API_PATTERNS` 的请求：捕获签名 + 用 `response.clone().json()` 提取作品数据
+- 作品提取使用**分离的 Promise 链**（`response.clone().json().then(...).catch(...)`），不阻塞响应交付给调用方。旧代码使用 `await response.clone().json()` 阻塞了原始响应流，导致调用方（抖音 JS）等待扩展的 JSON 解析和提取完成才收到响应
 - 对其他 HTTP 请求：仅捕获签名
 - `window.__dyManagerFetchHooked` 标志位供安全状态面板读取
 - **Hook 自身实现使用 `origFetch`** 避免递归（`return origFetch.apply(this, args)`）
-- **外部 API 请求函数统一使用 `window.fetch`**（经过 Hook，能捕获 Douyin 注入的签名参数），而非 `origFetch.call(window, ...)`。详见 [docs/FETCH_AND_CACHE.md](./FETCH_AND_CACHE.md)。
+- **外部 API 请求函数统一使用 `window.fetch`**（经过 Hook，能捕获 Douyin 注入的签名参数），而非 `origFetch.call(window, ...)`。详见 [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)。
 
 ### XHR Hook（`inject.js:487`）
 ```js
@@ -294,7 +298,7 @@ document.addEventListener('DY_CANCEL_ACTIVE_TASK', () => {
 
 ## 4. 密钥获取机制
 
-### getSecurityKey（`inject.js:595`）
+### getSecurityKey（`inject.js:598`）
 ```js
 function getSecurityKey() {
   try {

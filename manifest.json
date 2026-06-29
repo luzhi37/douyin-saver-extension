@@ -8,12 +8,17 @@
     "declarativeNetRequest",
     "tabs",
     "scripting",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "cookies"
   ],
   "host_permissions": [
     "*://*.douyin.com/*",
     "*://*.douyinvod.com/*",
-    "*://*.douyinpic.com/*"
+    "*://*.douyinpic.com/*",
+    "*://mssdk.bytedance.com/*",
+    "*://mcs.zijieapi.com/*",
+    "*://ttwid.bytedance.com/*",
+    "*://*.tiktok.com/*"
   ],
   "background": {
     "service_worker": "background/background.js",

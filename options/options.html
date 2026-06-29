@@ -38,8 +38,7 @@
           <button class="menu-item" id="btnGroupManage">分组</button>
           <button class="menu-item" id="btnFavorites">扫描点赞</button>
           <button class="menu-item" id="btnCollections">扫描收藏</button>
-          <div class="menu-divider"></div>
-          <button class="menu-item" id="btnSecurityStatus">安全状态</button>
+          <button class="menu-item" id="btnSettings">设置</button>
           <div class="menu-divider"></div>
           <button class="menu-item danger" id="btnReset">重置</button>
           <div class="menu-storage" id="menuStorage">— MB</div>
@@ -85,9 +84,7 @@
 
   <!-- ====== 详情报覆盖层（类似抖音刷作品） ====== -->
   <div id="detailOverlay" class="flex-col hidden">
-    <div id="detailTopBar">
-      <button id="detailClose" class="flex-center">✕</button>
-    </div>
+    <button id="detailClose" class="flex-center">✕</button>
     <div class="detail-body">
       <div id="detailVideoContainer" class="flex-col hidden">
         <div id="detailVideoWrap" class="flex-center">
@@ -277,19 +274,11 @@
 
   <!-- ====== 同步弹窗 body 骨架模板 ====== -->
   <template id="syncDialogBodyTemplate">
-    <div class="sync-section">
-      <div class="sync-section-header">
-        <span class="sync-progress-text"></span>
-        <div class="sync-section-title">⚠️ 失败 (<span class="sync-error-count">0</span>)</div>
-      </div>
+    <div class="sync-line">
+      <span class="sync-count"></span>
+      <span class="sync-summary"></span>
+      <span class="sync-status"></span>
     </div>
-  </template>
-
-  <!-- ====== 无抖音标签页提示模板 ====== -->
-
-  <!-- ====== 同步错误提示模板 ====== -->
-  <template id="syncErrorTemplate">
-    <p class="sync-error-text"></p>
   </template>
 
   <!-- ====== 确认删除分组模板 ====== -->
@@ -327,73 +316,106 @@
     </div>
   </template>
 
-  <!-- ====== 安全状态面板模板 ====== -->
-  <template id="securityStatusTemplate">
-    <div class="security-status">
-      <div class="sec-section">
-        <div class="sec-section-title">密钥</div>
-        <div class="sec-item">
-          <span class="sec-label">密钥</span>
-          <span class="sec-value" id="secKeyStatus"></span>
+  <!-- ====== 设置面板模板 ====== -->
+  <template id="settingsDialogTemplate">
+    <div class="settings-panel">
+      <section class="settings-section">
+        <h3 class="settings-section-title">
+          <span class="section-title-text">Cookie 配置</span>
+          <span class="section-chevron"></span>
+        </h3>
+        <div class="section-body">
+          <div class="section-body-inner" id="settingsCookieList"></div>
         </div>
-        <div class="sec-item sec-clickable" id="secKeyValue">
-          <span class="sec-value sec-truncate" id="secKeyValueText"></span>
-          <span class="sec-expand-hint hidden">[展开]</span>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">
+          <span class="section-title-text">独立模式</span>
+          <span class="section-chevron"></span>
+        </h3>
+        <div class="section-body">
+          <div class="section-body-inner">
+            <label class="settings-switch-row"><span>启用独立模式（无需抖音标签页）</span><input type="checkbox"
+                id="settingsChkMode" /><span class="switch-knob"></span></label>
+            <p class="settings-hint" id="settingsModeHint">加载中…</p>
+          </div>
         </div>
-        <div class="sec-hint hidden" id="secKeyHint"></div>
-      </div>
-
-      <div class="sec-section">
-        <div class="sec-section-title">签名缓存</div>
-        <div class="sec-item">
-          <span class="sec-label">关注签名</span>
-          <span class="sec-value" id="secSigFollowingStatus"></span>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">
+          <span class="section-title-text">浏览器特征</span>
+          <span class="section-chevron"></span>
+        </h3>
+        <div class="section-body">
+          <div class="section-body-inner">
+            <div id="settingsBFList" class="bf-grid"></div>
+            <div class="bf-item" style="margin-top:6px">
+              <label class="bf-label">secUid（用户身份）</label>
+              <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" />
+            </div>
+          </div>
         </div>
-        <div class="sec-item sec-clickable" id="secSigFollowing">
-          <span class="sec-value sec-truncate" id="secSigFollowingValue"></span>
-          <span class="sec-expand-hint hidden">[展开]</span>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">
+          <span class="section-title-text">Tab 模式</span>
+          <span class="section-chevron"></span>
+        </h3>
+        <div class="section-body">
+          <div class="section-body-inner">
+            <div class="cookie-status"><span class="sec-label">密钥</span><span class="sec-value" id="secKeyStatus">加载中…</span></div>
+            <div class="sec-item sec-clickable" id="secKeyValue">
+              <span class="sec-value sec-truncate" id="secKeyValueText"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+            </div>
+            <div class="sec-hint hidden" id="secKeyHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">关注签名</span>
+              <span class="sec-value" id="secSigFollowingStatus"></span>
+            </div>
+            <div class="sec-item sec-clickable" id="secSigFollowing">
+              <span class="sec-value sec-truncate" id="secSigFollowingValue"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+            </div>
+            <div class="sec-hint hidden" id="secSigFollowingHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">作品签名</span>
+              <span class="sec-value" id="secSigPostStatus"></span>
+            </div>
+            <div class="sec-item sec-clickable" id="secSigPost">
+              <span class="sec-value sec-truncate" id="secSigPostValue"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+            </div>
+            <div class="sec-hint hidden" id="secSigPostHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">点赞签名</span>
+              <span class="sec-value" id="secSigFavoriteStatus"></span>
+            </div>
+            <div class="sec-item sec-clickable" id="secSigFavorite">
+              <span class="sec-value sec-truncate" id="secSigFavoriteValue"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+            </div>
+            <div class="sec-hint hidden" id="secSigFavoriteHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">收藏签名</span>
+              <span class="sec-value" id="secSigCollectionStatus"></span>
+            </div>
+            <div class="sec-item sec-clickable" id="secSigCollection">
+              <span class="sec-value sec-truncate" id="secSigCollectionValue"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+            </div>
+            <div class="sec-hint hidden" id="secSigCollectionHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">Fetch Hook</span>
+              <span class="sec-value" id="secHookFetch">加载中…</span>
+            </div>
+            <div class="sec-item">
+              <span class="sec-label">XHR Hook</span>
+              <span class="sec-value" id="secHookXhr">加载中…</span>
+            </div>
+          </div>
         </div>
-        <div class="sec-hint hidden" id="secSigFollowingHint"></div>
-        <div class="sec-item">
-          <span class="sec-label">作品签名</span>
-          <span class="sec-value" id="secSigPostStatus"></span>
-        </div>
-        <div class="sec-item sec-clickable" id="secSigPost">
-          <span class="sec-value sec-truncate" id="secSigPostValue"></span>
-          <span class="sec-expand-hint hidden">[展开]</span>
-        </div>
-        <div class="sec-hint hidden" id="secSigPostHint"></div>
-        <div class="sec-item">
-          <span class="sec-label">点赞签名</span>
-          <span class="sec-value" id="secSigFavoriteStatus"></span>
-        </div>
-        <div class="sec-item sec-clickable" id="secSigFavorite">
-          <span class="sec-value sec-truncate" id="secSigFavoriteValue"></span>
-          <span class="sec-expand-hint hidden">[展开]</span>
-        </div>
-        <div class="sec-hint hidden" id="secSigFavoriteHint"></div>
-        <div class="sec-item">
-          <span class="sec-label">收藏签名</span>
-          <span class="sec-value" id="secSigCollectionStatus"></span>
-        </div>
-        <div class="sec-item sec-clickable" id="secSigCollection">
-          <span class="sec-value sec-truncate" id="secSigCollectionValue"></span>
-          <span class="sec-expand-hint hidden">[展开]</span>
-        </div>
-        <div class="sec-hint hidden" id="secSigCollectionHint"></div>
-      </div>
-
-      <div class="sec-section">
-        <div class="sec-section-title">Hook 状态</div>
-        <div class="sec-item">
-          <span class="sec-label">Fetch Hook</span>
-          <span class="sec-value" id="secHookFetch"></span>
-        </div>
-        <div class="sec-item">
-          <span class="sec-label">XHR Hook</span>
-          <span class="sec-value" id="secHookXhr"></span>
-        </div>
-      </div>
+      </section>
     </div>
   </template>
 

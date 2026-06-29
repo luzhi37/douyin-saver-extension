@@ -39,6 +39,12 @@
     }
   });
 
+  document.addEventListener("DY_CAPTURE_BROWSER_FEATURES", (event) => {
+    const features = event.detail;
+    if (!features) return;
+    chrome.runtime.sendMessage({ type: "CAPTURE_BROWSER_FEATURES", features }).catch(() => {});
+  });
+
   // ===== 请求-响应 (tools 移植) =====
 
   function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail) {
@@ -86,13 +92,13 @@
           "DY_FETCH_FOLLOWING_PAGE_RESULT",
           message.timeout,
           function (msg) {
-            return { secUid: msg.secUid, offset: msg.offset || 0 };
+            return { secUid: msg.secUid, offset: msg.offset || 0, count: msg.count };
           },
         )(message, _sender, sendResponse);
 
       case "FETCH_WORKS_PAGE":
         return requestResponse("DY_FETCH_WORKS_REQUEST", "DY_FETCH_WORKS_RESULT", 60000, function (msg) {
-          return { secUid: msg.secUid, maxCursor: msg.cursor || 0 };
+          return { secUid: msg.secUid, maxCursor: msg.cursor || 0, count: msg.count };
         })(message, _sender, sendResponse);
 
       case "FETCH_FAVORITES_PAGE":
@@ -101,7 +107,7 @@
           "DY_FETCH_FAVORITES_PAGE_RESULT",
           message.timeout,
           function (msg) {
-            return { secUid: msg.secUid, cursor: msg.cursor || 0 };
+            return { secUid: msg.secUid, cursor: msg.cursor || 0, count: msg.count };
           },
         )(message, _sender, sendResponse);
 
@@ -116,14 +122,19 @@
           "DY_FETCH_COLLECTION_PAGE_RESULT",
           message.timeout,
           function (msg) {
-            return { cursor: msg.cursor || 0 };
+            return { cursor: msg.cursor || 0, count: msg.count };
           },
         )(message, _sender, sendResponse);
 
       case "CANCEL_ONE_COLLECTION":
-        return requestResponse("DY_CANCEL_ONE_COLLECTION_REQUEST", "DY_CANCEL_ONE_COLLECTION_RESULT", 30000, function (msg) {
-          return { awemeId: msg.awemeId };
-        })(message, _sender, sendResponse);
+        return requestResponse(
+          "DY_CANCEL_ONE_COLLECTION_REQUEST",
+          "DY_CANCEL_ONE_COLLECTION_RESULT",
+          30000,
+          function (msg) {
+            return { awemeId: msg.awemeId };
+          },
+        )(message, _sender, sendResponse);
 
       case "GET_SECURITY_STATUS":
         return requestResponse("DY_GET_SECURITY_STATUS_REQUEST", "DY_GET_SECURITY_STATUS_RESULT", 5000, function (msg) {

@@ -9,3 +9,4 @@ node_modules/
 .superpowers/
 docs/superpowers/
 docs/openspec/
+tests/
