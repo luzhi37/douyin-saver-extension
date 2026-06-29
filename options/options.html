@@ -85,9 +85,7 @@
 
   <!-- ====== 详情报覆盖层（类似抖音刷作品） ====== -->
   <div id="detailOverlay" class="flex-col hidden">
-    <div id="detailTopBar">
-      <button id="detailClose" class="flex-center">✕</button>
-    </div>
+    <button id="detailClose" class="flex-center">✕</button>
     <div class="detail-body">
       <div id="detailVideoContainer" class="flex-col hidden">
         <div id="detailVideoWrap" class="flex-center">
@@ -277,19 +275,11 @@
 
   <!-- ====== 同步弹窗 body 骨架模板 ====== -->
   <template id="syncDialogBodyTemplate">
-    <div class="sync-section">
-      <div class="sync-section-header">
-        <span class="sync-progress-text"></span>
-        <div class="sync-section-title">⚠️ 失败 (<span class="sync-error-count">0</span>)</div>
-      </div>
+    <div class="sync-line">
+      <span class="sync-count"></span>
+      <span class="sync-summary"></span>
+      <span class="sync-status"></span>
     </div>
-  </template>
-
-  <!-- ====== 无抖音标签页提示模板 ====== -->
-
-  <!-- ====== 同步错误提示模板 ====== -->
-  <template id="syncErrorTemplate">
-    <p class="sync-error-text"></p>
   </template>
 
   <!-- ====== 确认删除分组模板 ====== -->

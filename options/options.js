@@ -128,7 +128,6 @@ const state = {
   batchMode: false,
   selectedIds: new Set(),
   activeDialog: null,
-  syncDialog: null,
   currentFollowingUid: null,
   currentFollowingSecUid: null,
   sidebarCursor: null,
@@ -137,11 +136,9 @@ const state = {
   favoriteWorks: [],
   favoriteFetching: false,
   cancelingFavorites: false,
-  favRequestId: null,
   collectionWorks: [],
   collectionFetching: false,
   cancelingCollections: false,
-  collectionRequestId: null,
   // 短操作弹窗锁：为 true 时禁止点击 X 关闭，待操作完成才解锁
   preventDialogClose: false,
 };
@@ -1345,38 +1342,121 @@ const sidebar = new Sidebar();
 class Sync {
   #running = false;
   #requestId = null;
-  // 关键修复:分别跟踪作品同步/关注同步的 requestId,用于过滤进度事件
-  #worksRequestId = null;
-  #followingsRequestId = null;
-  #progressSeen = new Set();
+  #currentDomain = null;
+  #doneCount = 0;
   #total = 0;
   #errorCount = 0;
-  #doneCount = 0;
-  #progressText = null;
-  #errorCountEl = null;
+  #countEl = null;
+  #summaryEl = null;
+  #statusEl = null;
 
   isRunning() {
     return this.#running;
   }
 
-  initProgress(t) {
-    this.#progressSeen = new Set();
-    this.#total = t;
-    this.#errorCount = 0;
+  #initProgress(total) {
+    this.#total = total;
     this.#doneCount = 0;
+    this.#errorCount = 0;
   }
 
-  dedupProgress(reqId, awemeId, index) {
-    const key = `${reqId}|${awemeId}|${index}`;
-    if (this.#progressSeen.has(key)) return false;
-    this.#progressSeen.add(key);
-    return true;
+  #updateCount() {
+    if (!this.#countEl) return;
+    const label = this.#currentDomain === "followings" ? "作者" : "作品";
+    this.#countEl.textContent = `已同步${label} ${this.#doneCount} / ${this.#total}`;
   }
 
-  countProgress(index, status) {
-    const done = ++this.#doneCount;
-    if (status !== "ok") this.#errorCount++;
-    return { done, total: this.#total, errors: this.#errorCount };
+  #setSummary(text) {
+    if (this.#summaryEl) this.#summaryEl.textContent = text || "";
+  }
+
+  #addTrashButton(onClick) {
+    const btn = document.createElement("button");
+    btn.className = "dy-btn flex-inline-center dy-btn-ghost";
+    btn.textContent = "稍后删除";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      await onClick();
+      this.closeSyncDialog();
+    });
+    dom.dialogFooter.appendChild(btn);
+  }
+
+  async #refreshWorks() {
+    const works = await services.loadWorks(state.currentGroupId);
+    store.set("works", works);
+    await groups.renderGroupTabs();
+  }
+
+  openSyncDialog(total, domain) {
+    this.#initProgress(total);
+    this.#currentDomain = domain;
+
+    const tmpl = document.getElementById("syncDialogBodyTemplate");
+    const body = tmpl.content.cloneNode(true);
+    this.#countEl = body.querySelector(".sync-count");
+    this.#summaryEl = body.querySelector(".sync-summary");
+    this.#statusEl = body.querySelector(".sync-status");
+
+    const label = domain === "followings" ? "作者" : "作品";
+    this.#countEl.textContent = `已同步${label} 0 / ${total}`;
+    this.#summaryEl.textContent = domain === "followings" ? "正在获取关注…" : "同步失败作品 0 个";
+    this.#statusEl.textContent = "SYNCING";
+
+    dialog.showDialog("同步作品", body, [], () => this.closeSyncDialog());
+  }
+
+  closeSyncDialog() {
+    dialog.closeDialog();
+    this.finish();
+  }
+
+  finish() {
+    this.#running = false;
+    this.#requestId = null;
+    this.#currentDomain = null;
+  }
+
+  onSyncProgress(msg) {
+    if (!this.#running || this.#currentDomain !== "works") return;
+    if (msg.requestId !== this.#requestId) return;
+
+    this.#doneCount++;
+    if (msg.status !== "ok") this.#errorCount++;
+    this.#updateCount();
+    this.#setSummary(`同步失败作品 ${this.#errorCount} 个`);
+  }
+
+  async onSyncDone(msg) {
+    if (!this.#running || this.#currentDomain !== "works") return;
+    if (msg && msg.requestId !== this.#requestId) return;
+
+    this.#running = false;
+
+    if (!msg || !msg.ok) {
+      if (this.#statusEl) this.#statusEl.textContent = msg?.error || "ERROR";
+      return;
+    }
+
+    await this.#refreshWorks();
+
+    this.#setSummary(`同步失败作品 ${msg.failed || 0} 个`);
+    if (this.#statusEl) this.#statusEl.textContent = "DONE";
+
+    const failedIds = msg.failedAwemeIds || [];
+    if (failedIds.length > 0) {
+      this.#addTrashButton(() => this.moveFailed(failedIds));
+    }
+  }
+
+  onFollowingProgress(msg) {
+    if (!this.#running || this.#currentDomain !== "followings") return;
+    if (this.#requestId !== null && msg.requestId !== this.#requestId) return;
+
+    this.#doneCount = msg.collected || 0;
+    this.#total = msg.total || 0;
+    this.#updateCount();
+    this.#setSummary("正在获取关注…");
   }
 
   async startSync(awemeIds) {
@@ -1384,12 +1464,10 @@ class Sync {
     if (!Array.isArray(awemeIds) || awemeIds.length === 0) return "EMPTY";
     this.#running = true;
 
-    // 关键修复:开始新任务前先通过 background 杀掉抖音标签页中可能残留的旧任务
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
 
     try {
       const res = await services.bgMsg({ type: "SYNC_WORKS", awemeIds });
-      // 关键修复:await 后立即检查取消标志
       if (!this.#running) return "CANCELLED";
       if (!res || res.error === "NO_DOUYIN_TAB") {
         this.#running = false;
@@ -1400,7 +1478,6 @@ class Sync {
         return { error: (res && res.error) || "未知错误" };
       }
       this.#requestId = res.requestId;
-      this.#worksRequestId = res.requestId;
       return { requestId: res.requestId };
     } catch (err) {
       this.#running = false;
@@ -1408,12 +1485,29 @@ class Sync {
     }
   }
 
-  async vmSyncCurrentGroup() {
-    if (this.#running) return null;
-    if (state.domain !== "works") return null;
+  async syncAwemeIds(awemeIds) {
+    if (this.isRunning()) return;
+    if (!Array.isArray(awemeIds) || awemeIds.length === 0) return;
+
+    this.openSyncDialog(awemeIds.length, "works");
+    const result = await this.startSync(awemeIds);
+
+    if (result === "NO_DOUYIN_TAB") {
+      if (this.#statusEl) this.#statusEl.textContent = "NO_DOUYIN_TAB";
+      return;
+    }
+    if (result && result.error) {
+      if (this.#statusEl) this.#statusEl.textContent = result.error;
+      return;
+    }
+  }
+
+  async syncCurrentGroup() {
+    if (this.isRunning()) return;
+    if (state.domain !== "works") return;
     const awemeIds = [...new Set(state.works.map((w) => String(w.awemeId)).filter(Boolean))];
-    if (awemeIds.length === 0) return "EMPTY";
-    return this.startSync(awemeIds);
+    if (awemeIds.length === 0) return;
+    await this.syncAwemeIds(awemeIds);
   }
 
   async vmSyncFollowings() {
@@ -1427,12 +1521,10 @@ class Sync {
       return "NO_SEC_UID";
     }
 
-    // 关键修复:开始新任务前先通过 background 杀掉抖音标签页中可能残留的旧任务
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
 
     try {
       const res = await services.bgMsg({ type: "FETCH_FOLLOWING", secUid });
-      // 关键修复:await 后立即检查取消标志,旧任务可能已被关闭按钮终结
       if (!this.#running) return "CANCELLED";
       if (res.error === "NO_DOUYIN_TAB") {
         this.#running = false;
@@ -1443,26 +1535,69 @@ class Sync {
         if (res.error && res.error.includes("NO_SIGNATURE")) return "NO_SIGNATURE";
         throw new Error(res.error || "FETCH_FAILED");
       }
-      // 关键修复:保存 requestId 用于过滤后续进度事件
-      this.#followingsRequestId = res.requestId || null;
+      this.#requestId = res.requestId || null;
 
-      // 关键修复:再次检查取消(防止关闭按钮在 await 期间触发)
       if (!this.#running) return "CANCELLED";
 
       const saveRes = await services.bgMsg({ type: "SAVE_FOLLOWINGS", followings: res.followings || [] });
-      // 关键修复:saveRes 后再次检查
       if (!this.#running) return "CANCELLED";
 
       await services.loadDomainData();
       this.#running = false;
-      this.#followingsRequestId = null;
+      this.#requestId = null;
       return saveRes;
     } catch (err) {
       this.#running = false;
-      this.#followingsRequestId = null;
+      this.#requestId = null;
       const msg = err.message || String(err);
       if (msg.includes("NO_SIGNATURE")) return "NO_SIGNATURE";
       return { error: msg };
+    }
+  }
+
+  async syncFollowings() {
+    if (this.isRunning()) return;
+    if (state.domain !== "followings") return;
+
+    this.openSyncDialog(0, "followings");
+
+    const result = await this.vmSyncFollowings();
+
+    if (result === null) return;
+
+    if (result === "NO_SEC_UID") {
+      if (this.#statusEl) this.#statusEl.textContent = "NO_SEC_UID";
+      return;
+    }
+
+    if (result === "NO_DOUYIN_TAB") {
+      if (this.#statusEl) this.#statusEl.textContent = "NO_DOUYIN_TAB";
+      return;
+    }
+
+    if (result === "NO_SIGNATURE") {
+      this.closeSyncDialog();
+      dialog.showNoSignatureDialog(config.URLS.USER_SELF + config.URLS.FOLLOWING_TAB, "关注", "同步关注列表");
+      return;
+    }
+
+    if (result === "CANCELLED") return;
+
+    if (result && result.error) {
+      if (this.#statusEl) this.#statusEl.textContent = result.error;
+      return;
+    }
+
+    if (result && result.added !== undefined) {
+      const fresh = await services.loadFollowings(state.currentGroupId);
+      store.set("followings", fresh);
+      store.notify("groups");
+      this.#setSummary(`新增关注 ${result.added}，取消关注 ${result.lost}`);
+      if (this.#statusEl) this.#statusEl.textContent = "DONE";
+      const lostUids = result.lostUids || [];
+      if (lostUids.length > 0) {
+        this.#addTrashButton(() => this.moveLostFollowings(lostUids));
+      }
     }
   }
 
@@ -1496,228 +1631,6 @@ class Sync {
       store.notify("groups");
     }
     return trashGroup;
-  }
-
-  finish() {
-    this.#running = false;
-    this.#requestId = null;
-    // 关键修复:同时清空按域跟踪的 requestId,关闭弹窗后旧进度事件不再被采纳
-    this.#worksRequestId = null;
-    this.#followingsRequestId = null;
-  }
-
-  getRequestId() {
-    return this.#requestId;
-  }
-
-  onFollowingProgress(msg) {
-    if (!this.isRunning() || state.domain !== "followings") return;
-    // 关键修复:#followingsRequestId 在 FETCH_FOLLOWING 响应返回后才设置,
-    // 但进度事件在 fetch 过程中就已经到达。还没设置时接受所有事件,
-    // 设置后再按 requestId 过滤以丢弃旧任务的残留事件
-    if (this.#followingsRequestId !== null && msg.requestId !== this.#followingsRequestId) return;
-    const { collected, total } = msg;
-    const countEl = document.getElementById("syncProgCount");
-    const fillEl = document.getElementById("syncProgFill");
-    if (!countEl || !fillEl) return;
-    if (total > 0) {
-      const pct = Math.round((collected / total) * 100);
-      countEl.textContent = `已获取 ${collected} / ${total} (${pct}%)`;
-      fillEl.style.width = pct + "%";
-    } else {
-      countEl.textContent = `已获取 ${collected}…`;
-      fillEl.style.width = "0%";
-    }
-  }
-
-  openSyncDialog(total) {
-    this.initProgress(total);
-
-    const tmpl = document.getElementById("syncDialogBodyTemplate");
-    const body = tmpl.content.cloneNode(true);
-    body.querySelector(".sync-progress-text").textContent = `准备同步… 0 / ${total}`;
-    body.querySelector(".sync-error-count").textContent = "0";
-
-    dialog.showDialog("同步中…", body, [], () => this.closeSyncDialog());
-
-    this.#progressText = dom.dialogBody.querySelector(".sync-progress-text");
-    this.#errorCountEl = dom.dialogBody.querySelector(".sync-error-count");
-    state.syncDialog = { requestId: null, total, errorCount: 0 };
-  }
-
-  closeSyncDialog() {
-    dialog.closeDialog();
-    state.syncDialog = null;
-    this.finish();
-  }
-
-  onSyncProgress(msg) {
-    const dlg = state.syncDialog;
-    if (!dlg) return;
-    if (msg.requestId !== this.getRequestId()) return;
-
-    if (!this.dedupProgress(msg.requestId, msg.awemeId, msg.index)) return;
-
-    const { done, total, errors } = this.countProgress(msg.index, msg.status);
-    this.#progressText.textContent = `同步中… ${done} / ${total}`;
-    this.#errorCountEl.textContent = errors;
-    if (msg.status !== "ok") dlg.errorCount++;
-  }
-
-  async onSyncDone(msg) {
-    const dlg = state.syncDialog;
-
-    if (dlg && msg && msg.requestId !== this.getRequestId()) {
-      return;
-    }
-
-    this.finish();
-
-    if (!msg || !msg.ok) {
-      if (dlg) {
-        dom.dialogTitle.textContent = "同步失败";
-        if (this.#progressText) this.#progressText.textContent = `❌ ${(msg && msg.error) || "未知错误"}`;
-      }
-      return;
-    }
-
-    if (!dlg) return;
-
-    dom.dialogTitle.textContent = "同步完成";
-
-    await this.#refreshAfterSync();
-
-    if (this.#progressText) this.#progressText.textContent = `✅ ${msg.refreshed || 0} / ⚠️ ${msg.failed || 0}`;
-
-    dom.dialogFooter.innerHTML = "";
-    const failedIds = msg.failedAwemeIds || [];
-    if (failedIds.length > 0) {
-      const laterBtn = document.createElement("button");
-      laterBtn.className = "dy-btn flex-inline-center dy-btn-ghost";
-      laterBtn.textContent = "稍后删除";
-      laterBtn.addEventListener("click", async () => {
-        laterBtn.disabled = true;
-        await this.moveFailed(failedIds);
-        this.closeSyncDialog();
-      });
-      dom.dialogFooter.appendChild(laterBtn);
-    }
-  }
-
-  async #refreshAfterSync() {
-    const works = await services.loadWorks(state.currentGroupId);
-    store.set("works", works);
-    await groups.renderGroupTabs();
-  }
-
-  async syncAwemeIds(awemeIds) {
-    if (this.isRunning()) return;
-    if (!Array.isArray(awemeIds) || awemeIds.length === 0) return;
-
-    this.openSyncDialog(awemeIds.length);
-    const result = await this.startSync(awemeIds);
-
-    if (result === "NO_DOUYIN_TAB") {
-      this.closeSyncDialog();
-      dialog.showFetchErrorDialog("NO_DOUYIN_TAB");
-      return;
-    }
-    if (result && result.error) {
-      this.closeSyncDialog();
-      const errTmpl = document.getElementById("syncErrorTemplate");
-      const errBody = errTmpl.content.cloneNode(true);
-      errBody.querySelector("p").textContent = result.error;
-      dialog.showDialog("同步失败", errBody, [{ text: "好的", primary: true, callback: () => dialog.closeDialog() }]);
-      return;
-    }
-    if (state.syncDialog && result && result.requestId) {
-      state.syncDialog.requestId = result.requestId;
-    }
-  }
-
-  async syncCurrentGroup() {
-    if (this.isRunning()) return;
-    if (state.domain !== "works") return;
-    const awemeIds = [...new Set(state.works.map((w) => String(w.awemeId)).filter(Boolean))];
-    if (awemeIds.length === 0) return;
-    await this.syncAwemeIds(awemeIds);
-  }
-
-  async syncFollowings() {
-    if (this.isRunning()) return;
-    if (state.domain !== "followings") return;
-
-    // 关键修复:注册 onClose,关闭按钮触发终止任务(等同作品域 closeSyncDialog)
-    dialog.showDialog(
-      "同步关注",
-      `<div class="sync-progress">
-        <div class="sync-progress-count" id="syncProgCount">0</div>
-        <div class="progress-bar-wrap"><div class="progress-bar-fill" id="syncProgFill"></div></div>
-      </div>`,
-      [],
-      () => {
-        // 终止本地任务状态(远端抓取由通用 dialog close handler 发 CANCEL_ACTIVE_TASK 信号杀灭)
-        this.finish();
-      },
-    );
-
-    const result = await this.vmSyncFollowings();
-
-    if (result === null) return;
-
-    if (result === "NO_SEC_UID") {
-      dom.dialogTitle.textContent = "需要打开抖音用户页面";
-      dom.dialogBody.innerHTML = "<p>请先在浏览器中打开一个抖音用户页面（可以是你的个人主页），然后重试。</p>";
-      dialog.showOkDialog();
-      return;
-    }
-
-    if (result === "NO_DOUYIN_TAB") {
-      dialog.showFetchErrorDialog("NO_DOUYIN_TAB");
-      return;
-    }
-
-    if (result === "NO_SIGNATURE") {
-      dialog.showNoSignatureDialog(config.URLS.USER_SELF + config.URLS.FOLLOWING_TAB, "关注", "同步关注列表");
-      return;
-    }
-
-    if (result === "CANCELLED") return;
-
-    if (result && result.error) {
-      const msg = result.error;
-      dom.dialogTitle.textContent = "同步失败";
-      let hint = msg;
-      if (msg.includes("NO_SEC_UID")) {
-        hint = "无法获取用户 ID，请确认已打开抖音用户页面";
-      } else if (msg.includes("TIMEOUT")) {
-        hint = "获取超时，可能是网络问题或关注数量过大";
-      }
-      dom.dialogBody.innerHTML = `<p>${hint}</p>`;
-      dialog.showOkDialog();
-      return;
-    }
-
-    if (result && result.added !== undefined) {
-      const fresh = await services.loadFollowings(state.currentGroupId);
-      store.set("followings", fresh);
-      store.notify("groups");
-      dom.dialogTitle.textContent = "同步完成";
-      const lostUids = result.lostUids || [];
-      dom.dialogBody.innerHTML = `<p>✅ ${result.added} 新增, ${result.updated} 更新, ${result.lost} 消失</p>`;
-      dom.dialogFooter.innerHTML = "";
-      if (lostUids.length > 0) {
-        const laterBtn = document.createElement("button");
-        laterBtn.className = "dy-btn flex-inline-center dy-btn-ghost";
-        laterBtn.textContent = "稍后删除";
-        laterBtn.addEventListener("click", async () => {
-          laterBtn.disabled = true;
-          await this.moveLostFollowings(lostUids);
-          dialog.closeDialog();
-        });
-        dom.dialogFooter.appendChild(laterBtn);
-      }
-    }
   }
 
   updateSyncBtnLabel() {
@@ -1831,14 +1744,12 @@ class Favorites {
       // 重置状态标志(远端抓取由通用 dialog close handler 发 CANCEL_ACTIVE_TASK 信号杀灭)
       state[cfg.fetchingKey] = false;
       state[cfg.cancelingKey] = false;
-      state[cfg.requestIdKey] = null;
       this.#activeCancel = null;
     });
 
     try {
       const res = await services.bgMsg(fetchArgs);
       if (!state[cfg.fetchingKey]) return;
-      state[cfg.requestIdKey] = res.requestId || null;
       if (!res.ok) throw new Error(res.error || "FETCH_FAILED");
 
       state[cfg.stateKey] = res.works || [];
@@ -2478,10 +2389,6 @@ class Detail {
 
   getDetailIndex() {
     return this.#index;
-  }
-
-  total() {
-    return state.works.length;
   }
 
   addCleanup(fn) {
@@ -3151,7 +3058,6 @@ dom.btnFavorites.addEventListener("click", () =>
     title: "扫描点赞",
     stateKey: "favoriteWorks",
     fetchingKey: "favoriteFetching",
-    requestIdKey: "favRequestId",
     cancelingKey: "cancelingFavorites",
     cancelType: "CANCEL_LIKE",
     formatStats: (total, unfollowed) => `已扫描 ${total} 个点赞作品，发现 ${unfollowed} 个未关注作者作品`,
@@ -3168,7 +3074,6 @@ dom.btnCollections.addEventListener("click", () =>
     title: "扫描收藏",
     stateKey: "collectionWorks",
     fetchingKey: "collectionFetching",
-    requestIdKey: "collectionRequestId",
     cancelingKey: "cancelingCollections",
     cancelType: "CANCEL_COLLECTION",
     formatStats: (total, unfollowed) => `${total} 件 · 未关注 ${unfollowed} 件`,

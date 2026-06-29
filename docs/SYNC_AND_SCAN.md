@@ -11,7 +11,6 @@
 
 ### background.js 循环（`handleSyncWorks`）
 - 生成 `requestId = crypto.randomUUID()`
-- `syncSessions.set(requestId, true)` 记录会话
 - 立即返回 `{ ok: true, requestId, total: awemeIds.length }`
 - 逐作品 for 循环：
   1. `sendToTabAsync('FETCH_SINGLE_WORK', { awemeId, timeout: CONFIG.TIMEOUT.REQUEST })` — 每次请求独立 requestId
@@ -105,7 +104,6 @@ favorites.openScanDialog({
   title: '扫描点赞',
   stateKey: 'favoriteWorks',          // state.favoriteWorks
   fetchingKey: 'favoriteFetching',    // state.favoriteFetching
-  requestIdKey: 'favRequestId',       // state.favRequestId
   cancelingKey: 'cancelingFavorites', // state.cancelingFavorites
   cancelType: 'CANCEL_LIKE',
   formatStats: (total, unfollowed) => `已扫描 ${total} 个点赞作品，发现 ${unfollowed} 个未关注作者作品`,
@@ -124,7 +122,6 @@ favorites.openScanDialog({
   title: '扫描收藏',
   stateKey: 'collectionWorks',
   fetchingKey: 'collectionFetching',
-  requestIdKey: 'collectionRequestId', // 注意：是 collectionRequestId，不是 colRequestId
   cancelingKey: 'cancelingCollections',
   cancelType: 'CANCEL_COLLECTION',
   formatStats: (total, unfollowed) => `${total} 件 · 未关注 ${unfollowed} 件`,

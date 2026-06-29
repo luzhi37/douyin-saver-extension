@@ -67,17 +67,16 @@ const CONFIG = {
     SECURITY_STATUS: 5000,
   },
   DELAY: {
-    MIN: 400,
-    MAX: 800,
+    MIN: 500,
+    MAX: 1000,
   },
   SYNC: {
-    BATCH_SIZE: 30,
+    BATCH_SIZE: 40,
     BATCH_PAUSE_MIN: 10000,
     BATCH_PAUSE_MAX: 20000,
     KEEPALIVE_INTERVAL: 2000,
   },
   GROUPS: {
-    DELETE_LATER_NAME: "稍后删除",
     ID_PREFIX: "custom_",
     DEFAULT_ID: "uncategorized",
   },
@@ -343,9 +342,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return asyncHandler(() => handleSyncWorks(message.awemeIds, sendResponse), sendResponse);
     case "GET_WORK":
       return asyncHandler(() => handleGetWork(message.awemeId, sendResponse), sendResponse);
-    case "SYNC_PROGRESS":
-      handleSyncProgress(message, sendResponse);
-      return false;
 
     // 关注域
     case "SAVE_FOLLOWINGS":
@@ -838,17 +834,6 @@ async function handleDeleteGroup(domain, groupId, sendResponse) {
 
 // ---------- 同步 Handler ----------
 
-const syncSessions = new Map();
-
-function handleSyncProgress(message, sendResponse) {
-  if (!syncSessions.has(message.requestId)) {
-    return sendResponse({ ok: false });
-  }
-  chrome.runtime
-    .sendMessage({ type: "SYNC_PROGRESS", ...message })
-    .catch((e) => console.warn("[DY] sync progress send failed:", e));
-  sendResponse({ ok: true });
-}
 
 const FATAL_ERRORS = new Set([
   "NO_DOUYIN_TAB", "TAB_QUERY_FAILED", "NO_LISTENER", "EMPTY_RESPONSE",
@@ -861,7 +846,6 @@ async function handleSyncWorks(awemeIds, sendResponse) {
   }
 
   const requestId = crypto.randomUUID();
-  syncSessions.set(requestId, true);
   let cancelled = false;
 
   const cancelHandler = (msg) => {
@@ -943,7 +927,6 @@ async function handleSyncWorks(awemeIds, sendResponse) {
   } catch (err) {
     sendSyncDone(requestId, { ok: false, error: err.message });
   }
-  syncSessions.delete(requestId);
 }
 
 // ---------- 数据工具 ----------
