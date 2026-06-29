@@ -38,13 +38,6 @@
       FETCH_PAGE: 15000,
       FETCH_DETAIL: 8000,
     },
-
-    PAGE: {
-      FAVORITE: 20,
-      COLLECTION: 20,
-      AUTHOR: 20,
-      FOLLOWING: 20,
-    },
     CANCEL: {
       COLLECTION_URL: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
       LIKE_URL: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
@@ -84,6 +77,7 @@
       CANCEL_ONE_LIKE_REQUEST: "DY_CANCEL_ONE_LIKE_REQUEST",
       CANCEL_ONE_LIKE_RESULT: "DY_CANCEL_ONE_LIKE_RESULT",
       BUTTON_CLICK: "DY_BUTTON_CLICK",
+      CAPTURE_BROWSER_FEATURES: "DY_CAPTURE_BROWSER_FEATURES",
     },
   };
 
@@ -138,7 +132,7 @@
     return url;
   }
 
-  const PAGE_KEYS = new Set(["cursor", "max_cursor", "min_cursor", "offset", "count"]);
+  const PAGE_KEYS = new Set(["offset", "count"]);
   function stripPageKeys(captured) {
     if (!captured) return null;
     const out = new Map();
@@ -159,19 +153,16 @@
     return work;
   }
 
-  async function fetchOneFavoritesPage(secUid, cursor, signal) {
+  async function fetchOneFavoritesPage(secUid, cursor, count, signal) {
     const url = buildUrl(
       CONFIG.API.FAVORITE,
       Object.assign({}, CONFIG.DEVICE_PARAMS, {
         sec_user_id: secUid,
-        count: String(CONFIG.PAGE.FAVORITE),
+        count: String(count),
         max_cursor: String(cursor),
       }),
     );
-    const merged = mergeParams(
-      url,
-      stripPageKeys(__capturedFavoriteQuery),
-    );
+    const merged = mergeParams(url, stripPageKeys(__capturedFavoriteQuery));
     const controller = new AbortController();
     if (signal) {
       if (signal.aborted) controller.abort();
@@ -195,7 +186,7 @@
       if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
       const items = (data.aweme_list || []).map((aw) => transformAwemeItem(aw, { includeAuthorFollowed: true }));
       const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
-      const nextCursor = data.cursor || data.max_cursor || cursor + CONFIG.PAGE.FAVORITE;
+      const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
         items,
         hasMore,
@@ -209,18 +200,15 @@
     }
   }
 
-  async function fetchOneCollectionPage(cursor, signal) {
+  async function fetchOneCollectionPage(cursor, count, signal) {
     const url = buildUrl(
       CONFIG.API.COLLECTION,
       Object.assign({}, CONFIG.DEVICE_PARAMS, {
-        count: String(CONFIG.PAGE.COLLECTION),
+        count: String(count),
         cursor: String(cursor),
       }),
     );
-    const merged = mergeParams(
-      url,
-      stripPageKeys(__capturedCollectionQuery),
-    );
+    const merged = mergeParams(url, stripPageKeys(__capturedCollectionQuery));
     const controller = new AbortController();
     if (signal) {
       if (signal.aborted) controller.abort();
@@ -247,7 +235,7 @@
       if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
       const items = (data.aweme_list || []).map((aw) => transformAwemeItem(aw, { includeAuthorFollowed: true }));
       const hasMore = data.has_more === true || data.has_more === 1;
-      const nextCursor = data.cursor || data.max_cursor || cursor + CONFIG.PAGE.COLLECTION;
+      const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
         items,
         hasMore,
@@ -465,14 +453,17 @@
     const url = typeof request === "string" ? request : request?.url;
     const options = args[1] || {};
     const isInternal = options._dyInternal === true;
-    const parsedUrl = !isInternal && url && typeof url === "string" && url.startsWith("http") ? shouldCapture(url) : null;
-    return origFetch.apply(this, args).then(async (response) => {
+    const parsedUrl =
+      !isInternal && url && typeof url === "string" && url.startsWith("http") ? shouldCapture(url) : null;
+    return origFetch.apply(this, args).then((response) => {
       if (response.ok && parsedUrl) {
         try {
           captureFromUrl(url, parsedUrl);
-          const data = await response.clone().json();
-          const works = await extractWorksFromResponse(url, data, parsedUrl);
-          dispatchWorks(works);
+          response.clone().json().then((data) => {
+            extractWorksFromResponse(url, data, parsedUrl).then((works) => {
+              dispatchWorks(works);
+            }).catch(() => {});
+          }).catch(() => {});
         } catch (e) {
           console.warn("[DY] capture works failed:", e);
         }
@@ -606,6 +597,33 @@
     }
   }
 
+  function collectBrowserFeatures() {
+    return {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      browserLanguage: navigator.language,
+      browserName: navigator.userAgent.includes("Edg")
+        ? "Edge"
+        : navigator.userAgent.includes("Chrome")
+          ? "Chrome"
+          : "Unknown",
+      browserVersion: (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || "139",
+      engineName: "Blink",
+      engineVersion: (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || "139",
+      osName: navigator.platform.includes("Win")
+        ? "Windows"
+        : navigator.platform.includes("Mac")
+          ? "Mac OS"
+          : "Unknown",
+      osVersion: "10",
+      screenWidth: screen.width,
+      screenHeight: screen.height,
+      cpuCoreNum: navigator.hardwareConcurrency || 4,
+      deviceMemory: navigator.deviceMemory || 4,
+      securityKey: getSecurityKey(),
+    };
+  }
+
   async function fetchFollowingPage(secUid, offset, count, externalSignal) {
     const url = buildUrl(
       CONFIG.API.FOLLOWING,
@@ -615,10 +633,7 @@
         count: String(count),
       }),
     );
-    const merged = mergeParams(
-      url,
-      __capturedFollowingQuery,
-    );
+    const merged = mergeParams(url, __capturedFollowingQuery);
     const controller = new AbortController();
     // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
     if (externalSignal) {
@@ -649,8 +664,7 @@
 
   // ===== 作者作品拉取 (tools 移植, 侧边栏用) =====
 
-  async function fetchAuthorWorks(secUid, startCursor) {
-    const count = CONFIG.PAGE.AUTHOR;
+  async function fetchAuthorWorks(secUid, startCursor, count) {
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
     try {
@@ -790,7 +804,7 @@
     const detail = event.detail || {};
     if (!detail.requestId) return;
     try {
-      const result = await fetchAuthorWorks(detail.secUid, detail.maxCursor || 0);
+      const result = await fetchAuthorWorks(detail.secUid, detail.maxCursor || 0, detail.count);
       document.dispatchEvent(
         new CustomEvent(CONFIG.EVENTS.FETCH_WORKS_RESULT, {
           detail: {
@@ -816,7 +830,7 @@
   });
 
   document.addEventListener(CONFIG.EVENTS.FETCH_FOLLOWING_PAGE_REQUEST, async (event) => {
-    const { requestId, secUid, offset } = event.detail || {};
+    const { requestId, secUid, offset, count } = event.detail || {};
     if (!requestId || !secUid) return;
     const sigSource =
       __capturedFollowingQuery || __capturedPostQuery || __capturedFavoriteQuery || __capturedCollectionQuery;
@@ -831,7 +845,7 @@
     const controller = new AbortController();
     setActiveTask(() => controller.abort());
     try {
-      const data = await fetchFollowingPage(secUid, offset || 0, CONFIG.PAGE.FOLLOWING, controller.signal);
+      const data = await fetchFollowingPage(secUid, offset || 0, count, controller.signal);
       if (data.status_code !== undefined && data.status_code !== 0)
         throw new Error("API_ERROR: status_code=" + data.status_code);
       const items = (data.followings || []).map((item) => ({
@@ -849,7 +863,7 @@
             ok: true,
             items,
             hasMore,
-            cursor: (offset || 0) + CONFIG.PAGE.FOLLOWING,
+            cursor: (offset || 0) + count,
             total: data.total,
           },
         }),
@@ -866,12 +880,12 @@
   });
 
   document.addEventListener(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_REQUEST, async (event) => {
-    const { requestId, secUid, cursor } = event.detail || {};
+    const { requestId, secUid, cursor, count } = event.detail || {};
     if (!requestId || !secUid) return;
     const controller = new AbortController();
     setActiveTask(() => controller.abort());
     try {
-      const result = await fetchOneFavoritesPage(secUid, cursor || 0, controller.signal);
+      const result = await fetchOneFavoritesPage(secUid, cursor || 0, count, controller.signal);
       document.dispatchEvent(
         new CustomEvent(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_RESULT, {
           detail: { requestId, ...result },
@@ -889,12 +903,12 @@
   });
 
   document.addEventListener(CONFIG.EVENTS.FETCH_COLLECTION_PAGE_REQUEST, async (event) => {
-    const { requestId, cursor } = event.detail || {};
+    const { requestId, cursor, count } = event.detail || {};
     if (!requestId) return;
     const controller = new AbortController();
     setActiveTask(() => controller.abort());
     try {
-      const result = await fetchOneCollectionPage(cursor || 0, controller.signal);
+      const result = await fetchOneCollectionPage(cursor || 0, count, controller.signal);
       document.dispatchEvent(
         new CustomEvent(CONFIG.EVENTS.FETCH_COLLECTION_PAGE_RESULT, {
           detail: { requestId, ...result },
@@ -1155,8 +1169,16 @@
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", startObserver);
+    document.addEventListener("DOMContentLoaded", () => {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.CAPTURE_BROWSER_FEATURES, { detail: collectBrowserFeatures() }),
+      );
+      startObserver();
+    });
   } else {
+    document.dispatchEvent(
+      new CustomEvent(CONFIG.EVENTS.CAPTURE_BROWSER_FEATURES, { detail: collectBrowserFeatures() }),
+    );
     startObserver();
   }
 })();

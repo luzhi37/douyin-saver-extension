@@ -27,6 +27,56 @@ CONFIG.DNR.RULES = [
       ],
     },
   },
+  {
+    id: 3, priority: 1,
+    condition: {
+      urlFilter: '||douyin.com/aweme/v1/web/',
+      resourceTypes: ['xmlhttprequest'],
+      excludedInitiatorDomains: ['www.douyin.com', 'douyin.com'],
+    },
+    action: {
+      type: 'modifyHeaders',
+      requestHeaders: [
+        { header: 'Sec-Fetch-Site', operation: 'remove' },
+        { header: 'Sec-Fetch-Mode', operation: 'remove' },
+        { header: 'Sec-Fetch-Dest', operation: 'remove' },
+        { header: 'Sec-Fetch-User', operation: 'remove' },
+        { header: 'Sec-Fetch-Storage-Access', operation: 'remove' },
+        { header: 'Origin', operation: 'remove' },
+        { header: 'Accept-Language', operation: 'remove' },
+        { header: 'Accept-Encoding', operation: 'set', value: 'gzip, deflate' },
+        { header: 'Referer', operation: 'set', value: 'https://www.douyin.com/' },
+      ],
+    },
+  },
+  {
+    id: 5, priority: 1,
+    condition: {
+      urlFilter: '||douyin.com/aweme/v1/web/aweme/collect/',
+      resourceTypes: ['xmlhttprequest'],
+      excludedInitiatorDomains: ['www.douyin.com', 'douyin.com'],
+    },
+    action: {
+      type: 'modifyHeaders',
+      requestHeaders: [
+        { header: 'Referer', operation: 'set', value: 'https://www.douyin.com/user/self?showTab=favorite_collection' },
+      ],
+    },
+  },
+  {
+    id: 6, priority: 1,
+    condition: {
+      urlFilter: '||douyin.com/aweme/v1/web/commit/item/digg/',
+      resourceTypes: ['xmlhttprequest'],
+      excludedInitiatorDomains: ['www.douyin.com', 'douyin.com'],
+    },
+    action: {
+      type: 'modifyHeaders',
+      requestHeaders: [
+        { header: 'Referer', operation: 'set', value: 'https://www.douyin.com/user/self?showTab=like' },
+      ],
+    },
+  },
 ];
 ```
 
@@ -34,6 +84,9 @@ CONFIG.DNR.RULES = [
 - `douyinvod.com`（视频 CDN）：强制设置 `Referer` 和 `Origin` 为抖音域名，防止防盗链拒绝
 - `douyinpic.com`（图片 CDN）：强制设置 `Referer` 为抖音域名
 - 这是详情页视频播放和封面图片加载能正常工作的关键
+- id:3 规则用于独立模式（background service worker 直接 fetch API）。Chrome 的 Service Worker 发起的请求自动带有 `Sec-Fetch-Site: chrome-extension://` 和 `Origin: chrome-extension://`，抖音服务器对扩展来源的请求会拒绝。DNR 在请求离开发送前删除这些浏览器特有头，并为所有 API 请求注入泛用 `Referer: https://www.douyin.com/`（`Referer` 在 Chrome SW fetch 中属于 forbidden header，JS 无法设置，必须通过 DNR）。原 id:4 因条件与此规则完全一致，已合并到本规则的 `requestHeaders` 数组中
+- id:5、id:6 规则分别为**取消收藏**和**取消点赞**端点注入精确的 `Referer`（带 `?showTab=favorite_collection` / `?showTab=like`），因为取消端点需要具体的页面 Referer 才能通过服务器校验
+- `excludedInitiatorDomains: ['www.douyin.com', 'douyin.com']` 确保页面自身的 API 请求的 `Sec-Fetch-*` 和 `Origin` 头**不被移除**——抖音页面内 JS 发起的请求需要携带这些头才能通过服务端校验
 - `setupDeclarativeNetRequest()` 在 `onInstalled` 和 `onStartup` 时通过 `updateDynamicRules` 动态注册（幂等更新）
 
 ## 2. 安全状态查询完整链路
