@@ -174,7 +174,7 @@ optgroup {
 .domain-switch {
   display: flex;
   background: rgba(255, 255, 255, 0.08);
-  border-radius: var(--dy-radius-pill);
+  border-radius: var(--dy-radius);
   padding: 3px;
   gap: 2px;
   flex-shrink: 0;
@@ -186,7 +186,7 @@ optgroup {
   top: 3px;
   bottom: 3px;
   left: 0;
-  border-radius: 18px;
+  border-radius: var(--dy-radius);
   background: rgba(255, 255, 255, 0.12);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s;
   pointer-events: none;
@@ -194,10 +194,13 @@ optgroup {
 }
 
 .ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 4px 18px;
   font-size: var(--dy-font-size-sm);
   font-weight: 500;
-  border-radius: 18px;
+  border-radius: var(--dy-radius);
   border: none;
   cursor: pointer;
   background: transparent;
@@ -228,7 +231,7 @@ optgroup {
   top: 2px;
   bottom: 2px;
   left: 0;
-  border-radius: var(--dy-radius-pill);
+  border-radius: var(--dy-radius);
   background: rgba(255, 255, 255, 0.12);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s;
   pointer-events: none;
@@ -262,9 +265,12 @@ optgroup {
 }
 
 .group-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 6px 14px;
   font-size: var(--dy-font-size-sm);
-  border-radius: var(--dy-radius-pill);
+  border-radius: var(--dy-radius);
   cursor: pointer;
   white-space: nowrap;
   color: var(--dy-text-secondary);
@@ -1090,13 +1096,14 @@ body.sidebar-open .following-stats {
 
 .detail-nav-btn {
   position: absolute;
-  left: 12px;
+  left: 16px;
   top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.45);
+  /* transform: translateY(-50%); */
+  width: 40px;
+  height: 40px;
+  border-radius: var(--dy-radius);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
   color: #fff;
   cursor: pointer;
   z-index: 2;
@@ -1106,7 +1113,7 @@ body.sidebar-open .following-stats {
 }
 
 .detail-nav-btn:hover {
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .detail-nav-btn:last-child {
@@ -1144,13 +1151,13 @@ body.sidebar-open .following-stats {
   position: fixed;
   top: 16px;
   left: 16px;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--dy-radius);
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(8px);
   cursor: pointer;
-  font-size: 18px;
+  font-size: 20px;
   border: none;
   color: #fff;
   z-index: 30;
