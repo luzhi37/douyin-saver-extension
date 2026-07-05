@@ -98,7 +98,7 @@ background 循环内 chrome.runtime.sendMessage({ type: 'FOLLOWING_PROGRESS', ..
 
 两个流程高度相似，共用 `Favorites.openScanDialog(cfg)`，通过 cfg 参数驱动差异。
 
-### 点赞（`options.js:3151`）
+### 点赞（`options.js:3103`）
 ```js
 favorites.openScanDialog({
   title: '扫描点赞',
@@ -116,7 +116,7 @@ favorites.openScanDialog({
 });
 ```
 
-### 收藏（`options.js:3167`）
+### 收藏（`options.js:3119`）
 ```js
 favorites.openScanDialog({
   title: '扫描收藏',
@@ -140,6 +140,24 @@ favorites.openScanDialog({
 3. 收到结果存入 `state[cfg.stateKey]`
 4. `#renderGrid()` 渲染未关注作品网格
 5. 添加 `cfg.cancelLabel` 按钮，点击触发 `services.bgMsg({ type: cfg.cancelType, awemeIds })` 取消
+
+### 消息路由与独立模式
+
+`FETCH_FOLLOWING`、`FETCH_FAVORITES` 和 `FETCH_COLLECTION` 在 background 消息路由中会先检查当前模式：
+
+```js
+case "FETCH_FOLLOWING":
+  return asyncHandler(async () => {
+    const { independentMode } = await chrome.storage.local.get("independentMode");
+    if (independentMode) return handleIndependentFetchFollowing(message.secUid, sendResponse);
+    return handleFetchFollowing(message.secUid, sendResponse);
+  }, sendResponse);
+```
+
+- `FETCH_FOLLOWING`：独立模式下直接走 `handleIndependentFetchFollowing()`，已验证 ✅（background 内独立 handler，不依赖标签页）
+- `FETCH_FAVORITES`：独立模式下仍通过 `withDouyinTab()` 回退（该端点触发 Turing 验证，无法纯 background fetch）
+- `FETCH_COLLECTION`：独立模式下直接走 `handleIndependentFetchCollection()`，已验证 ✅（background 内独立 handler，不依赖标签页）
+- `CANCEL_LIKE` / `CANCEL_COLLECTION`：独立模式下直接走 `handleIndependentCancel()`（background 内循环 POST），已验证收藏取消 ✅，需 `browserFeatures.securityKey`（首次需访问 douyin.com 页面以捕获）
 
 ### background.js 循环（`handleFetchFavorites` / `handleFetchCollection`）
 
@@ -186,7 +204,7 @@ services.bgMsg({ type: cfg.cancelType, awemeIds: ids });
 
 ### background.js → content.js → inject.js（background-driven per-awemeId 循环）
 ```js
-// background.js handleCancelLike / handleCancelCollection
+// background.js runCancelBatch (替代 handleCancelLike / handleCancelCollection)
 for (let i = 0; i < awemeIds.length && !cancelled; i++) {
   const resp = await sendToTabAsync('CANCEL_ONE_LIKE', {
     awemeId: awemeIds[i],
@@ -249,6 +267,44 @@ options.js 通过 `favorites.onCancelProgress` / `favorites.onCancelDone` 监听
 
 **AUTH_FAILED 提示**：单个 XHR 返回 401/403 时抛 `AUTH_FAILED` 错误,该项记入失败列表但不中断整个批次。最终 toast 显示成功/失败数量。
 
+### 独立模式取消流程
+
+独立模式下 `handleIndependentCancel()` 直接在 background 内循环，不再经过 content→inject 的 XHR 路径：
+
+```js
+async function handleIndependentCancel(awemeIds, kind, sendResponse) {
+  const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
+  const key = (browserFeatures && browserFeatures.securityKey) || "";
+  const ep = CANCEL_ENDPOINTS[kind];
+  // ...
+  for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+    const resp = await fetch(ep.url, {
+      method: "POST",
+      credentials: "include",         // 浏览器自动携带 cookie
+      referrer: ep.referrer,
+      referrerPolicy: "unsafe-url",
+      headers: {
+        "content-type": ep.type,
+        ...(key ? { "bd-ticket-guard-ree-public-key": key } : {}),
+      },
+      body: ep.body(awemeIds[i]),
+    });
+  }
+}
+```
+
+**与 tab 模式的差异**：
+| 维度 | Tab 模式 (inject.js XHR) | 独立模式 (background fetch) |
+|---|---|---|
+| 网络引擎 | `XMLHttpRequest`（页面上下文） | `fetch()`（Service Worker） |
+| Cookie | `withCredentials: true` 自动携带 | `credentials: "include"` 自动携带 |
+| `Referer` | JS 可直接设 header | forbidden header，靠 DNR rules 5/6 注入 |
+| `bd-ticket-guard-ree-public-key` | `getSecurityKey()` 从 localStorage 读取 | `browserFeatures.securityKey`（从 storage 读取，首次需浏览 douyin.com 捕获） |
+| Body 格式 | `application/x-www-form-urlencoded` | 同左 |
+| 取消信号 | `DY_CANCEL_ACTIVE_TASK` 经 content→inject | `CANCEL_ACTIVE_TASK` 直接在 background 取消循环 |
+
+**依赖条件**：独立模式取消需要 `browserFeatures.securityKey` 已捕获（用户需至少打开过一次 douyin.com 页面）。若 key 为空，handler 仍然执行但服务器会拒绝请求。
+
 ### TIMEOUT 概览
 background 侧单次 Tab 请求超时使用 `CONFIG.TIMEOUT.REQUEST = 30000`（由 `sendToTab` 主导）。inject.js 侧另有独立超时：`TIMEOUT.FETCH_PAGE = 15000`（单页 fetch 超时）、`TIMEOUT.FETCH_DETAIL = 8000`（详情 fetch）。安全面板查询保留独立的 `SECURITY_STATUS = 5000`（UI 阻塞场景）。
 
@@ -276,7 +332,8 @@ services.bgMsg({ type: 'FETCH_WORKS_PAGE', secUid, cursor })
 - 若内容不足以填满容器，递归调用 `#loadMoreWorks()`
 
 ### 超时分级
-`sendToTab('FETCH_WORKS_PAGE', { secUid, cursor, timeout: CONFIG.TIMEOUT.REQUEST })`（background 侧 30s 超时；content.js 侧 `requestResponse` 硬编码 60s 兜底）
+- **Tab 模式**：`sendToTab('FETCH_WORKS_PAGE', { secUid, cursor, timeout: CONFIG.TIMEOUT.REQUEST })`（background 侧 30s 超时；content.js 侧 `requestResponse` 硬编码 60s 兜底）
+- **独立模式**：直接调用 `independentRequest()`（background 侧 `CONFIG.TIMEOUT.REQUEST` 超时），无 content.js 转发环节
 
 ### inject.js 抓取（`fetchAuthorWorks(secUid, startCursor)`）
 - **API**：`/aweme/v1/web/aweme/post/`

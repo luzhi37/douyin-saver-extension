@@ -1,4 +1,4 @@
-// ---------- config ----------
+﻿// ---------- config ----------
 const config = {
   // 视频重试
   VIDEO_RETRY_DELAYS: [200, 400, 600],
@@ -109,7 +109,7 @@ const dom = {
   menuDropdown: document.querySelector("#menuDropdown"),
   menuStorage: document.querySelector("#menuStorage"),
   btnRetry: document.querySelector("#btnRetry"),
-  btnSecurityStatus: document.querySelector("#btnSecurityStatus"),
+  btnSettings: document.querySelector("#btnSettings"),
   sidebar: document.querySelector("#sidebar"),
   sidebarBody: document.querySelector("#sidebarBody"),
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
@@ -247,6 +247,8 @@ const services = {
         if (m2) return m2[1];
       } catch (_) {}
     }
+    const { independentMode, secUid } = await chrome.storage.local.get(["independentMode", "secUid"]);
+    if (independentMode && secUid) return secUid;
     return "";
   },
 
@@ -1642,6 +1644,237 @@ class Sync {
 
 const sync = new Sync();
 
+// ---------- Settings ----------
+// ---------- Status readout helpers (was SecurityStatus) ----------
+function _statusTimeStr(updatedAt) {
+  return updatedAt ? new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+}
+
+function _toggleTruncated(el, hint) {
+  if (!el) return;
+  const expanded = el.classList.toggle("sec-expanded");
+  el.classList.toggle("sec-truncate", !expanded);
+  if (hint) hint.textContent = expanded ? "[收起]" : "[展开]";
+}
+
+function toggleKeyExpand(root) {
+  const text = root.querySelector("#secKeyValueText");
+  const hint = root.querySelector("#secKeyValue .sec-expand-hint");
+  _toggleTruncated(text, hint);
+}
+
+function toggleSigExpand(root, rowId) {
+  const row = root.querySelector("#" + rowId);
+  if (!row) return;
+  const text = row.querySelector(".sec-truncate, .sec-expanded");
+  const hint = row.querySelector(".sec-expand-hint");
+  if (!text || !hint || hint.classList.contains("hidden")) return;
+  _toggleTruncated(text, hint);
+}
+
+function renderStatusKey(root, key, updatedAt) {
+  const statusEl = root.querySelector("#secKeyStatus");
+  const valueEl = root.querySelector("#secKeyValueText");
+  const expandHint = root.querySelector("#secKeyValue .sec-expand-hint");
+  const hintEl = root.querySelector("#secKeyHint");
+  if (key) {
+    const t = _statusTimeStr(updatedAt);
+    statusEl.textContent = t ? `✅ 可用 · ${t}` : "✅ 可用";
+    statusEl.className = "sec-value sec-ok";
+    valueEl.textContent = key;
+    valueEl.classList.add("sec-truncate");
+    valueEl.classList.remove("sec-expanded");
+    if (expandHint) {
+      expandHint.classList.remove("hidden");
+      expandHint.textContent = "[展开]";
+    }
+    hintEl.classList.add("hidden");
+  } else {
+    statusEl.textContent = "❌ 不可用";
+    statusEl.className = "sec-value sec-err";
+    valueEl.textContent = "—";
+    valueEl.classList.add("sec-truncate");
+    valueEl.classList.remove("sec-expanded");
+    if (expandHint) expandHint.classList.add("hidden");
+    hintEl.classList.remove("hidden");
+    hintEl.textContent = "请确保抖音页面已打开且您已登录 → 刷新抖音页面（按 F5） → 等待页面加载完成（约 3-5 秒） → 返回此处点击刷新按钮";
+  }
+}
+
+function renderStatusSig(root, sig, rowId, valueId, guidance) {
+  const valueEl = root.querySelector("#" + valueId);
+  const statusEl = root.querySelector("#" + valueId.replace(/Value$/, "Status"));
+  const expandHint = root.querySelector("#" + rowId + " .sec-expand-hint");
+  const hintEl = root.querySelector("#" + valueId.replace(/Value$/, "Hint"));
+  const v = sig?.value || "";
+  const t = sig?.updatedAt || 0;
+  if (v) {
+    const ts = _statusTimeStr(t);
+    statusEl.textContent = ts ? `✅ 已捕获 · ${ts}` : "✅ 已捕获";
+    statusEl.className = "sec-value sec-ok";
+    valueEl.textContent = v;
+    valueEl.className = "sec-value sec-truncate";
+    valueEl.classList.remove("sec-expanded");
+    if (expandHint) {
+      expandHint.classList.remove("hidden");
+      expandHint.textContent = "[展开]";
+    }
+    hintEl.classList.add("hidden");
+  } else {
+    statusEl.textContent = "❌ 未捕获";
+    statusEl.className = "sec-value sec-err";
+    valueEl.textContent = "—";
+    valueEl.className = "sec-value sec-err";
+    valueEl.classList.remove("sec-expanded");
+    if (expandHint) expandHint.classList.add("hidden");
+    hintEl.classList.remove("hidden");
+    hintEl.textContent = guidance;
+  }
+}
+
+function renderStatusHooks(root, hooks) {
+  const fetchEl = root.querySelector("#secHookFetch");
+  const xhrEl = root.querySelector("#secHookXhr");
+  fetchEl.textContent = hooks.fetch ? "✅ 运行中" : "❌ 未运行";
+  fetchEl.className = "sec-value " + (hooks.fetch ? "sec-ok" : "sec-err");
+  xhrEl.textContent = hooks.xhr ? "✅ 运行中" : "❌ 未运行";
+  xhrEl.className = "sec-value " + (hooks.xhr ? "sec-ok" : "sec-err");
+}
+
+const settings = {
+  async openPanel() {
+    const tmpl = document.getElementById("settingsDialogTemplate");
+    const body = tmpl.content.cloneNode(true);
+    dialog.showDialog("设置", body, [
+      { text: "刷新", primary: true, callback: () => this._refresh() },
+    ]);
+    this._dialogBody = dom.dialogBody;
+    this._bind();
+    this._bindStatus();
+    state.preventDialogClose = true;
+    try {
+      await this._refresh();
+    } finally {
+      state.preventDialogClose = false;
+    }
+  },
+
+  async _refresh() {
+    const [ci, bf, { independentMode }, msRes, secRes] = await Promise.all([
+      services.bgMsg({ type: "GET_COOKIE_INFO" }),
+      services.bgMsg({ type: "GET_BROWSER_FEATURES" }),
+      chrome.storage.local.get("independentMode"),
+      services.bgMsg({ type: "GET_MSTOKEN" }),
+      services.bgMsg({ type: "GET_SECURITY_STATUS" }).catch((err) => ({ ok: false, error: String(err && err.message || err) })),
+    ]);
+    const $ = (id) => this._dialogBody.querySelector("#" + id);
+    const cookieList = $("settingsCookieList");
+    cookieList.innerHTML = "";
+    const pairs = ci?.pairs || [];
+    for (const p of pairs) {
+      const item = document.createElement("div");
+      item.className = "cookie-item";
+      const key = document.createElement("span");
+      key.className = "cookie-key";
+      key.textContent = p.key;
+      const val = document.createElement("code");
+      val.className = "cookie-val";
+      val.textContent = "***" + String(p.value || "").slice(-8);
+      item.appendChild(key);
+      item.appendChild(val);
+      cookieList.appendChild(item);
+    }
+    if (pairs.length === 0) {
+      const hint = document.createElement("p");
+      hint.className = "settings-hint";
+      hint.textContent = "未捕获到 Cookie，请打开抖音页面";
+      cookieList.appendChild(hint);
+    }
+    const chk = $("settingsChkMode");
+    chk.checked = independentMode === true;
+    $("settingsModeHint").textContent = "";
+    const features = bf?.features;
+    const list = $("settingsBFList");
+    list.innerHTML = features
+      ? Object.entries(features)
+          .filter(([k]) => k !== "securityKey")
+          .map(
+            ([k, v]) =>
+              `<div class="bf-item"><span class="bf-label">${k}</span><span class="bf-value">${String(v).slice(0, 60)}</span></div>`,
+          )
+          .join("")
+      : '<span class="settings-hint">未捕获，将使用默认值。打开抖音页面后可自动捕获。</span>';
+    // secUid
+    const { secUid } = await chrome.storage.local.get("secUid");
+    if ($("settingsSecUid")) $("settingsSecUid").value = secUid || "";
+    // ponytail: status readout — independent sub-fetch failure should not block the rest
+    this._renderStatus(secRes);
+  },
+
+  _bindStatus() {
+    const $ = (id) => this._dialogBody.querySelector("#" + id);
+    const root = this._dialogBody;
+    const keyRow = $("secKeyValue");
+    if (keyRow) keyRow.addEventListener("click", () => toggleKeyExpand(root));
+    for (const id of ["secSigFollowing", "secSigPost", "secSigFavorite", "secSigCollection"]) {
+      const row = $(id);
+      if (row) row.addEventListener("click", () => toggleSigExpand(root, id));
+    }
+  },
+
+  _renderStatus(secRes) {
+    const root = this._dialogBody;
+    if (!root) return;
+    // ponytail: a failed sub-fetch only paints the status sections, never blocks others
+    if (!secRes || !secRes.ok || !secRes.status) {
+      const errMsg = secRes?.error || "QUERY_FAILED";
+      const targets = ["secKeyStatus", "secSigFollowingStatus", "secSigPostStatus", "secSigFavoriteStatus", "secSigCollectionStatus", "secHookFetch", "secHookXhr"];
+      for (const id of targets) {
+        const el = root.querySelector("#" + id);
+        if (!el) continue;
+        if (id === "secHookFetch" || id === "secHookXhr") {
+          el.textContent = "❌ 查询失败";
+        } else {
+          el.textContent = `❌ 查询失败：${errMsg}`;
+        }
+        el.className = "sec-value sec-err";
+      }
+      return;
+    }
+    const s = secRes.status;
+    renderStatusKey(root, s.key, s.keyUpdatedAt);
+    renderStatusSig(root, s.signatures?.following, "secSigFollowing", "secSigFollowingValue", "请在抖音页面访问关注列表，等待列表加载后返回刷新状态");
+    renderStatusSig(root, s.signatures?.post, "secSigPost", "secSigPostValue", "请在抖音页面访问任意作者主页，等待作品加载后返回刷新状态");
+    renderStatusSig(root, s.signatures?.favorite, "secSigFavorite", "secSigFavoriteValue", "请在抖音页面访问喜欢列表，等待加载后返回刷新状态");
+    renderStatusSig(root, s.signatures?.collection, "secSigCollection", "secSigCollectionValue", "请在抖音页面访问收藏列表，等待加载后返回刷新状态");
+    renderStatusHooks(root, s.hooks);
+  },
+
+  _bind() {
+    const $ = (id) => this._dialogBody.querySelector("#" + id);
+    // ponytail: section titles toggle a .collapsed class; CSS grid-template-rows handles the animation
+    this._dialogBody.querySelectorAll(".settings-section-title").forEach((h3) => {
+      h3.addEventListener("click", () => {
+        h3.closest(".settings-section").classList.toggle("collapsed");
+      });
+    });
+    $("settingsChkMode").addEventListener("change", async (e) => {
+      await services.bgMsg({ type: "SET_MODE", enabled: e.target.checked });
+      await this._refresh();
+    });
+    const secUidInput = $("settingsSecUid");
+    if (secUidInput) {
+      let tid;
+      secUidInput.addEventListener("input", () => {
+        clearTimeout(tid);
+        tid = setTimeout(async () => {
+          await chrome.storage.local.set({ secUid: secUidInput.value.trim() });
+        }, 500);
+      });
+    }
+  },
+};
+
 // ---------- Favorites ----------
 class Favorites {
   #activeCancel = null;
@@ -1727,7 +1960,8 @@ class Favorites {
 
     let fetchArgs = cfg.buildFetchArgs();
     if (cfg.needSecUid) {
-      const secUid = await services.findSecUid();
+      const { independentMode } = await chrome.storage.local.get("independentMode");
+      const secUid = independentMode ? "self" : await services.findSecUid();
       if (!secUid) {
         dialog.showDialog("需要打开抖音用户页面", `<p>请先在浏览器中打开一个抖音用户页面，然后重试。</p>`, [
           { text: "好的", primary: true, callback: () => dialog.closeDialog() },
@@ -1769,6 +2003,11 @@ class Favorites {
       cancelBtn.className = "dy-btn flex-inline-center dy-btn-danger";
       cancelBtn.textContent = unfollowed.length > 0 ? `${cfg.cancelLabel} (${unfollowed.length})` : cfg.cancelLabel;
       cancelBtn.disabled = unfollowed.length === 0;
+      const { independentMode } = await chrome.storage.local.get("independentMode");
+      if (independentMode) {
+        cancelBtn.disabled = true;
+        cancelBtn.title = "独立模式下无法取消";
+      }
       cancelBtn.addEventListener("click", async () => {
         const targets = state[cfg.stateKey].filter((w) => w.authorFollowed === false);
         if (targets.length === 0) return;
@@ -1798,6 +2037,13 @@ class Favorites {
       const msg = err.message || String(err);
       if (msg.includes("NO_SIGNATURE")) {
         dialog.showNoSignatureDialog(cfg.noSignatureUrl, cfg.noSignatureStep, cfg.noSignatureScan);
+        state[cfg.fetchingKey] = false;
+        return;
+      }
+      if (msg.includes("NEED_TAB")) {
+        dialog.showDialog("需要打开抖音页面", `<p>请在浏览器中先打开一个抖音页面，然后重试。</p>`, [
+          { text: "好的", primary: true, callback: () => dialog.closeDialog() },
+        ]);
         state[cfg.fetchingKey] = false;
         return;
       }
@@ -1842,207 +2088,7 @@ class Favorites {
 
 const favorites = new Favorites();
 
-// ---------- SecurityStatus ----------
-class SecurityStatus {
-  #open = false;
 
-  openPanel() {
-    if (this.#open) return;
-    this.#open = true;
-
-    const tmpl = document.getElementById("securityStatusTemplate");
-    const body = tmpl.content.cloneNode(true);
-    dialog.showDialog("安全状态", body, [], () => this.closePanel());
-
-    const keyRow = document.getElementById("secKeyValue");
-    if (keyRow) {
-      keyRow.addEventListener("click", () => this.#toggleKeyExpand());
-    }
-
-    for (const id of ["secSigFollowing", "secSigPost", "secSigFavorite", "secSigCollection"]) {
-      const row = document.getElementById(id);
-      if (row) {
-        row.addEventListener("click", () => this.#toggleSigExpand(id));
-      }
-    }
-
-    this.#queryAndRender();
-  }
-
-  #toggleTruncated(el, hint) {
-    if (!el) return;
-    const expanded = el.classList.toggle("sec-expanded");
-    el.classList.toggle("sec-truncate", !expanded);
-    if (hint) hint.textContent = expanded ? "[收起]" : "[展开]";
-  }
-
-  #toggleKeyExpand() {
-    const text = document.getElementById("secKeyValueText");
-    const hint = document.querySelector("#secKeyValue .sec-expand-hint");
-    this.#toggleTruncated(text, hint);
-  }
-
-  #toggleSigExpand(rowId) {
-    const row = document.getElementById(rowId);
-    if (!row) return;
-    const text = row.querySelector(".sec-truncate, .sec-expanded");
-    const hint = row.querySelector(".sec-expand-hint");
-    if (!text || !hint || hint.classList.contains("hidden")) return;
-    this.#toggleTruncated(text, hint);
-  }
-
-  closePanel() {
-    this.#open = false;
-    dialog.closeDialog();
-  }
-
-  async #queryAndRender() {
-    state.preventDialogClose = true;
-    try {
-      const res = await services.bgMsg({ type: "GET_SECURITY_STATUS" });
-      if (!res.ok || !res.status) throw new Error(res.error || "QUERY_FAILED");
-      this.#render(res.status);
-    } catch (e) {
-      this.#renderError(e.message);
-    } finally {
-      state.preventDialogClose = false;
-    }
-  }
-
-  #render(status) {
-    this.#renderKey(status.key, status.keyUpdatedAt);
-    this.#renderSig(
-      "following",
-      status.signatures.following,
-      "secSigFollowing",
-      "secSigFollowingValue",
-      "secSigFollowingStatus",
-      "secSigFollowingHint",
-      '请在抖音页面访问"关注"列表，等待列表加载后返回刷新状态',
-    );
-    this.#renderSig(
-      "post",
-      status.signatures.post,
-      "secSigPost",
-      "secSigPostValue",
-      "secSigPostStatus",
-      "secSigPostHint",
-      "请在抖音页面访问任意作者主页，等待作品加载后返回刷新状态",
-    );
-    this.#renderSig(
-      "favorite",
-      status.signatures.favorite,
-      "secSigFavorite",
-      "secSigFavoriteValue",
-      "secSigFavoriteStatus",
-      "secSigFavoriteHint",
-      '请在抖音页面访问"喜欢"列表，等待加载后返回刷新状态',
-    );
-    this.#renderSig(
-      "collection",
-      status.signatures.collection,
-      "secSigCollection",
-      "secSigCollectionValue",
-      "secSigCollectionStatus",
-      "secSigCollectionHint",
-      '请在抖音页面访问"收藏"列表，等待加载后返回刷新状态',
-    );
-    this.#renderHooks(status.hooks);
-  }
-
-  #renderKey(key, updatedAt) {
-    const statusEl = document.getElementById("secKeyStatus");
-    const valueEl = document.getElementById("secKeyValueText");
-    const expandHint = document.querySelector("#secKeyValue .sec-expand-hint");
-    const hintEl = document.getElementById("secKeyHint");
-
-    if (key) {
-      const timeStr = updatedAt ? new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "";
-      statusEl.textContent = timeStr ? `✅ 可用 · ${timeStr}` : "✅ 可用";
-      statusEl.className = "sec-value sec-ok";
-      valueEl.textContent = key;
-      valueEl.dataset.fullValue = key;
-      valueEl.classList.add("sec-truncate");
-      valueEl.classList.remove("sec-expanded");
-      if (expandHint) {
-        expandHint.classList.remove("hidden");
-        expandHint.textContent = "[展开]";
-      }
-      hintEl.classList.add("hidden");
-    } else {
-      statusEl.textContent = "❌ 不可用";
-      statusEl.className = "sec-value sec-err";
-      valueEl.textContent = "—";
-      valueEl.dataset.fullValue = "";
-      valueEl.classList.add("sec-truncate");
-      valueEl.classList.remove("sec-expanded");
-      if (expandHint) expandHint.classList.add("hidden");
-      hintEl.classList.remove("hidden");
-      hintEl.textContent =
-        '请确保抖音页面已打开且您已登录 → 刷新抖音页面（按 F5） → 等待页面加载完成（约 3-5 秒） → 返回此处点击"刷新状态"';
-    }
-  }
-
-  #renderSig(type, sig, rowId, valueId, statusId, hintId, guidance) {
-    const valueEl = document.getElementById(valueId);
-    const statusEl = document.getElementById(statusId);
-    const expandHint = document.getElementById(rowId)?.querySelector(".sec-expand-hint");
-    const hintEl = document.getElementById(hintId);
-    const v = sig?.value || "";
-    const t = sig?.updatedAt || 0;
-
-    if (v) {
-      const timeStr = t ? new Date(t).toLocaleTimeString("zh-CN", { hour12: false }) : "";
-      statusEl.textContent = timeStr ? `✅ 已捕获 · ${timeStr}` : "✅ 已捕获";
-      statusEl.className = "sec-value sec-ok";
-      valueEl.textContent = v;
-      valueEl.dataset.fullValue = v;
-      valueEl.className = "sec-value sec-truncate";
-      valueEl.classList.remove("sec-expanded");
-      if (expandHint) {
-        expandHint.classList.remove("hidden");
-        expandHint.textContent = "[展开]";
-      }
-      hintEl.classList.add("hidden");
-    } else {
-      statusEl.textContent = "❌ 未捕获";
-      statusEl.className = "sec-value sec-err";
-      valueEl.textContent = "—";
-      valueEl.dataset.fullValue = "";
-      valueEl.className = "sec-value sec-err";
-      valueEl.classList.remove("sec-expanded");
-      if (expandHint) expandHint.classList.add("hidden");
-      hintEl.classList.remove("hidden");
-      hintEl.textContent = guidance;
-    }
-  }
-
-  #renderHooks(hooks) {
-    const fetchEl = document.getElementById("secHookFetch");
-    const xhrEl = document.getElementById("secHookXhr");
-
-    fetchEl.textContent = hooks.fetch ? "✅ 运行中" : "❌ 未运行";
-    fetchEl.className = "sec-value " + (hooks.fetch ? "sec-ok" : "sec-err");
-
-    xhrEl.textContent = hooks.xhr ? "✅ 运行中" : "❌ 未运行";
-    xhrEl.className = "sec-value " + (hooks.xhr ? "sec-ok" : "sec-err");
-  }
-
-  #renderError(msg) {
-    const fetchEl = document.getElementById("secHookFetch");
-    const xhrEl = document.getElementById("secHookXhr");
-    if (fetchEl) {
-      fetchEl.textContent = "❌ 查询失败";
-      fetchEl.className = "sec-value sec-err";
-    }
-    if (xhrEl) {
-      xhrEl.textContent = "❌ 查询失败";
-      xhrEl.className = "sec-value sec-err";
-    }
-  }
-}
-
-const securityStatus = new SecurityStatus();
 
 // ---------- WorksGrid ----------
 class WorksGrid extends VirtualGrid {
@@ -3086,7 +3132,7 @@ dom.btnCollections.addEventListener("click", () =>
   }),
 );
 
-dom.btnSecurityStatus?.addEventListener("click", () => securityStatus.openPanel());
+dom.btnSettings?.addEventListener("click", () => settings.openPanel());
 
 dom.btnReset.addEventListener("click", async () => {
   const domain = state.domain;

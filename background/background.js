@@ -1,4 +1,13 @@
 import { storage } from "./storage.js";
+import {
+  ABogus,
+  XBogus,
+  XGnarly,
+  getVerifyFp,
+  parseCookieToPairs,
+  generateRandomMsToken,
+  fetchDeviceId,
+} from "./crypto.js";
 
 // ===== 抖音数据管理 - Background Service Worker =====
 
@@ -60,6 +69,59 @@ const CONFIG = {
           ],
         },
       },
+      {
+        id: 3,
+        priority: 1,
+        condition: {
+          urlFilter: "||douyin.com/aweme/v1/web/",
+          resourceTypes: ["xmlhttprequest"],
+          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+        },
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [
+            { header: "Sec-Fetch-Site", operation: "remove" },
+            { header: "Sec-Fetch-Mode", operation: "remove" },
+            { header: "Sec-Fetch-Dest", operation: "remove" },
+            { header: "Sec-Fetch-User", operation: "remove" },
+            { header: "Sec-Fetch-Storage-Access", operation: "remove" },
+            { header: "Origin", operation: "remove" },
+            { header: "Accept-Language", operation: "remove" },
+            { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
+            { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
+          ],
+        },
+      },
+      {
+        id: 5,
+        priority: 1,
+        condition: {
+          urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
+          resourceTypes: ["xmlhttprequest"],
+          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+        },
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [
+            { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=favorite_collection" },
+          ],
+        },
+      },
+      {
+        id: 6,
+        priority: 1,
+        condition: {
+          urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
+          resourceTypes: ["xmlhttprequest"],
+          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+        },
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [
+            { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
+          ],
+        },
+      },
     ],
   },
   TIMEOUT: {
@@ -80,7 +142,527 @@ const CONFIG = {
     ID_PREFIX: "custom_",
     DEFAULT_ID: "uncategorized",
   },
+  PAGE: {
+    FAVORITE: 20,
+    COLLECTION: 20,
+    AUTHOR: 20,
+    FOLLOWING: 20,
+  },
 };
+
+// ---------- 独立模式状态 ----------
+let abOgus = null;
+
+async function ensureABogus() {
+  if (abOgus) return;
+  const { browserFeatures } = await chrome.storage.local.get("browserFeatures");
+  const f = browserFeatures || {};
+  abOgus = new ABogus(f.userAgent || navigator.userAgent, f.platform || navigator.platform);
+}
+
+const MSTOKEN_TTL = 3600000;
+
+function extractMsTokenFromCookie(cookieStr) {
+  if (!cookieStr) return "";
+  for (const pair of cookieStr.split(";")) {
+    const trimmed = pair.trim();
+    const idx = trimmed.indexOf("=");
+    if (idx > 0 && trimmed.slice(0, idx) === "msToken") {
+      return trimmed.slice(idx + 1);
+    }
+  }
+  return "";
+}
+
+async function fetchMsToken() {
+  try {
+    const browserCookies = await chrome.cookies.getAll({ domain: "douyin.com", name: "msToken" });
+    if (browserCookies.length > 0 && browserCookies[0].value) {
+      return browserCookies[0].value;
+    }
+  } catch {}
+
+  try {
+    const { savedCookie } = await chrome.storage.local.get("savedCookie");
+    const msToken = extractMsTokenFromCookie(savedCookie);
+    if (msToken) return msToken;
+  } catch {}
+
+  return "";
+}
+
+async function getMsToken() {
+  const { savedMsToken, savedMsTokenTime } = await chrome.storage.local.get(["savedMsToken", "savedMsTokenTime"]);
+  if (savedMsToken && savedMsTokenTime && Date.now() - savedMsTokenTime < MSTOKEN_TTL) {
+    return savedMsToken;
+  }
+  const msToken = (await fetchMsToken()) || generateRandomMsToken();
+  await chrome.storage.local.set({ savedMsToken: msToken, savedMsTokenTime: Date.now() });
+  return msToken;
+}
+
+const WEBID_API = "https://mcs.zijieapi.com/webid";
+
+async function getWebId() {
+  const { savedWebId, savedWebIdTime } = await chrome.storage.local.get(["savedWebId", "savedWebIdTime"]);
+  if (savedWebId && savedWebIdTime && Date.now() - savedWebIdTime < MSTOKEN_TTL) {
+    return savedWebId;
+  }
+  try {
+    const ua = abOgus ? abOgus.userAgent : navigator.userAgent;
+    const resp = await fetch(WEBID_API + "?aid=6383&sdk_version=5.1.18_zip&device_platform=web", {
+      method: "POST",
+      headers: {
+        Accept: "*/*",
+        "Content-Type": "text/plain;charset=UTF-8",
+        Referer: "https://www.douyin.com/?recommend=1",
+        "User-Agent": ua,
+      },
+      body: JSON.stringify({
+        app_id: 6383,
+        url: "https://www.douyin.com/",
+        user_agent: ua,
+        referer: "https://www.douyin.com/",
+        user_unique_id: "",
+      }),
+    });
+    if (!resp.ok) return "";
+    const data = await resp.json();
+    const webid = String(data.web_id || "");
+    if (webid) await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
+    return webid;
+  } catch {
+    return "";
+  }
+}
+
+async function buildBaseParams(extra = {}) {
+  const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures || {};
+  const verifyFp = getVerifyFp();
+  const [webid, { savedCookie }] = await Promise.all([getWebId(), chrome.storage.local.get("savedCookie")]);
+  let uifid = "";
+  if (savedCookie) {
+    const m = savedCookie.match(/\bUIFID=([^;]+)/);
+    if (m) uifid = m[1];
+  }
+  return {
+    device_platform: "webapp",
+    aid: "6383",
+    channel: "channel_pc_web",
+    pc_client_type: "1",
+    version_code: "290100",
+    version_name: "29.1.0",
+    cookie_enabled: "true",
+    platform: "PC",
+    publish_video_strategy_type: "2",
+    cpu_core_num: String(bf.cpuCoreNum || 8),
+    screen_width: String(bf.screenWidth || 1536),
+    screen_height: String(bf.screenHeight || 864),
+    browser_language: bf.browserLanguage || "zh-CN",
+    browser_platform: bf.platform || "Win32",
+    browser_name: bf.browserName || "Edge",
+    browser_version: bf.browserVersion || "149",
+    browser_online: "true",
+    engine_name: bf.engineName || "Blink",
+    engine_version: bf.engineVersion || "149",
+    os_name: bf.osName || "Windows",
+    os_version: bf.osVersion || "10",
+    device_memory: String(bf.deviceMemory || 16),
+    downlink: "10",
+    effective_type: "4g",
+    round_trip_time: "50",
+    whale_cut_token: "",
+    cut_version: "1",
+    update_version_code: "290100",
+    pc_libra_divert: "Windows",
+    support_h265: "0",
+    support_dash: "1",
+    webid,
+    uifid,
+    verifyFp,
+    fp: verifyFp,
+    ...extra,
+  };
+}
+
+async function independentRequest(apiPath, params, options = {}) {
+  const { savedCookie } = await chrome.storage.local.get("savedCookie");
+  if (!savedCookie) throw new Error("NO_COOKIE");
+  params.msToken = await getMsToken();
+  const method = options.method || "GET";
+  const qs = new URLSearchParams(params).toString();
+  const a_bogus = abOgus.getValue(qs, method);
+  const url = "https://www.douyin.com" + apiPath + "?" + qs + "&a_bogus=" + a_bogus;
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
+  try {
+    const resp = await fetch(url, {
+      credentials: "include",
+      referrer: "https://www.douyin.com/",
+      referrerPolicy: "unsafe-url",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent": abOgus ? abOgus.userAgent : navigator.userAgent,
+        ...options.headers,
+      },
+      method,
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+    if (!resp.ok) throw new Error("HTTP_" + resp.status);
+    const data = await resp.json();
+    if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+    return data;
+  } catch (e) {
+    clearTimeout(tid);
+    throw e;
+  }
+}
+
+// ---------- 独立模式 TikTok 适配 ----------
+
+let xGnarly = null;
+
+async function ensureXGnarly() {
+  if (xGnarly) return;
+  xGnarly = new XGnarly();
+}
+
+async function tiktokRequest(apiPath, params, options = {}) {
+  const { savedCookie } = await chrome.storage.local.get("savedCookie");
+  if (!savedCookie) throw new Error("NO_COOKIE");
+  await ensureABogus();
+  await ensureXGnarly();
+  const ua = abOgus ? abOgus.userAgent : navigator.userAgent;
+  const method = options.method || "GET";
+  const deviceId = await fetchDeviceId(ua);
+  params.device_id = deviceId;
+  const qs = new URLSearchParams(params).toString();
+  const xGnarlySig = xGnarly.generate(qs, "", ua, 0, "5.1.1");
+  const url = "https://www.tiktok.com" + apiPath + "?" + qs + "&X-Gnarly=" + xGnarlySig;
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
+  try {
+    const resp = await fetch(url, {
+      credentials: "include",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent": ua,
+        Cookie: savedCookie,
+        ...options.headers,
+      },
+      method,
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+    if (!resp.ok) throw new Error("HTTP_" + resp.status);
+    const data = await resp.json();
+    if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+    return data;
+  } catch (e) {
+    clearTimeout(tid);
+    throw e;
+  }
+}
+
+function formatWork(aw) {
+  if (!aw || !aw.aweme_id) return null;
+  const author = aw.author || aw.author_info || {};
+  const video = aw.video || {};
+  const bitRate = Array.isArray(video.bit_rate) ? video.bit_rate : [];
+  let videoUrl = "";
+  let bestH = 0;
+  for (const br of bitRate) {
+    if (br.is_h265) continue;
+    const addr = br.play_addr || {};
+    const url = Array.isArray(addr.url_list) ? addr.url_list[0] : "";
+    const h = addr.height || 0;
+    if (url && h > bestH) {
+      videoUrl = url;
+      bestH = h;
+    }
+  }
+  if (!videoUrl) videoUrl = ((video.play_addr && video.play_addr.url_list) || [])[0] || "";
+  videoUrl = videoUrl.replace(/^http:/, "");
+  const authorFollowed =
+    "follow_status" in author
+      ? author.follow_status === 1 || author.follow_status === 2
+      : "followStatus" in author
+        ? author.followStatus === 1 || author.followStatus === 2
+        : null;
+  return {
+    awemeId: String(aw.aweme_id),
+    type: (aw.aweme_type || aw.awemeType) === 68 ? "note" : "video",
+    desc: aw.desc || "",
+    nickname: String(author.nickname || author.nickName || ""),
+    uid: String(author.uid || ""),
+    authorHomeUrl: author.sec_uid ? "https://www.douyin.com/user/" + author.sec_uid : "",
+    cover: ((video.cover && video.cover.url_list) || [])[0] ? video.cover.url_list[0].replace(/^http:/, "") : "",
+    video: videoUrl,
+    images: (aw.images || [])
+      .map((i) => ((i.url_list || i.urlList || [])[0] || "").replace(/^http:/, ""))
+      .filter(Boolean),
+    music: (aw.music && (aw.music.play_url || aw.music.playUrl || {}).uri) || "",
+    createTime: aw.create_time || 0,
+    statistics: aw.statistics || {},
+    authorFollowed,
+  };
+}
+
+function formatFollowing(item) {
+  return {
+    uid: String(item.uid || ""),
+    nickname: item.nickname || "未知",
+    avatarLarger: ((item.avatar_larger && item.avatar_larger.url_list) || [])[0] || "",
+    followerCount: item.follower_count || 0,
+    profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
+  };
+}
+
+// ---------- 独立模式 handler ----------
+
+async function handleIndependentFetchFollowing(secUid, sendResponse) {
+  try {
+    await ensureABogus();
+    const requestId = crypto.randomUUID();
+    let cancelled = false,
+      hasMore = true,
+      offset = 0,
+      maxTime = 0;
+    const all = [];
+    const cancelHandler = (msg) => {
+      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
+    };
+    chrome.runtime.onMessage.addListener(cancelHandler);
+    while (hasMore && !cancelled) {
+      const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset) };
+      if (maxTime > 0) params.max_time = String(maxTime);
+      const data = await independentRequest(
+        "/aweme/v1/web/user/following/list",
+        await buildBaseParams(params),
+      );
+      if (data.status_code === 0 && Array.isArray(data.followings)) {
+        if (data.followings.length === 0) break;
+        all.push(...data.followings.map(formatFollowing));
+        hasMore = data.has_more === true || data.has_more === 1;
+        offset += data.followings.length;
+        maxTime = data.min_time || 0;
+      } else break;
+      chrome.runtime
+        .sendMessage({ type: "FOLLOWING_PROGRESS", collected: all.length, hasMore, total: data.total || 0, requestId })
+        .catch(() => {});
+      if (hasMore && !cancelled)
+        await new Promise((r) =>
+          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+        );
+    }
+    chrome.runtime.onMessage.removeListener(cancelHandler);
+    sendResponse({ ok: true, requestId, followings: all, total: all.length });
+  } catch (e) {
+    sendResponse({ ok: false, error: e.message });
+  }
+}
+
+async function handleIndependentFetchFavorites(secUid, sendResponse) {
+  try {
+    await ensureABogus();
+    const requestId = crypto.randomUUID();
+    let cancelled = false,
+      hasMore = true,
+      cursor = 0;
+    const all = [];
+    const cancelHandler = (msg) => {
+      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
+    };
+    chrome.runtime.onMessage.addListener(cancelHandler);
+    while (hasMore && !cancelled) {
+      const data = await independentRequest(
+        "/aweme/v1/web/aweme/favorite/",
+        await buildBaseParams({ sec_user_id: secUid, count: String(CONFIG.PAGE.FAVORITE), max_cursor: String(cursor) }),
+      );
+      if (data.status_code === 0 && Array.isArray(data.aweme_list)) {
+        if (data.aweme_list.length === 0) break;
+        all.push(...data.aweme_list.map(formatWork).filter(Boolean));
+        hasMore = data.has_more === true || data.has_more === 1;
+        cursor = data.cursor || data.max_cursor || cursor + 20;
+      } else break;
+      const un = all.filter((w) => w.authorFollowed === false).length;
+      chrome.runtime
+        .sendMessage({
+          type: "FAVORITES_PROGRESS",
+          collected: all.length,
+          unfollowedCount: un,
+          hasMore,
+          total: data.total || 0,
+          requestId,
+        })
+        .catch(() => {});
+      if (hasMore && !cancelled)
+        await new Promise((r) =>
+          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+        );
+    }
+    chrome.runtime.onMessage.removeListener(cancelHandler);
+    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
+  } catch (e) {
+    sendResponse({ ok: false, error: e.message });
+  }
+}
+
+async function handleIndependentFetchCollection(sendResponse) {
+  try {
+    await ensureABogus();
+    const requestId = crypto.randomUUID();
+    let cancelled = false,
+      hasMore = true,
+      cursor = 0;
+    const all = [];
+    const cancelHandler = (msg) => {
+      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
+    };
+    chrome.runtime.onMessage.addListener(cancelHandler);
+    while (hasMore && !cancelled) {
+      const data = await independentRequest(
+        "/aweme/v1/web/aweme/listcollection/",
+        await buildBaseParams({ sec_user_id: "self", count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }),
+        { method: "POST" },
+      );
+      if (data.status_code === 0 && Array.isArray(data.aweme_list)) {
+        if (data.aweme_list.length === 0) break;
+        all.push(...data.aweme_list.map(formatWork).filter(Boolean));
+        hasMore = data.has_more === true || data.has_more === 1;
+        cursor = data.cursor || data.max_cursor || cursor + 20;
+      } else break;
+      const un = all.filter((w) => w.authorFollowed === false).length;
+      chrome.runtime
+        .sendMessage({
+          type: "COLLECTION_PROGRESS",
+          collected: all.length,
+          unfollowedCount: un,
+          hasMore,
+          total: data.total || 0,
+          requestId,
+        })
+        .catch(() => {});
+      if (hasMore && !cancelled)
+        await new Promise((r) =>
+          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+        );
+    }
+    chrome.runtime.onMessage.removeListener(cancelHandler);
+    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
+  } catch (e) {
+    sendResponse({ ok: false, error: e.message });
+  }
+}
+
+async function handleIndependentSyncWorks(awemeIds, sendResponse) {
+  if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
+  try {
+    await ensureABogus();
+    const requestId = crypto.randomUUID();
+    let cancelled = false;
+    const allWorks = [],
+      errors = [];
+    const cancelHandler = (msg) => {
+      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
+    };
+    chrome.runtime.onMessage.addListener(cancelHandler);
+    sendResponse({ ok: true, requestId, total: awemeIds.length });
+    for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+      try {
+        const data = await independentRequest("/aweme/v1/web/aweme/detail/", { aweme_id: awemeIds[i] });
+        const w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
+        if (w) allWorks.push(w);
+      } catch (e) {
+        errors.push({ awemeId: awemeIds[i], error: e.message });
+      }
+      chrome.runtime
+        .sendMessage({
+          type: "SYNC_PROGRESS",
+          requestId,
+          index: i,
+          total: awemeIds.length,
+          status: errors.length ? "error" : "ok",
+          awemeId: awemeIds[i],
+        })
+        .catch(() => {});
+      if (!cancelled) {
+        const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
+        if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
+          const deadline = Date.now() + BATCH_PAUSE_MIN + Math.random() * (BATCH_PAUSE_MAX - BATCH_PAUSE_MIN);
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, KEEPALIVE_INTERVAL));
+            await chrome.storage.local.get("keepalive");
+          }
+        } else {
+          await new Promise((r) =>
+            setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+          );
+        }
+      }
+    }
+    chrome.runtime.onMessage.removeListener(cancelHandler);
+    if (allWorks.length > 0) {
+      const result = await mergeAndSaveWorks(allWorks);
+      chrome.runtime
+        .sendMessage({
+          type: "SYNC_DONE",
+          requestId,
+          ok: true,
+          refreshed: result.added + result.updated,
+          failed: errors.length,
+          failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
+        })
+        .catch(() => {});
+    } else {
+      chrome.runtime
+        .sendMessage({ type: "SYNC_DONE", requestId, ok: false, error: errors[0]?.error || "NO_WORKS_COLLECTED" })
+        .catch(() => {});
+    }
+  } catch (e) {
+    sendResponse({ ok: false, error: e.message });
+  }
+}
+
+async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
+  try {
+    await ensureABogus();
+    const data = await independentRequest(
+      "/aweme/v1/web/aweme/post/",
+      await buildBaseParams({
+        sec_user_id: secUid,
+        max_cursor: String(cursor || 0),
+        count: String(CONFIG.PAGE.AUTHOR),
+      }),
+    );
+    const works = (data.aweme_list || []).map(formatWork).filter(Boolean);
+    sendResponse({
+      ok: true,
+      works,
+      hasMore: data.has_more === true || data.has_more === 1,
+      maxCursor: data.max_cursor || "",
+    });
+  } catch (e) {
+    sendResponse({ ok: false, error: e.message });
+  }
+}
+
+// ---------- 存储 handler ----------
+
+async function handleCaptureBrowserFeatures(message, sendResponse) {
+  if (message.features) {
+    await chrome.storage.local.set({ browserFeatures: message.features });
+    abOgus = new ABogus(message.features.userAgent || navigator.userAgent, message.features.platform || navigator.platform);
+  }
+  sendResponse({ ok: true });
+}
+
+async function handleSetMode(message, sendResponse) {
+  await chrome.storage.local.set({ independentMode: message.enabled === true });
+  if (message.enabled) await ensureABogus();
+  sendResponse({ ok: true });
+}
 
 // STORAGE_KEYS 作为 store/group 名的唯一常量来源
 
@@ -338,8 +920,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         () => worksHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
         sendResponse,
       );
-    case "SYNC_WORKS":
-      return asyncHandler(() => handleSyncWorks(message.awemeIds, sendResponse), sendResponse);
     case "GET_WORK":
       return asyncHandler(() => handleGetWork(message.awemeId, sendResponse), sendResponse);
 
@@ -383,37 +963,84 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "GET_STATS":
       return asyncHandler(() => handleGetStats(sendResponse), sendResponse);
 
-    // Tab 转发 (到 inject.js via content.js)
+    // 独立模式 / Tab 转发
     case "FETCH_FOLLOWING":
-      return asyncHandler(() => handleFetchFollowing(message.secUid, sendResponse), sendResponse);
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentFetchFollowing(message.secUid, sendResponse);
+        return handleFetchFollowing(message.secUid, sendResponse);
+      }, sendResponse);
     case "FETCH_FAVORITES":
-      return asyncHandler(() => handleFetchFavorites(message.secUid, sendResponse), sendResponse);
-    case "CANCEL_LIKE":
-      return asyncHandler(() => handleCancelLike(message.awemeIds, "CANCEL_ONE_LIKE", "CANCEL_PROGRESS", sendResponse), sendResponse);
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentFetchFavorites(message.secUid, sendResponse);
+        return handleFetchFavorites(message.secUid, sendResponse);
+      }, sendResponse);
     case "FETCH_COLLECTION":
-      return asyncHandler(() => handleFetchCollection(sendResponse), sendResponse);
-    case "CANCEL_COLLECTION":
-      return asyncHandler(() => handleCancelCollection(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", sendResponse), sendResponse);
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentFetchCollection(sendResponse);
+        return handleFetchCollection(sendResponse);
+      }, sendResponse);
+    case "SYNC_WORKS":
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentSyncWorks(message.awemeIds, sendResponse);
+        return handleSyncWorks(message.awemeIds, sendResponse);
+      }, sendResponse);
     case "FETCH_WORKS_PAGE":
-      sendToTab(
-        "FETCH_WORKS_PAGE",
-        {
-          secUid: message.secUid,
-          cursor: message.cursor || "",
-          timeout: CONFIG.TIMEOUT.REQUEST,
-        },
-        sendResponse,
-      );
-      return true;
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentFetchWorksPage(message.secUid, message.cursor || "", sendResponse);
+        sendToTab(
+          "FETCH_WORKS_PAGE",
+          { secUid: message.secUid, cursor: message.cursor || "", count: CONFIG.PAGE.AUTHOR, timeout: CONFIG.TIMEOUT.REQUEST },
+          sendResponse,
+        );
+      }, sendResponse);
+    case "CANCEL_LIKE":
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentCancel(message.awemeIds, "like", sendResponse);
+        return runCancelBatch(message.awemeIds, "CANCEL_ONE_LIKE", "CANCEL_PROGRESS", sendResponse);
+      }, sendResponse);
+    case "CANCEL_COLLECTION":
+      return asyncHandler(async () => {
+        const { independentMode } = await chrome.storage.local.get("independentMode");
+        if (independentMode) return handleIndependentCancel(message.awemeIds, "collection", sendResponse);
+        return runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", sendResponse);
+      }, sendResponse);
     case "GET_SECURITY_STATUS":
       sendToTab("GET_SECURITY_STATUS", { timeout: CONFIG.TIMEOUT.SECURITY_STATUS }, sendResponse);
       return true;
+
+    // 存储 / 配置
+    case "SET_MODE":
+      return asyncHandler(() => handleSetMode(message, sendResponse), sendResponse);
+    case "CAPTURE_BROWSER_FEATURES":
+      return asyncHandler(() => handleCaptureBrowserFeatures(message, sendResponse), sendResponse);
+    case "GET_COOKIE_INFO":
+      return asyncHandler(async () => {
+        const { savedCookie } = await chrome.storage.local.get("savedCookie");
+        if (!savedCookie) return sendResponse({ ok: true, pairs: [], hasSessionid: false });
+        const pairs = parseCookieToPairs(savedCookie);
+        sendResponse({ ok: true, pairs, hasSessionid: pairs.some((p) => p.key === "sessionid"), count: pairs.length });
+      }, sendResponse);
+    case "GET_MSTOKEN":
+      return asyncHandler(async () => {
+        sendResponse({ ok: true, msToken: await getMsToken() });
+      }, sendResponse);
+    case "GET_BROWSER_FEATURES":
+      return asyncHandler(async () => {
+        const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures;
+        sendResponse({ ok: true, features: bf || null });
+      }, sendResponse);
 
     case "CANCEL_ACTIVE_TASK":
       withDouyinTab()
         .then((tab) => {
           if (!tab) {
-            sendResponse({ ok: false, error: "NO_DOUYIN_TAB" });
+            sendResponse({ ok: true });
             return;
           }
           chrome.tabs.sendMessage(tab.id, { type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
@@ -448,6 +1075,7 @@ async function handleFetchFollowing(secUid, sendResponse) {
       const resp = await sendToTabAsync("FETCH_FOLLOWING_PAGE", {
         secUid,
         offset,
+        count: CONFIG.PAGE.FOLLOWING,
         timeout: CONFIG.TIMEOUT.REQUEST,
       });
       if (resp?.ok && Array.isArray(resp.items)) {
@@ -497,6 +1125,7 @@ async function handleFetchFavorites(secUid, sendResponse) {
       const resp = await sendToTabAsync("FETCH_FAVORITES_PAGE", {
         secUid,
         cursor,
+        count: CONFIG.PAGE.FAVORITE,
         timeout: CONFIG.TIMEOUT.REQUEST,
       });
       if (resp?.ok && Array.isArray(resp.items)) {
@@ -547,6 +1176,7 @@ async function handleFetchCollection(sendResponse) {
     while (hasMore && !cancelled) {
       const resp = await sendToTabAsync("FETCH_COLLECTION_PAGE", {
         cursor,
+        count: CONFIG.PAGE.COLLECTION,
         timeout: CONFIG.TIMEOUT.REQUEST,
       });
       if (resp?.ok && Array.isArray(resp.items)) {
@@ -580,6 +1210,10 @@ async function handleFetchCollection(sendResponse) {
 }
 
 async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
+  if (!Array.isArray(awemeIds) || awemeIds.length === 0) {
+    sendResponse({ ok: false, error: "EMPTY" });
+    return;
+  }
   const requestId = crypto.randomUUID();
   const errors = [];
   let cancelled = false;
@@ -631,27 +1265,84 @@ async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
     .catch(() => {});
 }
 
-async function handleCancelLike(awemeIds, tabType, progressType, sendResponse) {
-  try {
-    if (!Array.isArray(awemeIds) || awemeIds.length === 0) {
-      sendResponse({ ok: false, error: "EMPTY" });
-      return;
-    }
-    await runCancelBatch(awemeIds, tabType, progressType, sendResponse);
-  } catch (err) {
-    sendResponse({ ok: false, error: err.message });
-  }
-}
+const CANCEL_ENDPOINTS = {
+  like: {
+    url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
+    body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+    type: "application/x-www-form-urlencoded; charset=UTF-8",
+    referrer: "https://www.douyin.com/user/self?showTab=like",
+  },
+  collection: {
+    url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
+    body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
+    type: "application/x-www-form-urlencoded",
+    referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
+  },
+};
 
-async function handleCancelCollection(awemeIds, tabType, progressType, sendResponse) {
+async function handleIndependentCancel(awemeIds, kind, sendResponse) {
   try {
-    if (!Array.isArray(awemeIds) || awemeIds.length === 0) {
-      sendResponse({ ok: false, error: "EMPTY" });
-      return;
+    if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
+    const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
+    if (!savedCookie) return sendResponse({ ok: false, error: "NO_COOKIE" });
+    const key = (browserFeatures && browserFeatures.securityKey) || "";
+    const ep = CANCEL_ENDPOINTS[kind];
+    if (!ep) return sendResponse({ ok: false, error: "UNKNOWN_KIND" });
+
+    const requestId = crypto.randomUUID();
+    let cancelled = false;
+    const errors = [];
+    const cancelHandler = (msg) => {
+      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
+    };
+    chrome.runtime.onMessage.addListener(cancelHandler);
+    sendResponse({ ok: true, requestId, total: awemeIds.length });
+
+    for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+      let ok = false;
+      try {
+        const resp = await fetch(ep.url, {
+          method: "POST",
+          credentials: "include",
+          referrer: ep.referrer,
+          referrerPolicy: "unsafe-url",
+          headers: {
+            "content-type": ep.type,
+            ...(key ? { "bd-ticket-guard-ree-public-key": key } : {}),
+          },
+          body: ep.body(awemeIds[i]),
+        });
+        ok = resp.ok;
+      } catch (_) {}
+      chrome.runtime
+        .sendMessage({
+          type: "CANCEL_PROGRESS",
+          requestId,
+          index: i,
+          total: awemeIds.length,
+          status: ok ? "ok" : "error",
+          awemeId: awemeIds[i],
+        })
+        .catch(() => {});
+      if (!cancelled && i < awemeIds.length - 1)
+        await new Promise((r) =>
+          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+        );
     }
-    await runCancelBatch(awemeIds, tabType, progressType, sendResponse);
-  } catch (err) {
-    sendResponse({ ok: false, error: err.message });
+    chrome.runtime.onMessage.removeListener(cancelHandler);
+    chrome.runtime
+      .sendMessage({
+        type: "CANCEL_DONE",
+        requestId,
+        ok: true,
+        cancelled,
+        refreshed: awemeIds.length - errors.length,
+        failed: errors.length,
+        failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
+      })
+      .catch(() => {});
+  } catch (e) {
+    sendResponse({ ok: false, error: e.message });
   }
 }
 
@@ -834,10 +1525,13 @@ async function handleDeleteGroup(domain, groupId, sendResponse) {
 
 // ---------- 同步 Handler ----------
 
-
 const FATAL_ERRORS = new Set([
-  "NO_DOUYIN_TAB", "TAB_QUERY_FAILED", "NO_LISTENER", "EMPTY_RESPONSE",
-  "RATE_LIMITED", "CANCELLED",
+  "NO_DOUYIN_TAB",
+  "TAB_QUERY_FAILED",
+  "NO_LISTENER",
+  "EMPTY_RESPONSE",
+  "RATE_LIMITED",
+  "CANCELLED",
 ]);
 
 async function handleSyncWorks(awemeIds, sendResponse) {
