@@ -1,12 +1,9 @@
 import { storage } from "./storage.js";
 import {
   ABogus,
-  XBogus,
-  XGnarly,
   getVerifyFp,
   parseCookieToPairs,
   generateRandomMsToken,
-  fetchDeviceId,
 } from "./crypto.js";
 
 // ===== 抖音数据管理 - Background Service Worker =====
@@ -319,52 +316,6 @@ async function independentRequest(apiPath, params, options = {}) {
   }
 }
 
-// ---------- 独立模式 TikTok 适配 ----------
-
-let xGnarly = null;
-
-async function ensureXGnarly() {
-  if (xGnarly) return;
-  xGnarly = new XGnarly();
-}
-
-async function tiktokRequest(apiPath, params, options = {}) {
-  const { savedCookie } = await chrome.storage.local.get("savedCookie");
-  if (!savedCookie) throw new Error("NO_COOKIE");
-  await ensureABogus();
-  await ensureXGnarly();
-  const ua = abOgus ? abOgus.userAgent : navigator.userAgent;
-  const method = options.method || "GET";
-  const deviceId = await fetchDeviceId(ua);
-  params.device_id = deviceId;
-  const qs = new URLSearchParams(params).toString();
-  const xGnarlySig = xGnarly.generate(qs, "", ua, 0, "5.1.1");
-  const url = "https://www.tiktok.com" + apiPath + "?" + qs + "&X-Gnarly=" + xGnarlySig;
-  const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
-  try {
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "User-Agent": ua,
-        Cookie: savedCookie,
-        ...options.headers,
-      },
-      method,
-      signal: controller.signal,
-    });
-    clearTimeout(tid);
-    if (!resp.ok) throw new Error("HTTP_" + resp.status);
-    const data = await resp.json();
-    if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
-    return data;
-  } catch (e) {
-    clearTimeout(tid);
-    throw e;
-  }
-}
-
 function formatWork(aw) {
   if (!aw || !aw.aweme_id) return null;
   const author = aw.author || aw.author_info || {};
@@ -458,52 +409,6 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
     sendResponse({ ok: true, requestId, followings: all, total: all.length });
-  } catch (e) {
-    sendResponse({ ok: false, error: e.message });
-  }
-}
-
-async function handleIndependentFetchFavorites(secUid, sendResponse) {
-  try {
-    await ensureABogus();
-    const requestId = crypto.randomUUID();
-    let cancelled = false,
-      hasMore = true,
-      cursor = 0;
-    const all = [];
-    const cancelHandler = (msg) => {
-      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-    };
-    chrome.runtime.onMessage.addListener(cancelHandler);
-    while (hasMore && !cancelled) {
-      const data = await independentRequest(
-        "/aweme/v1/web/aweme/favorite/",
-        await buildBaseParams({ sec_user_id: secUid, count: String(CONFIG.PAGE.FAVORITE), max_cursor: String(cursor) }),
-      );
-      if (data.status_code === 0 && Array.isArray(data.aweme_list)) {
-        if (data.aweme_list.length === 0) break;
-        all.push(...data.aweme_list.map(formatWork).filter(Boolean));
-        hasMore = data.has_more === true || data.has_more === 1;
-        cursor = data.cursor || data.max_cursor || cursor + 20;
-      } else break;
-      const un = all.filter((w) => w.authorFollowed === false).length;
-      chrome.runtime
-        .sendMessage({
-          type: "FAVORITES_PROGRESS",
-          collected: all.length,
-          unfollowedCount: un,
-          hasMore,
-          total: data.total || 0,
-          requestId,
-        })
-        .catch(() => {});
-      if (hasMore && !cancelled)
-        await new Promise((r) =>
-          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
-        );
-    }
-    chrome.runtime.onMessage.removeListener(cancelHandler);
-    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
   } catch (e) {
     sendResponse({ ok: false, error: e.message });
   }
@@ -972,8 +877,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "FETCH_FAVORITES":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchFavorites(message.secUid, sendResponse);
         return handleFetchFavorites(message.secUid, sendResponse);
       }, sendResponse);
     case "FETCH_COLLECTION":
@@ -1000,8 +903,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "CANCEL_LIKE":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentCancel(message.awemeIds, "like", sendResponse);
         return runCancelBatch(message.awemeIds, "CANCEL_ONE_LIKE", "CANCEL_PROGRESS", sendResponse);
       }, sendResponse);
     case "CANCEL_COLLECTION":
@@ -1024,7 +925,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const { savedCookie } = await chrome.storage.local.get("savedCookie");
         if (!savedCookie) return sendResponse({ ok: true, pairs: [], hasSessionid: false });
         const pairs = parseCookieToPairs(savedCookie);
-        sendResponse({ ok: true, pairs, hasSessionid: pairs.some((p) => p.key === "sessionid"), count: pairs.length });
+        sendResponse({ ok: true, pairs, rawCookie: savedCookie, hasSessionid: pairs.some((p) => p.key === "sessionid"), count: pairs.length });
       }, sendResponse);
     case "GET_MSTOKEN":
       return asyncHandler(async () => {

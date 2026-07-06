@@ -99,20 +99,19 @@ TikTokDownloader（Python httpx）只需 cookie 和 sec_uid 即可正常工作�
 
 截至本文档编写时，点赞/收藏扫描在独立模式下的处理方式为：
 
-- 独立模式启用时，`FETCH_FAVORITES` 消息路由会先检查是否存在抖音标签页（`withDouyinTab()`）
-- **有标签页**：回退到标准模式（`sendToTab` → inject.js），利用标签页上下文发起请求
-- **无标签页**：返回 `NEED_TAB` 错误，options 层显示"需要打开抖音页面"引导提示，不尝试纯 background fetch
-- `FETCH_COLLECTION` 和 `CANCEL_LIKE` / `CANCEL_COLLECTION` 已实现独立 handler，不再回退标签页
+- `FETCH_FAVORITES`：路由无独立模式分叉，始终走 `handleFetchFavorites()`（即必须使用标签页的 `sendToTab` 路径；该端点触发 Turing 验证，无法纯 background fetch）。无标签页时返回超时或错误
+- `FETCH_COLLECTION` 和 `CANCEL_COLLECTION` 已实现独立 handler，不再回退标签页
+- `CANCEL_LIKE`：路由无独立模式分叉，始终走 tab 模式 `runCancelBatch`
 
 | 操作 | 独立模式 | 备注 |
 |---|---|---|
 | SYNC_WORKS（作品同步） | ✅ 正常工作 | `detail` API，参数简单，不触发额外验证 |
 | FETCH_FOLLOWING（关注扫描） | ✅ 正常工作 | 未发现拦截 |
-| FETCH_WORKS_PAGE（作者作品） | ✅ 正常工作 | `post` API，行为同 detail（DNR rule 4 注入 Referer） |
+| FETCH_WORKS_PAGE（作者作品） | ✅ 正常工作 | `post` API，行为同 detail（DNR rule 3 注入泛用 Referer） |
 | FETCH_FAVORITES（点赞扫描） | ❌ 回退到标签页 | 纯 background fetch 持续被拦，详见上文尝试记录 |
 | FETCH_COLLECTION（收藏扫描） | ✅ 正常工作 | `listcollection` POST 端点，独立 handler 成功 |
 | CANCEL_COLLECTION（取消收藏） | ✅ 正常工作 | 需 `browserFeatures.securityKey`；DNR rule 5（实际 id:5）注入精确 Referer |
-| CANCEL_LIKE（取消点赞） | ✅ 有独立 handler | 同上但实际可能仍需标签页（guard 机制更严格） |
+| CANCEL_LIKE（取消点赞） | ❌ 路由无独立模式分叉，始终走 tab 模式 `runCancelBatch` | `handleIndependentCancel` 虽支持 `kind="like"`，但 background 消息路由未对其做独立模式分支 |
 
 ## 未探索的方向
 

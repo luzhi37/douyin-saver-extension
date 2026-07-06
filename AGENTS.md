@@ -19,7 +19,7 @@ content/
   content.js             — 隔离世界桥接层
   inject.js              — 主世界脚本
 options/
-  options.css            — 样式（~1945 行）
+  options.css            — 样式（~2036 行）
   options.html           — 管理页面
   options.js             — 全部 View 逻辑（VirtualGrid 基类 + 10 个业务 class）
 assets/
