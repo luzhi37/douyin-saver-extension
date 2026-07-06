@@ -338,6 +338,10 @@
             <label class="settings-switch-row"><span>启用独立模式（无需抖音标签页）</span><input type="checkbox"
                 id="settingsChkMode" /><span class="switch-knob"></span></label>
             <p class="settings-hint" id="settingsModeHint">加载中…</p>
+            <div class="kv-row bf-item" style="margin-top:6px">
+              <label class="bf-label">secUid（用户身份）</label>
+              <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" />
+            </div>
           </div>
         </div>
       </section>
@@ -348,11 +352,7 @@
         </h3>
         <div class="section-body">
           <div class="section-body-inner">
-            <div id="settingsBFList" class="bf-grid"></div>
-            <div class="bf-item" style="margin-top:6px">
-              <label class="bf-label">secUid（用户身份）</label>
-              <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" />
-            </div>
+            <div id="settingsBFList"></div>
           </div>
         </div>
       </section>
@@ -367,6 +367,7 @@
             <div class="sec-item sec-clickable" id="secKeyValue">
               <span class="sec-value sec-truncate" id="secKeyValueText"></span>
               <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secKeyValueText">复制</button>
             </div>
             <div class="sec-hint hidden" id="secKeyHint"></div>
             <div class="sec-item">
@@ -376,6 +377,7 @@
             <div class="sec-item sec-clickable" id="secSigFollowing">
               <span class="sec-value sec-truncate" id="secSigFollowingValue"></span>
               <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secSigFollowingValue">复制</button>
             </div>
             <div class="sec-hint hidden" id="secSigFollowingHint"></div>
             <div class="sec-item">
@@ -385,6 +387,7 @@
             <div class="sec-item sec-clickable" id="secSigPost">
               <span class="sec-value sec-truncate" id="secSigPostValue"></span>
               <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secSigPostValue">复制</button>
             </div>
             <div class="sec-hint hidden" id="secSigPostHint"></div>
             <div class="sec-item">
@@ -394,6 +397,7 @@
             <div class="sec-item sec-clickable" id="secSigFavorite">
               <span class="sec-value sec-truncate" id="secSigFavoriteValue"></span>
               <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secSigFavoriteValue">复制</button>
             </div>
             <div class="sec-hint hidden" id="secSigFavoriteHint"></div>
             <div class="sec-item">
@@ -403,6 +407,7 @@
             <div class="sec-item sec-clickable" id="secSigCollection">
               <span class="sec-value sec-truncate" id="secSigCollectionValue"></span>
               <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secSigCollectionValue">复制</button>
             </div>
             <div class="sec-hint hidden" id="secSigCollectionHint"></div>
             <div class="sec-item">

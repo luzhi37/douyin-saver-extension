@@ -1657,8 +1657,7 @@ body.sidebar-open .following-stats {
 }
 
 .sec-clickable {
-  cursor: pointer;
-  user-select: none;
+  cursor: default;
 }
 
 .sec-expand-hint {
@@ -1666,6 +1665,21 @@ body.sidebar-open .following-stats {
   color: var(--dy-text-muted);
   flex-shrink: 0;
   margin-left: auto;
+}
+
+.sec-copy-btn {
+  font-size: 11px;
+  color: var(--dy-text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.sec-copy-btn:hover {
+  color: var(--dy-text);
 }
 
 /* ====== 菜单分隔线 ====== */
@@ -1724,8 +1738,27 @@ body.sidebar-open .following-stats {
   user-select: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.cookie-copy-all-btn {
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 2px 8px;
+  background: var(--dy-surface);
+  border: 1px solid var(--dy-border-light);
+  border-radius: 4px;
+  color: var(--dy-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.cookie-copy-all-btn:hover {
+  color: var(--dy-text);
+  border-color: var(--dy-border);
 }
 
 .section-chevron {
@@ -1735,6 +1768,7 @@ body.sidebar-open .following-stats {
   border-bottom: 1.5px solid var(--dy-text-secondary);
   transform: rotate(45deg);
   margin-bottom: 3px;
+  margin-left: auto;
   transition: transform 0.25s ease;
 }
 
@@ -1786,16 +1820,96 @@ body.sidebar-open .following-stats {
   font-size: 13px;
 }
 
-.cookie-item {
+.kv-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 2px 0;
 }
 
+.cookie-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  border: 1px solid var(--dy-border-light);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.cookie-table th {
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--dy-text);
+  background: var(--dy-surface-elevated);
+  border-bottom: 1px solid var(--dy-border);
+  user-select: none;
+}
+
+.cookie-table th:first-child {
+  border-radius: 6px 0 0 0;
+}
+
+.cookie-table th:last-child {
+  border-radius: 0 6px 0 0;
+  border-left: 1px solid var(--dy-border-light);
+}
+
+.cookie-table td {
+  padding: 5px 8px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--dy-border-light);
+}
+
+.cookie-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cookie-table tbody tr:nth-child(even) td {
+  background: var(--dy-surface);
+}
+
+.cookie-th-key {
+  width: 180px;
+  position: relative;
+}
+
+.cookie-th-val {
+  border-left: 1px solid var(--dy-border-light);
+}
+
+.cookie-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1;
+}
+
+.cookie-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  right: 3px;
+  height: 50%;
+  width: 1px;
+  background: var(--dy-border);
+}
+
+.cookie-resize-handle:hover::after,
+.cookie-resize-handle.active::after {
+  background: var(--dy-primary);
+  width: 2px;
+}
+
 .cookie-key {
   color: var(--dy-text-secondary);
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cookie-val {
@@ -1803,12 +1917,12 @@ body.sidebar-open .following-stats {
   font-size: 11px;
   color: var(--dy-text);
   background: var(--dy-surface);
-  padding: 1px 6px;
+  padding: 2px 8px;
   border-radius: 4px;
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-x: auto;
   white-space: nowrap;
+  display: block;
+  min-width: 0;
 }
 
 .cookie-input {
@@ -1887,19 +2001,8 @@ body.sidebar-open .following-stats {
 }
 
 /* 浏览器特征 */
-.bf-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12px;
-}
-
 .bf-item {
-  display: flex;
-  justify-content: space-between;
   gap: 8px;
-  align-items: center;
-  padding: 4px 0;
 }
 
 .bf-label {
@@ -1907,18 +2010,6 @@ body.sidebar-open .following-stats {
   white-space: nowrap;
   min-width: 100px;
   font-size: 12px;
-}
-
-.bf-value {
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-  font-size: 11px;
-  color: var(--dy-text);
-  word-break: break-all;
-  text-align: right;
-  background: var(--dy-bg);
-  padding: 2px 8px;
-  border-radius: 4px;
-  max-width: 280px;
 }
 
 .bf-input {
