@@ -647,7 +647,7 @@ chrome.storage.local: {
     screenHeight: 864,
     cpuCoreNum: 16,
     deviceMemory: 8,
-  },
+    securityKey: "pub.xxx...",  // 从 douyin.com 页面的 localStorage 自动捕获，用于独立模式取消操作
   independentMode: bool,
 }
 ```

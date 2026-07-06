@@ -4,7 +4,7 @@
 
 ## 1. CSS 架构
 
-`options/options.css` 约 1945 行，23+ 区块。
+`options/options.css` 约 2036 行，23+ 区块。
 
 ### 变量（`--dy-*` 命名空间）
 - 背景：`--dy-bg: #161823` / `--dy-surface: #252632` / `--dy-surface-elevated: #2c2d3a`

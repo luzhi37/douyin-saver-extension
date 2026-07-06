@@ -16,8 +16,8 @@
   1. `sendToTabAsync('FETCH_SINGLE_WORK', { awemeId, timeout: CONFIG.TIMEOUT.REQUEST })` — 每次请求独立 requestId
   2. 收集成功的结果到 `allWorks[]`
   3. 发送 `SYNC_PROGRESS` 到 options（含 `index`、`total`、`status`）
-  4. 页间随机延迟 500–1200ms（`CONFIG.DELAY.MIN/MAX`）
-  5. 每完成 `BATCH_SIZE`（默认 30）条后暂停 20–30s 随机（`CONFIG.SYNC.BATCH_PAUSE_MIN/MAX`），避免命中滑动窗口限流。暂停期间每 `KEEPALIVE_INTERVAL`（5s）调用一次 `chrome.storage.local.get`，防止 Chrome MV3 因无扩展 API 活动而终止 Service Worker 导致异步状态丢失。
+   4. 页间随机延迟 500–1200ms（`CONFIG.DELAY.MIN/MAX`）
+  5. 每完成 `BATCH_SIZE`（默认 40）条后暂停 10–20s 随机（`CONFIG.SYNC.BATCH_PAUSE_MIN/MAX`），避免命中滑动窗口限流。暂停期间每 `KEEPALIVE_INTERVAL`（2s）调用一次 `chrome.storage.local.get`，防止 Chrome MV3 因无扩展 API 活动而终止 Service Worker 导致异步状态丢失。
 - 循环中检查 `cancelled` 标志（来自 `CANCEL_ACTIVE_TASK`）
 - 循环结束调用 `mergeAndSaveWorks(allWorks)` 写入存储
 - `sendSyncDone()` 发送完成消息
@@ -53,7 +53,7 @@
 ### inject.js 执行（`fetchOneDetail`）
 - 构建 `CONFIG.API.DETAIL` URL
 - 合并 `CONFIG.DEVICE_PARAMS` 和缓存的 `__lastCapturedDetailQuery`
-- `origFetch` 发起请求，超时 `CONFIG.TIMEOUT.FETCH_DETAIL`（8s）
+- `window.fetch`（附带 `_dyInternal: true` 标志）发起请求，超时 `CONFIG.TIMEOUT.FETCH_DETAIL`（8s）
 - 返回单个 work 对象
 - 空 body 时抛出 `RATE_LIMITED`（由 background 判定为致命错误，终止批次）
 
@@ -157,7 +157,8 @@ case "FETCH_FOLLOWING":
 - `FETCH_FOLLOWING`：独立模式下直接走 `handleIndependentFetchFollowing()`，已验证 ✅（background 内独立 handler，不依赖标签页）
 - `FETCH_FAVORITES`：独立模式下仍通过 `withDouyinTab()` 回退（该端点触发 Turing 验证，无法纯 background fetch）
 - `FETCH_COLLECTION`：独立模式下直接走 `handleIndependentFetchCollection()`，已验证 ✅（background 内独立 handler，不依赖标签页）
-- `CANCEL_LIKE` / `CANCEL_COLLECTION`：独立模式下直接走 `handleIndependentCancel()`（background 内循环 POST），已验证收藏取消 ✅，需 `browserFeatures.securityKey`（首次需访问 douyin.com 页面以捕获）
+- `CANCEL_COLLECTION`：独立模式下直接走 `handleIndependentCancel()`（background 内循环 POST），已验证 ✅，需 `browserFeatures.securityKey`（首次需访问 douyin.com 页面以捕获）
+- `CANCEL_LIKE`：路由无独立模式分叉，始终走 tab 模式 `runCancelBatch`；`handleIndependentCancel` 虽支持 `kind="like"` 但未被路由引用
 
 ### background.js 循环（`handleFetchFavorites` / `handleFetchCollection`）
 
@@ -190,7 +191,7 @@ case "FETCH_FOLLOWING":
 | 返回 | `{ items, hasMore, cursor, total, ok }` | 同左 |
 
 - 每次请求合并 `stripPageKeys(capturedQuery)` 剥离分页参数、只保留签名
-- `origFetch` 发起请求
+- `window.fetch`（附带 `_dyInternal: true` 标志）发起请求
 - 超时 15s（`CONFIG.TIMEOUT.FETCH_PAGE`）
 
 ## 4. 取消点赞/收藏机制
@@ -309,7 +310,7 @@ async function handleIndependentCancel(awemeIds, kind, sendResponse) {
 background 侧单次 Tab 请求超时使用 `CONFIG.TIMEOUT.REQUEST = 30000`（由 `sendToTab` 主导）。inject.js 侧另有独立超时：`TIMEOUT.FETCH_PAGE = 15000`（单页 fetch 超时）、`TIMEOUT.FETCH_DETAIL = 8000`（详情 fetch）。安全面板查询保留独立的 `SECURITY_STATUS = 5000`（UI 阻塞场景）。
 
 ### Service Worker 保活
-作品同步的批次暂停（20–30s）是唯一可能触发 SW 终止的长空闲窗口。`CONFIG.SYNC.KEEPALIVE_INTERVAL = 5000` 控制保活间隔：暂停被拆分为 5s 分段，每段结束后调用 `chrome.storage.local.get` 重置 SW 空闲计时器。其余循环（关注同步、点赞/收藏扫描、取消操作）每次延迟前均有 `chrome.*` API 调用，无需额外处理。
+作品同步的批次暂停（10–20s）是唯一可能触发 SW 终止的长空闲窗口。`CONFIG.SYNC.KEEPALIVE_INTERVAL = 2000` 控制保活间隔：暂停被拆分为 2s 分段，每段结束后调用 `chrome.storage.local.get` 重置 SW 空闲计时器。其余循环（关注同步、点赞/收藏扫描、取消操作）每次延迟前均有 `chrome.*` API 调用，无需额外处理。
 
 ## 5. 作者主页作品分页
 

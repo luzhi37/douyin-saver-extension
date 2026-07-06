@@ -1224,13 +1224,6 @@ class Sidebar {
     if (active) active.classList.remove("sidebar-active");
   }
 
-  updateSidebarActive() {
-    const cards = dom.mainContainer.querySelectorAll(".following-card");
-    for (let i = 0; i < cards.length; i++) {
-      cards[i].classList.toggle("sidebar-active", cards[i].dataset.uid === state.currentFollowingUid);
-    }
-  }
-
   openSidebar(following) {
     this.clearSidebarActive();
     const card = dom.mainContainer.querySelector(`[data-uid="${following.uid}"]`);
@@ -1677,6 +1670,7 @@ function renderStatusKey(root, key, updatedAt) {
   const valueEl = root.querySelector("#secKeyValueText");
   const expandHint = root.querySelector("#secKeyValue .sec-expand-hint");
   const hintEl = root.querySelector("#secKeyHint");
+  const copyBtn = root.querySelector("#secKeyValue .sec-copy-btn");
   if (key) {
     const t = _statusTimeStr(updatedAt);
     statusEl.textContent = t ? `✅ 可用 · ${t}` : "✅ 可用";
@@ -1688,6 +1682,7 @@ function renderStatusKey(root, key, updatedAt) {
       expandHint.classList.remove("hidden");
       expandHint.textContent = "[展开]";
     }
+    if (copyBtn) copyBtn.classList.remove("hidden");
     hintEl.classList.add("hidden");
   } else {
     statusEl.textContent = "❌ 不可用";
@@ -1696,6 +1691,7 @@ function renderStatusKey(root, key, updatedAt) {
     valueEl.classList.add("sec-truncate");
     valueEl.classList.remove("sec-expanded");
     if (expandHint) expandHint.classList.add("hidden");
+    if (copyBtn) copyBtn.classList.add("hidden");
     hintEl.classList.remove("hidden");
     hintEl.textContent = "请确保抖音页面已打开且您已登录 → 刷新抖音页面（按 F5） → 等待页面加载完成（约 3-5 秒） → 返回此处点击刷新按钮";
   }
@@ -1706,6 +1702,7 @@ function renderStatusSig(root, sig, rowId, valueId, guidance) {
   const statusEl = root.querySelector("#" + valueId.replace(/Value$/, "Status"));
   const expandHint = root.querySelector("#" + rowId + " .sec-expand-hint");
   const hintEl = root.querySelector("#" + valueId.replace(/Value$/, "Hint"));
+  const copyBtn = root.querySelector("#" + rowId + " .sec-copy-btn");
   const v = sig?.value || "";
   const t = sig?.updatedAt || 0;
   if (v) {
@@ -1719,6 +1716,7 @@ function renderStatusSig(root, sig, rowId, valueId, guidance) {
       expandHint.classList.remove("hidden");
       expandHint.textContent = "[展开]";
     }
+    if (copyBtn) copyBtn.classList.remove("hidden");
     hintEl.classList.add("hidden");
   } else {
     statusEl.textContent = "❌ 未捕获";
@@ -1727,6 +1725,7 @@ function renderStatusSig(root, sig, rowId, valueId, guidance) {
     valueEl.className = "sec-value sec-err";
     valueEl.classList.remove("sec-expanded");
     if (expandHint) expandHint.classList.add("hidden");
+    if (copyBtn) copyBtn.classList.add("hidden");
     hintEl.classList.remove("hidden");
     hintEl.textContent = guidance;
   }
@@ -1745,9 +1744,7 @@ const settings = {
   async openPanel() {
     const tmpl = document.getElementById("settingsDialogTemplate");
     const body = tmpl.content.cloneNode(true);
-    dialog.showDialog("设置", body, [
-      { text: "刷新", primary: true, callback: () => this._refresh() },
-    ]);
+    dialog.showDialog("设置", body);
     this._dialogBody = dom.dialogBody;
     this._bind();
     this._bindStatus();
@@ -1771,20 +1768,65 @@ const settings = {
     const cookieList = $("settingsCookieList");
     cookieList.innerHTML = "";
     const pairs = ci?.pairs || [];
-    for (const p of pairs) {
-      const item = document.createElement("div");
-      item.className = "cookie-item";
-      const key = document.createElement("span");
-      key.className = "cookie-key";
-      key.textContent = p.key;
-      const val = document.createElement("code");
-      val.className = "cookie-val";
-      val.textContent = "***" + String(p.value || "").slice(-8);
-      item.appendChild(key);
-      item.appendChild(val);
-      cookieList.appendChild(item);
+    // Cookie copy-all button in section title
+    const cookieSectionTitle = this._dialogBody.querySelector(".settings-section .settings-section-title");
+    const oldBtn = cookieSectionTitle?.querySelector(".cookie-copy-all-btn");
+    if (oldBtn) oldBtn.remove();
+    if (pairs.length > 0 && ci?.rawCookie) {
+      const copyAllBtn = document.createElement("button");
+      copyAllBtn.className = "cookie-copy-all-btn";
+      copyAllBtn.textContent = "复制全部 Cookie";
+      copyAllBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(ci.rawCookie).then(
+          () => dialog.showToast("已复制")
+        );
+      });
+      const chevron = cookieSectionTitle?.querySelector(".section-chevron");
+      if (chevron) cookieSectionTitle.insertBefore(copyAllBtn, chevron);
+      else cookieSectionTitle.appendChild(copyAllBtn);
     }
-    if (pairs.length === 0) {
+    if (pairs.length > 0) {
+      const table = document.createElement("table");
+      table.className = "cookie-table";
+      const colgroup = document.createElement("colgroup");
+      const colKey = document.createElement("col");
+      colKey.className = "cookie-key-col";
+      const colVal = document.createElement("col");
+      colgroup.appendChild(colKey);
+      colgroup.appendChild(colVal);
+      table.appendChild(colgroup);
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      const thKey = document.createElement("th");
+      thKey.className = "cookie-th-key";
+      thKey.innerHTML = "<span>键</span><span class=\"cookie-resize-handle\"></span>";
+      const thVal = document.createElement("th");
+      thVal.className = "cookie-th-val";
+      thVal.textContent = "值";
+      headerRow.appendChild(thKey);
+      headerRow.appendChild(thVal);
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const p of pairs) {
+        const tr = document.createElement("tr");
+        const tdKey = document.createElement("td");
+        tdKey.className = "cookie-key";
+        tdKey.textContent = p.key;
+        const tdVal = document.createElement("td");
+        const code = document.createElement("code");
+        code.className = "cookie-val";
+        code.textContent = p.value || "";
+        tdVal.appendChild(code);
+        tr.appendChild(tdKey);
+        tr.appendChild(tdVal);
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      cookieList.appendChild(table);
+      this._bindCookieResize(table);
+    } else {
       const hint = document.createElement("p");
       hint.className = "settings-hint";
       hint.textContent = "未捕获到 Cookie，请打开抖音页面";
@@ -1795,15 +1837,55 @@ const settings = {
     $("settingsModeHint").textContent = "";
     const features = bf?.features;
     const list = $("settingsBFList");
-    list.innerHTML = features
-      ? Object.entries(features)
-          .filter(([k]) => k !== "securityKey")
-          .map(
-            ([k, v]) =>
-              `<div class="bf-item"><span class="bf-label">${k}</span><span class="bf-value">${String(v).slice(0, 60)}</span></div>`,
-          )
-          .join("")
-      : '<span class="settings-hint">未捕获，将使用默认值。打开抖音页面后可自动捕获。</span>';
+    list.innerHTML = "";
+    if (features) {
+      const entries = Object.entries(features).filter(([k]) => k !== "securityKey");
+      if (entries.length > 0) {
+        const table = document.createElement("table");
+        table.className = "cookie-table";
+        const colgroup = document.createElement("colgroup");
+        const colKey = document.createElement("col");
+        colKey.className = "cookie-key-col";
+        const colVal = document.createElement("col");
+        colgroup.appendChild(colKey);
+        colgroup.appendChild(colVal);
+        table.appendChild(colgroup);
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        const thKey = document.createElement("th");
+        thKey.className = "cookie-th-key";
+        thKey.innerHTML = "<span>特征</span><span class=\"cookie-resize-handle\"></span>";
+        const thVal = document.createElement("th");
+        thVal.className = "cookie-th-val";
+        thVal.textContent = "值";
+        headerRow.appendChild(thKey);
+        headerRow.appendChild(thVal);
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        for (const [k, v] of entries) {
+          const tr = document.createElement("tr");
+          const tdKey = document.createElement("td");
+          tdKey.className = "cookie-key";
+          tdKey.textContent = k;
+          const tdVal = document.createElement("td");
+          const code = document.createElement("code");
+          code.className = "cookie-val";
+          code.textContent = String(v);
+          tdVal.appendChild(code);
+          tr.appendChild(tdKey);
+          tr.appendChild(tdVal);
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        list.appendChild(table);
+        this._bindCookieResize(table);
+      } else {
+        list.innerHTML = '<span class="settings-hint">未捕获，将使用默认值。打开抖音页面后可自动捕获。</span>';
+      }
+    } else {
+      list.innerHTML = '<span class="settings-hint">未捕获，将使用默认值。打开抖音页面后可自动捕获。</span>';
+    }
     // secUid
     const { secUid } = await chrome.storage.local.get("secUid");
     if ($("settingsSecUid")) $("settingsSecUid").value = secUid || "";
@@ -1812,14 +1894,29 @@ const settings = {
   },
 
   _bindStatus() {
-    const $ = (id) => this._dialogBody.querySelector("#" + id);
     const root = this._dialogBody;
-    const keyRow = $("secKeyValue");
-    if (keyRow) keyRow.addEventListener("click", () => toggleKeyExpand(root));
-    for (const id of ["secSigFollowing", "secSigPost", "secSigFavorite", "secSigCollection"]) {
-      const row = $(id);
-      if (row) row.addEventListener("click", () => toggleSigExpand(root, id));
-    }
+    root.querySelectorAll(".sec-expand-hint").forEach((hint) => {
+      hint.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const row = hint.closest(".sec-clickable");
+        if (!row) return;
+        if (row.id === "secKeyValue") toggleKeyExpand(root);
+        else toggleSigExpand(root, row.id);
+      });
+    });
+    root.querySelectorAll(".sec-copy-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const targetId = btn.dataset.copy;
+        if (!targetId) return;
+        const el = root.querySelector("#" + targetId);
+        const text = el?.textContent || "";
+        if (!text || text === "\u2014") return;
+        navigator.clipboard.writeText(text).then(
+          () => dialog.showToast("\u5df2\u590d\u5236")
+        );
+      });
+    });
   },
 
   _renderStatus(secRes) {
@@ -1873,6 +1970,34 @@ const settings = {
       });
     }
   },
+
+  _bindCookieResize(table) {
+    const handle = table.querySelector(".cookie-resize-handle");
+    const colKey = table.querySelector(".cookie-key-col");
+    if (!handle || !colKey) return;
+    let startX, startWidth;
+    const onMove = (e) => {
+      const dx = e.clientX - startX;
+      colKey.style.width = Math.max(60, startWidth + dx) + "px";
+    };
+    const onUp = () => {
+      handle.classList.remove("active");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    handle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startWidth = colKey.offsetWidth;
+      handle.classList.add("active");
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    });
+  },
 };
 
 // ---------- Favorites ----------
@@ -1923,11 +2048,6 @@ class Favorites {
     }
 
     const failedIds = new Set(msg.failedAwemeIds || []);
-    const authFailed = (msg.failedAwemeIds || []).some((id) => {
-      // We don't have per-item errors here; if ALL failed with AUTH_FAILED hint
-      // it's likely key issue. Keep simple for now.
-      return false;
-    });
 
     if (msg.failed > 0 && msg.failed === msg.refreshed + msg.failed) {
       // all failed - likely auth issue
@@ -2092,8 +2212,6 @@ const favorites = new Favorites();
 
 // ---------- WorksGrid ----------
 class WorksGrid extends VirtualGrid {
-  #worksMap = null;
-
   constructor() {
     super({
       container: dom.mainContainer,
@@ -2106,7 +2224,6 @@ class WorksGrid extends VirtualGrid {
   }
 
   renderCards() {
-    this.#worksMap = new Map(state.works.map((w) => [w.awemeId, w]));
     this.render(state.works, "还没有保存的作品", "浏览抖音时，作品会自动被捕获");
   }
 
