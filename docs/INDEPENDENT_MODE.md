@@ -28,7 +28,7 @@ options → background → sendToTab → content.js → inject.js → API fetch
 | 消息链路 | `options → background → sendToTab → inject` | `options → background → direct fetch` |
 | msToken | 从 URL 捕获或 Cookie 读取 | 从 Cookie 解析 / mssdk API / 假 token |
 | ttwid | 从 Cookie 读取 | Cookie 自动携带 / ttwid API 刷新 |
-| verifyFp | 从 localStorage 或 URL 捕获 | 本地生成 |
+| verifyFp | 从 localStorage 或 URL 捕获 | 不再作为 URL 参数发送。参考项目 TikTokDownloader 所有端点均不发送 verifyFp/fp，独立模式对齐此行为 |
 | a_bogus | 从 URL 捕获 | 本地生成（SM3 + RC4） |
 | 浏览器特征 | 自动从真实页面环境获取 | 从 `chrome.storage.local` 读取（可自动捕获或手动填写） |
 
@@ -160,8 +160,7 @@ async function independentRequest(apiPath, params, options = {}) {
 
 ```js
 async function buildBaseParams(extra = {}) {
-  const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures || getBrowserFeatures();
-  const verifyFp = getVerifyFp();
+  const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures || {};
   const [webid, { savedCookie }] = await Promise.all([getWebId(), chrome.storage.local.get("savedCookie")]);
   let uifid = "";
   if (savedCookie) {
@@ -179,7 +178,6 @@ async function buildBaseParams(extra = {}) {
     browser_language: bf.browserLanguage || "zh-CN",
     // ... 更多浏览器指纹参数 ...
     webid, uifid,
-    verifyFp, fp: verifyFp,
     ...extra,
   };
 }
@@ -232,9 +230,10 @@ const data = await independentRequest("/aweme/v1/web/aweme/favorite/",
 
 - 端點：`/aweme/v1/web/aweme/detail/`
 - 参数：`aweme_id`
-- 逐条 fetch + 延迟
+- 逐条 fetch + 延迟，成功前最多重试 2 次（间隔 500-1000ms）
 - 循环逻辑迁移自现有 `handleSyncWorks`（background.js:843）
 - 批量暂停、keepalive 等保留
+- 不发送 `verifyFp`/`fp` 参数——参考项目 TikTokDownloader 所有端点均不发送这两个字段，独立模式全局对齐此行为，避免服务端因随机生成的未见过 `verifyFp` 间歇性拒绝请求
 
 ### FETCH_WORKS_PAGE（侧边栏作者作品分页）
 

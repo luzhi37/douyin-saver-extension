@@ -2123,11 +2123,6 @@ class Favorites {
       cancelBtn.className = "dy-btn flex-inline-center dy-btn-danger";
       cancelBtn.textContent = unfollowed.length > 0 ? `${cfg.cancelLabel} (${unfollowed.length})` : cfg.cancelLabel;
       cancelBtn.disabled = unfollowed.length === 0;
-      const { independentMode } = await chrome.storage.local.get("independentMode");
-      if (independentMode) {
-        cancelBtn.disabled = true;
-        cancelBtn.title = "独立模式下无法取消";
-      }
       cancelBtn.addEventListener("click", async () => {
         const targets = state[cfg.stateKey].filter((w) => w.authorFollowed === false);
         if (targets.length === 0) return;

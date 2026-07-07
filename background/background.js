@@ -1,7 +1,6 @@
 import { storage } from "./storage.js";
 import {
   ABogus,
-  getVerifyFp,
   parseCookieToPairs,
   generateRandomMsToken,
 } from "./crypto.js";
@@ -235,7 +234,6 @@ async function getWebId() {
 
 async function buildBaseParams(extra = {}) {
   const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures || {};
-  const verifyFp = getVerifyFp();
   const [webid, { savedCookie }] = await Promise.all([getWebId(), chrome.storage.local.get("savedCookie")]);
   let uifid = "";
   if (savedCookie) {
@@ -267,7 +265,7 @@ async function buildBaseParams(extra = {}) {
     device_memory: String(bf.deviceMemory || 16),
     downlink: "10",
     effective_type: "4g",
-    round_trip_time: "50",
+    round_trip_time: "200",
     whale_cut_token: "",
     cut_version: "1",
     update_version_code: "290100",
@@ -276,8 +274,6 @@ async function buildBaseParams(extra = {}) {
     support_dash: "1",
     webid,
     uifid,
-    verifyFp,
-    fp: verifyFp,
     ...extra,
   };
 }
@@ -476,8 +472,14 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
     sendResponse({ ok: true, requestId, total: awemeIds.length });
     for (let i = 0; i < awemeIds.length && !cancelled; i++) {
       try {
-        const data = await independentRequest("/aweme/v1/web/aweme/detail/", { aweme_id: awemeIds[i] });
-        const w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
+        const params = await buildBaseParams({ aweme_id: awemeIds[i] });
+        let data, w;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          data = await independentRequest("/aweme/v1/web/aweme/detail/", params);
+          w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
+          if (w) break;
+          if (attempt === 0) await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
+        }
         if (w) allWorks.push(w);
       } catch (e) {
         errors.push({ awemeId: awemeIds[i], error: e.message });
