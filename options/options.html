@@ -21,7 +21,6 @@
       <div class="group-tabs" id="groupTabs"></div>
     </div>
     <div class="topbar-right flex-row">
-      <span class="topbar-divider"></span>
       <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove">移动</button>
       <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete">移除</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost batch-action" id="btnBatchSelectAll">全选</button>
@@ -321,28 +320,29 @@
     <div class="settings-panel">
       <section class="settings-section">
         <h3 class="settings-section-title">
-          <span class="section-title-text">Cookie 配置</span>
-          <span class="section-chevron"></span>
-        </h3>
-        <div class="section-body">
-          <div class="section-body-inner" id="settingsCookieList"></div>
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3 class="settings-section-title">
           <span class="section-title-text">独立模式</span>
           <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
           <div class="section-body-inner">
-            <label class="settings-switch-row"><span>启用独立模式（无需抖音标签页）</span><input type="checkbox"
-                id="settingsChkMode" /><span class="switch-knob"></span></label>
+            <div class="settings-mode-row"><span>启用独立模式（无需抖音标签页）</span><div class="mode-switch" id="settingsModeSwitch"><div class="mode-slider" id="settingsModeSlider"></div><button class="mode-btn active" data-mode="off">关闭</button><button class="mode-btn" data-mode="on">开启</button></div></div>
             <p class="settings-hint" id="settingsModeHint">加载中…</p>
             <div class="kv-row bf-item" style="margin-top:6px">
               <label class="bf-label">secUid（用户身份）</label>
-              <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" />
+              <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" spellcheck="false" />
             </div>
+            <div class="cache-divider"></div>
+            <div id="settingsCacheList"></div>
           </div>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title">
+          <span class="section-title-text">Cookie 配置</span>
+          <span class="section-chevron"></span>
+        </h3>
+        <div class="section-body">
+          <div class="section-body-inner" id="settingsCookieList"></div>
         </div>
       </section>
       <section class="settings-section">
