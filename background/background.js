@@ -1,10 +1,5 @@
 import { storage } from "./storage.js";
-import {
-  ABogus,
-  getVerifyFp,
-  parseCookieToPairs,
-  generateRandomMsToken,
-} from "./crypto.js";
+import { ABogus, parseCookieToPairs, generateRandomMsToken } from "./crypto.js";
 
 // ===== 抖音数据管理 - Background Service Worker =====
 
@@ -23,104 +18,107 @@ const CONFIG = {
     { id: "all", name: "全部关注", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
-  DNR: {
-    RULES: [
-      {
-        id: 1,
-        priority: 1,
-        condition: {
-          urlFilter: "douyinvod.com",
-          resourceTypes: ["media", "image", "xmlhttprequest"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            {
-              header: "Referer",
-              operation: "set",
-              value: "https://www.douyin.com/",
-            },
-            {
-              header: "Origin",
-              operation: "set",
-              value: "https://www.douyin.com",
-            },
-          ],
-        },
+  DNR_RULES: [
+    {
+      id: 1,
+      priority: 1,
+      condition: {
+        urlFilter: "douyinvod.com",
+        resourceTypes: ["media", "image", "xmlhttprequest"],
       },
-      {
-        id: 2,
-        priority: 1,
-        condition: {
-          urlFilter: "douyinpic.com",
-          resourceTypes: ["image", "xmlhttprequest"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            {
-              header: "Referer",
-              operation: "set",
-              value: "https://www.douyin.com/",
-            },
-          ],
-        },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/",
+          },
+          {
+            header: "Origin",
+            operation: "set",
+            value: "https://www.douyin.com",
+          },
+        ],
       },
-      {
-        id: 3,
-        priority: 1,
-        condition: {
-          urlFilter: "||douyin.com/aweme/v1/web/",
-          resourceTypes: ["xmlhttprequest"],
-          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "Sec-Fetch-Site", operation: "remove" },
-            { header: "Sec-Fetch-Mode", operation: "remove" },
-            { header: "Sec-Fetch-Dest", operation: "remove" },
-            { header: "Sec-Fetch-User", operation: "remove" },
-            { header: "Sec-Fetch-Storage-Access", operation: "remove" },
-            { header: "Origin", operation: "remove" },
-            { header: "Accept-Language", operation: "remove" },
-            { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
-            { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
-          ],
-        },
+    },
+    {
+      id: 2,
+      priority: 1,
+      condition: {
+        urlFilter: "douyinpic.com",
+        resourceTypes: ["image", "xmlhttprequest"],
       },
-      {
-        id: 5,
-        priority: 1,
-        condition: {
-          urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
-          resourceTypes: ["xmlhttprequest"],
-          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=favorite_collection" },
-          ],
-        },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/",
+          },
+        ],
       },
-      {
-        id: 6,
-        priority: 1,
-        condition: {
-          urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
-          resourceTypes: ["xmlhttprequest"],
-          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
-          ],
-        },
+    },
+    {
+      id: 3,
+      priority: 1,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/",
+        resourceTypes: ["xmlhttprequest", "other"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
       },
-    ],
-  },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Sec-Fetch-Site", operation: "remove" },
+          { header: "Sec-Fetch-Mode", operation: "remove" },
+          { header: "Sec-Fetch-Dest", operation: "remove" },
+          { header: "Sec-Fetch-User", operation: "remove" },
+          { header: "Sec-Fetch-Storage-Access", operation: "remove" },
+          { header: "Origin", operation: "remove" },
+          { header: "Accept-Language", operation: "remove" },
+          { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
+          { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
+        ],
+      },
+    },
+    {
+      id: 5,
+      priority: 1,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
+        resourceTypes: ["xmlhttprequest"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/user/self?showTab=favorite_collection",
+          },
+        ],
+      },
+    },
+    {
+      id: 6,
+      priority: 1,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
+        resourceTypes: ["xmlhttprequest"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
+        ],
+      },
+    },
+  ],
+  URL_BASE: "https://www.douyin.com",
   TIMEOUT: {
     REQUEST: 30000,
     SECURITY_STATUS: 5000,
@@ -134,6 +132,7 @@ const CONFIG = {
     BATCH_PAUSE_MIN: 10000,
     BATCH_PAUSE_MAX: 20000,
     KEEPALIVE_INTERVAL: 2000,
+    RETRY_MAX: 2,
   },
   GROUPS: {
     ID_PREFIX: "custom_",
@@ -145,19 +144,139 @@ const CONFIG = {
     AUTHOR: 20,
     FOLLOWING: 20,
   },
+  WEBID_API: "https://mcs.zijieapi.com/webid",
+  WEBID_QUERY: "aid=6383&sdk_version=5.1.18_zip&device_platform=web",
+  AWEME_TYPE_NOTE: 68,
+  API: {
+    FOLLOWING: "/aweme/v1/web/user/following/list",
+    COLLECTION: "/aweme/v1/web/aweme/listcollection/",
+    DETAIL: "/aweme/v1/web/aweme/detail/",
+    POST: "/aweme/v1/web/aweme/post/",
+  },
+  CANCEL: {
+    like: {
+      url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
+      body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+      type: "application/x-www-form-urlencoded; charset=UTF-8",
+      referrer: "https://www.douyin.com/user/self?showTab=like",
+    },
+    collection: {
+      url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
+      body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
+      type: "application/x-www-form-urlencoded",
+      referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
+    },
+  },
+  DOUYIN_URL_PATTERN: "*://*.douyin.com/*",
+  DOUYIN_EXCLUDE_DOMAIN: "creator.douyin.com",
+  FATAL_ERRORS: new Set([
+    "NO_DOUYIN_TAB",
+    "TAB_QUERY_FAILED",
+    "NO_LISTENER",
+    "EMPTY_RESPONSE",
+    "RATE_LIMITED",
+    "CANCELLED",
+  ]),
 };
 
-// ---------- 独立模式状态 ----------
+// ---------- 模块级常量 ----------
 let abOgus = null;
+let cachedClockSkew = 0;
+let clockSkewTime = 0;
+let _independentMode = false;
+let _independentModeLoaded = false;
+
+const DOMAIN_CONFIG = {
+  [CONFIG.STORAGE_KEYS.WORKS]: {
+    storeName: CONFIG.STORAGE_KEYS.WORKS,
+    groupsName: CONFIG.STORAGE_KEYS.WORKS_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_WORKS_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.WORKS,
+    idField: "awemeId",
+  },
+  [CONFIG.STORAGE_KEYS.FOLLOWINGS]: {
+    storeName: CONFIG.STORAGE_KEYS.FOLLOWINGS,
+    groupsName: CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_FOLLOWINGS_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.FOLLOWINGS,
+    idField: "uid",
+    idToString: true,
+  },
+};
 
 async function ensureABogus() {
-  if (abOgus) return;
   const { browserFeatures } = await chrome.storage.local.get("browserFeatures");
   const f = browserFeatures || {};
-  abOgus = new ABogus(f.userAgent || navigator.userAgent, f.platform || navigator.platform);
+  abOgus = new ABogus(f.userAgent || navigator.userAgent, f.platform || navigator.platform, f);
 }
 
-const MSTOKEN_TTL = 3600000;
+async function loadIndependentMode() {
+  if (!_independentModeLoaded) {
+    const { independentMode } = await chrome.storage.local.get("independentMode");
+    _independentMode = independentMode === true;
+    _independentModeLoaded = true;
+  }
+  return _independentMode;
+}
+
+function setIndependentMode(enabled) {
+  _independentMode = enabled === true;
+  _independentModeLoaded = true;
+}
+
+async function getClockSkew() {
+  if (Date.now() - clockSkewTime < 300000) return cachedClockSkew;
+  try {
+    const t0 = Date.now();
+    const resp = await fetch("https://www.douyin.com/", { method: "HEAD", cache: "no-store" });
+    const date = resp.headers.get("Date");
+    if (date) {
+      const serverTime = new Date(date).getTime();
+      const t1 = Date.now();
+      cachedClockSkew = serverTime - Math.round((t0 + t1) / 2);
+    }
+  } catch {}
+  clockSkewTime = Date.now();
+  return cachedClockSkew;
+}
+
+async function resolveSelfSecUid() {
+  let uid = "";
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: "douyin.com", name: "uid" });
+    uid = cookies[0]?.value || "";
+  } catch {}
+
+  if (!uid) {
+    const { savedCookie } = await chrome.storage.local.get("savedCookie");
+    if (savedCookie) {
+      for (const pair of savedCookie.split(";")) {
+        const trimmed = pair.trim();
+        const idx = trimmed.indexOf("=");
+        if (idx > 0 && trimmed.slice(0, idx).toLowerCase() === "uid") {
+          uid = trimmed.slice(idx + 1);
+          break;
+        }
+      }
+    }
+  }
+
+  if (!uid) return "";
+
+  try {
+    const data = await independentRequest("/aweme/v1/web/im/user/info/", await buildBaseParams(), {
+      method: "POST",
+      body: JSON.stringify({ sec_user_ids: [uid] }),
+    });
+    const users = data.data?.users || data.users || (Array.isArray(data.data) ? data.data : []);
+    for (const u of users) {
+      if (u.sec_uid) return u.sec_uid;
+    }
+  } catch (e) {
+    console.warn("[DY] resolveSelfSecUid failed:", e.message);
+  }
+  return "";
+}
 
 function extractMsTokenFromCookie(cookieStr) {
   if (!cookieStr) return "";
@@ -180,6 +299,13 @@ async function fetchMsToken() {
   } catch {}
 
   try {
+    const browserCookies = await chrome.cookies.getAll({ domain: "bytedance.com", name: "msToken" });
+    if (browserCookies.length > 0 && browserCookies[0].value) {
+      return browserCookies[0].value;
+    }
+  } catch {}
+
+  try {
     const { savedCookie } = await chrome.storage.local.get("savedCookie");
     const msToken = extractMsTokenFromCookie(savedCookie);
     if (msToken) return msToken;
@@ -189,25 +315,19 @@ async function fetchMsToken() {
 }
 
 async function getMsToken() {
-  const { savedMsToken, savedMsTokenTime } = await chrome.storage.local.get(["savedMsToken", "savedMsTokenTime"]);
-  if (savedMsToken && savedMsTokenTime && Date.now() - savedMsTokenTime < MSTOKEN_TTL) {
-    return savedMsToken;
-  }
+  const { savedMsToken } = await chrome.storage.local.get("savedMsToken");
+  if (savedMsToken) return savedMsToken;
   const msToken = (await fetchMsToken()) || generateRandomMsToken();
   await chrome.storage.local.set({ savedMsToken: msToken, savedMsTokenTime: Date.now() });
   return msToken;
 }
 
-const WEBID_API = "https://mcs.zijieapi.com/webid";
-
 async function getWebId() {
-  const { savedWebId, savedWebIdTime } = await chrome.storage.local.get(["savedWebId", "savedWebIdTime"]);
-  if (savedWebId && savedWebIdTime && Date.now() - savedWebIdTime < MSTOKEN_TTL) {
-    return savedWebId;
-  }
+  const { savedWebId } = await chrome.storage.local.get("savedWebId");
+  if (savedWebId) return savedWebId;
   try {
     const ua = abOgus ? abOgus.userAgent : navigator.userAgent;
-    const resp = await fetch(WEBID_API + "?aid=6383&sdk_version=5.1.18_zip&device_platform=web", {
+    const resp = await fetch(CONFIG.WEBID_API + "?" + CONFIG.WEBID_QUERY, {
       method: "POST",
       headers: {
         Accept: "*/*",
@@ -235,7 +355,6 @@ async function getWebId() {
 
 async function buildBaseParams(extra = {}) {
   const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures || {};
-  const verifyFp = getVerifyFp();
   const [webid, { savedCookie }] = await Promise.all([getWebId(), chrome.storage.local.get("savedCookie")]);
   let uifid = "";
   if (savedCookie) {
@@ -267,7 +386,7 @@ async function buildBaseParams(extra = {}) {
     device_memory: String(bf.deviceMemory || 16),
     downlink: "10",
     effective_type: "4g",
-    round_trip_time: "50",
+    round_trip_time: "200",
     whale_cut_token: "",
     cut_version: "1",
     update_version_code: "290100",
@@ -276,8 +395,6 @@ async function buildBaseParams(extra = {}) {
     support_dash: "1",
     webid,
     uifid,
-    verifyFp,
-    fp: verifyFp,
     ...extra,
   };
 }
@@ -288,8 +405,8 @@ async function independentRequest(apiPath, params, options = {}) {
   params.msToken = await getMsToken();
   const method = options.method || "GET";
   const qs = new URLSearchParams(params).toString();
-  const a_bogus = abOgus.getValue(qs, method);
-  const url = "https://www.douyin.com" + apiPath + "?" + qs + "&a_bogus=" + a_bogus;
+  const a_bogus = abOgus.getValue(qs, method, await getClockSkew());
+  const url = CONFIG.URL_BASE + apiPath + "?" + qs + "&a_bogus=" + a_bogus;
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
   try {
@@ -300,15 +417,20 @@ async function independentRequest(apiPath, params, options = {}) {
       headers: {
         Accept: "application/json, text/plain, */*",
         "User-Agent": abOgus ? abOgus.userAgent : navigator.userAgent,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...options.headers,
       },
       method,
+      body: options.body,
       signal: controller.signal,
     });
     clearTimeout(tid);
     if (!resp.ok) throw new Error("HTTP_" + resp.status);
     const data = await resp.json();
-    if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+    if (data.status_code !== undefined && data.status_code !== 0) {
+      console.warn("[DY] API_ERROR status_code=%s url=%s", data.status_code, apiPath);
+      throw new Error("API_ERROR");
+    }
     return data;
   } catch (e) {
     clearTimeout(tid);
@@ -343,11 +465,11 @@ function formatWork(aw) {
         : null;
   return {
     awemeId: String(aw.aweme_id),
-    type: (aw.aweme_type || aw.awemeType) === 68 ? "note" : "video",
+    type: (aw.aweme_type || aw.awemeType) === CONFIG.AWEME_TYPE_NOTE ? "note" : "video",
     desc: aw.desc || "",
     nickname: String(author.nickname || author.nickName || ""),
     uid: String(author.uid || ""),
-    authorHomeUrl: author.sec_uid ? "https://www.douyin.com/user/" + author.sec_uid : "",
+    authorHomeUrl: author.sec_uid ? CONFIG.URL_BASE + "/user/" + author.sec_uid : "",
     cover: ((video.cover && video.cover.url_list) || [])[0] ? video.cover.url_list[0].replace(/^http:/, "") : "",
     video: videoUrl,
     images: (aw.images || [])
@@ -366,7 +488,7 @@ function formatFollowing(item) {
     nickname: item.nickname || "未知",
     avatarLarger: ((item.avatar_larger && item.avatar_larger.url_list) || [])[0] || "",
     followerCount: item.follower_count || 0,
-    profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
+    profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
   };
 }
 
@@ -375,29 +497,53 @@ function formatFollowing(item) {
 async function handleIndependentFetchFollowing(secUid, sendResponse) {
   try {
     await ensureABogus();
+    if (secUid === "self" || !secUid) {
+      const { secUid: stored } = await chrome.storage.local.get("secUid");
+      if (stored && stored !== "self") secUid = stored;
+      else secUid = await resolveSelfSecUid();
+      if (!secUid) return sendResponse({ ok: false, error: "NO_SEC_UID" });
+    }
+    let userId = "";
+    try {
+      const cookies = await chrome.cookies.getAll({ domain: "douyin.com", name: "uid" });
+      userId = cookies[0]?.value || "";
+    } catch {}
+    if (!userId) {
+      const { savedCookie } = await chrome.storage.local.get("savedCookie");
+      if (savedCookie) {
+        for (const pair of savedCookie.split(";")) {
+          const trimmed = pair.trim();
+          const idx = trimmed.indexOf("=");
+          if (idx > 0 && trimmed.slice(0, idx).toLowerCase() === "uid") {
+            userId = trimmed.slice(idx + 1);
+            break;
+          }
+        }
+      }
+    }
     const requestId = crypto.randomUUID();
     let cancelled = false,
       hasMore = true,
-      offset = 0,
-      maxTime = 0;
+      offset = 0;
     const all = [];
+    const seen = new Set();
     const cancelHandler = (msg) => {
       if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
     };
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
-      const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset) };
-      if (maxTime > 0) params.max_time = String(maxTime);
-      const data = await independentRequest(
-        "/aweme/v1/web/user/following/list",
-        await buildBaseParams(params),
-      );
+      const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset), min_time: "0", max_time: "0", source_type: "4", gps_access: "0", address_book_access: "0", is_top: "1" };
+      if (userId) params.user_id = userId;
+      const data = await independentRequest(CONFIG.API.FOLLOWING, await buildBaseParams(params));
       if (data.status_code === 0 && Array.isArray(data.followings)) {
         if (data.followings.length === 0) break;
-        all.push(...data.followings.map(formatFollowing));
+        const newItems = data.followings.filter((item) => !seen.has(String(item.uid)));
+        if (newItems.length === 0) break;
+        newItems.forEach((item) => seen.add(String(item.uid)));
+        all.push(...newItems.map(formatFollowing));
         hasMore = data.has_more === true || data.has_more === 1;
-        offset += data.followings.length;
-        maxTime = data.min_time || 0;
+        if (data.total > 0 && all.length >= data.total) hasMore = false;
+        offset += CONFIG.PAGE.FOLLOWING;
       } else break;
       chrome.runtime
         .sendMessage({ type: "FOLLOWING_PROGRESS", collected: all.length, hasMore, total: data.total || 0, requestId })
@@ -428,7 +574,7 @@ async function handleIndependentFetchCollection(sendResponse) {
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
       const data = await independentRequest(
-        "/aweme/v1/web/aweme/listcollection/",
+        CONFIG.API.COLLECTION,
         await buildBaseParams({ sec_user_id: "self", count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }),
         { method: "POST" },
       );
@@ -436,7 +582,7 @@ async function handleIndependentFetchCollection(sendResponse) {
         if (data.aweme_list.length === 0) break;
         all.push(...data.aweme_list.map(formatWork).filter(Boolean));
         hasMore = data.has_more === true || data.has_more === 1;
-        cursor = data.cursor || data.max_cursor || cursor + 20;
+        cursor = data.cursor || data.max_cursor || cursor + CONFIG.PAGE.COLLECTION;
       } else break;
       const un = all.filter((w) => w.authorFollowed === false).length;
       chrome.runtime
@@ -475,12 +621,21 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
     chrome.runtime.onMessage.addListener(cancelHandler);
     sendResponse({ ok: true, requestId, total: awemeIds.length });
     for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+      let currentOk = true;
       try {
-        const data = await independentRequest("/aweme/v1/web/aweme/detail/", { aweme_id: awemeIds[i] });
-        const w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
+        const params = await buildBaseParams({ aweme_id: awemeIds[i], request_source: "600", origin_type: "video_page" });
+        let data, w;
+        for (let attempt = 0; attempt < CONFIG.SYNC.RETRY_MAX; attempt++) {
+          data = await independentRequest(CONFIG.API.DETAIL, params);
+          w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
+          if (w) break;
+          if (attempt === 0) await new Promise((r) => setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)));
+        }
         if (w) allWorks.push(w);
+        else { errors.push({ awemeId: awemeIds[i], error: "DELETED" }); currentOk = false; }
       } catch (e) {
         errors.push({ awemeId: awemeIds[i], error: e.message });
+        currentOk = false;
       }
       chrome.runtime
         .sendMessage({
@@ -488,7 +643,7 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
           requestId,
           index: i,
           total: awemeIds.length,
-          status: errors.length ? "error" : "ok",
+          status: currentOk ? "ok" : "error",
           awemeId: awemeIds[i],
         })
         .catch(() => {});
@@ -533,8 +688,8 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
 async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
   try {
     await ensureABogus();
-    const data = await independentRequest(
-      "/aweme/v1/web/aweme/post/",
+      const data = await independentRequest(
+      CONFIG.API.POST,
       await buildBaseParams({
         sec_user_id: secUid,
         max_cursor: String(cursor || 0),
@@ -557,14 +712,19 @@ async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
 
 async function handleCaptureBrowserFeatures(message, sendResponse) {
   if (message.features) {
-    await chrome.storage.local.set({ browserFeatures: message.features });
-    abOgus = new ABogus(message.features.userAgent || navigator.userAgent, message.features.platform || navigator.platform);
+    await chrome.storage.local.set({ browserFeatures: message.features, browserFeaturesTime: Date.now() });
+    abOgus = new ABogus(
+      message.features.userAgent || navigator.userAgent,
+      message.features.platform || navigator.platform,
+      message.features,
+    );
   }
   sendResponse({ ok: true });
 }
 
 async function handleSetMode(message, sendResponse) {
   await chrome.storage.local.set({ independentMode: message.enabled === true });
+  setIndependentMode(message.enabled);
   if (message.enabled) await ensureABogus();
   sendResponse({ ok: true });
 }
@@ -573,7 +733,7 @@ async function handleSetMode(message, sendResponse) {
 
 // ---------- 初始化 ----------
 async function setupDeclarativeNetRequest() {
-  const rules = CONFIG.DNR.RULES;
+  const rules = CONFIG.DNR_RULES;
 
   try {
     const existing = await chrome.declarativeNetRequest.getDynamicRules();
@@ -589,6 +749,7 @@ async function setupDeclarativeNetRequest() {
 
 chrome.runtime.onInstalled.addListener(async () => {
   await setupDeclarativeNetRequest();
+  await loadIndependentMode();
 
   const worksGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS);
   if (!worksGroups.length) {
@@ -626,24 +787,6 @@ function asyncHandler(fn, sendResponse) {
   return true;
 }
 
-const DOMAIN_CONFIG = {
-  [CONFIG.STORAGE_KEYS.WORKS]: {
-    storeName: CONFIG.STORAGE_KEYS.WORKS,
-    groupsName: CONFIG.STORAGE_KEYS.WORKS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_WORKS_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.WORKS,
-    idField: "awemeId",
-  },
-  [CONFIG.STORAGE_KEYS.FOLLOWINGS]: {
-    storeName: CONFIG.STORAGE_KEYS.FOLLOWINGS,
-    groupsName: CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_FOLLOWINGS_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.FOLLOWINGS,
-    idField: "uid",
-    idToString: true,
-  },
-};
-
 function getStoreName(domain) {
   return DOMAIN_CONFIG[domain || CONFIG.STORAGE_KEYS.WORKS].storeName;
 }
@@ -659,6 +802,26 @@ function getDefaultGroups(domain) {
 function toStorageId(domain, id) {
   const cfg = DOMAIN_CONFIG[domain];
   return cfg.idToString ? String(id) : id;
+}
+
+// domainStorage: 封装 DOMAIN_CONFIG，让调用者只需传 domain 名称，避免硬编码 store 名
+function domainStorage(domain) {
+  const cfg = DOMAIN_CONFIG[domain];
+  if (!cfg) throw new Error("Unknown domain: " + domain);
+  return {
+    getAll: () => storage.getAll(cfg.storeName),
+    get: (key) => storage.get(cfg.storeName, key),
+    putBatch: (items) => storage.putBatch(cfg.storeName, items),
+    deleteBatch: (keys) => storage.deleteBatch(cfg.storeName, keys),
+    count: () => storage.count(cfg.storeName),
+    getByGroup: (groupId) => storage.getByIndex(cfg.storeName, "groupId", groupId),
+    clear: () => storage.clear(cfg.storeName),
+    getGroups: () => storage.getGroups(cfg.groupsName),
+    putGroups: (groups) => storage.putGroups(cfg.groupsName, groups),
+    getDefaultGroups: () => cfg.defaultGroups,
+    idField: cfg.idField,
+    itemKey: cfg.itemKey,
+  };
 }
 
 function createDomainHandlers(domain) {
@@ -734,11 +897,12 @@ function mergeWork(w, old) {
 }
 
 async function mergeAndSaveWorks(works) {
+  const ds = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
   const valid = works.filter((w) => w && w.awemeId);
   if (valid.length === 0) return { added: 0, updated: 0, total: 0 };
 
   const oldItems = await Promise.all(
-    valid.map((w) => storage.get(CONFIG.STORAGE_KEYS.WORKS, w.awemeId).then((old) => ({ w, old }))),
+    valid.map((w) => ds.get(w.awemeId).then((old) => ({ w, old }))),
   );
 
   let added = 0,
@@ -750,9 +914,9 @@ async function mergeAndSaveWorks(works) {
     if (isNew) added++;
     else updated++;
   }
-  await storage.putBatch(CONFIG.STORAGE_KEYS.WORKS, toWrite);
+  await ds.putBatch(toWrite);
 
-  const totalCount = await storage.count(CONFIG.STORAGE_KEYS.WORKS);
+  const totalCount = await ds.count();
   return { added, updated, total: totalCount };
 }
 
@@ -763,8 +927,8 @@ function sendSyncDone(requestId, result) {
 }
 
 async function withDouyinTab() {
-  const tabs = await chrome.tabs.query({ url: "*://*.douyin.com/*" });
-  const tab = tabs.find((t) => t.url && !t.url.includes("creator.douyin.com") && t.status === "complete");
+  const tabs = await chrome.tabs.query({ url: CONFIG.DOUYIN_URL_PATTERN });
+  const tab = tabs.find((t) => t.url && !t.url.includes(CONFIG.DOUYIN_EXCLUDE_DOMAIN) && t.status === "complete");
   return tab || null;
 }
 
@@ -871,8 +1035,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // 独立模式 / Tab 转发
     case "FETCH_FOLLOWING":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchFollowing(message.secUid, sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentFetchFollowing(message.secUid, sendResponse);
         return handleFetchFollowing(message.secUid, sendResponse);
       }, sendResponse);
     case "FETCH_FAVORITES":
@@ -881,23 +1045,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "FETCH_COLLECTION":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchCollection(sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentFetchCollection(sendResponse);
         return handleFetchCollection(sendResponse);
       }, sendResponse);
     case "SYNC_WORKS":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentSyncWorks(message.awemeIds, sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentSyncWorks(message.awemeIds, sendResponse);
         return handleSyncWorks(message.awemeIds, sendResponse);
       }, sendResponse);
     case "FETCH_WORKS_PAGE":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchWorksPage(message.secUid, message.cursor || "", sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentFetchWorksPage(message.secUid, message.cursor || "", sendResponse);
         sendToTab(
           "FETCH_WORKS_PAGE",
-          { secUid: message.secUid, cursor: message.cursor || "", count: CONFIG.PAGE.AUTHOR, timeout: CONFIG.TIMEOUT.REQUEST },
+          {
+            secUid: message.secUid,
+            cursor: message.cursor || "",
+            count: CONFIG.PAGE.AUTHOR,
+            timeout: CONFIG.TIMEOUT.REQUEST,
+          },
           sendResponse,
         );
       }, sendResponse);
@@ -907,8 +1076,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "CANCEL_COLLECTION":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentCancel(message.awemeIds, "collection", sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentCancel(message.awemeIds, "collection", sendResponse);
         return runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", sendResponse);
       }, sendResponse);
     case "GET_SECURITY_STATUS":
@@ -922,10 +1091,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return asyncHandler(() => handleCaptureBrowserFeatures(message, sendResponse), sendResponse);
     case "GET_COOKIE_INFO":
       return asyncHandler(async () => {
-        const { savedCookie } = await chrome.storage.local.get("savedCookie");
-        if (!savedCookie) return sendResponse({ ok: true, pairs: [], hasSessionid: false });
+        const { savedCookie, savedCookieTime } = await chrome.storage.local.get(["savedCookie", "savedCookieTime"]);
+        if (!savedCookie) return sendResponse({ ok: true, pairs: [], hasSessionid: false, time: null });
         const pairs = parseCookieToPairs(savedCookie);
-        sendResponse({ ok: true, pairs, rawCookie: savedCookie, hasSessionid: pairs.some((p) => p.key === "sessionid"), count: pairs.length });
+        sendResponse({
+          ok: true,
+          pairs,
+          rawCookie: savedCookie,
+          hasSessionid: pairs.some((p) => p.key === "sessionid"),
+          count: pairs.length,
+          time: savedCookieTime || null,
+        });
       }, sendResponse);
     case "GET_MSTOKEN":
       return asyncHandler(async () => {
@@ -935,6 +1111,80 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return asyncHandler(async () => {
         const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures;
         sendResponse({ ok: true, features: bf || null });
+      }, sendResponse);
+
+    case "GET_CACHE_TIMES":
+      return asyncHandler(async () => {
+        const { savedMsTokenTime, savedWebIdTime, browserFeaturesTime, savedCookieTime } =
+          await chrome.storage.local.get(["savedMsTokenTime", "savedWebIdTime", "browserFeaturesTime", "savedCookieTime"]);
+        sendResponse({
+          ok: true,
+          times: {
+            msToken: savedMsTokenTime || null,
+            webId: savedWebIdTime || null,
+            browserFeatures: browserFeaturesTime || null,
+            cookie: savedCookieTime || null,
+          },
+        });
+      }, sendResponse);
+
+    case "RESOLVE_SEC_UID":
+      return asyncHandler(async () => {
+        const secUid = await resolveSelfSecUid();
+        sendResponse({ ok: !!secUid, secUid });
+      }, sendResponse);
+
+    case "REFRESH_MSTOKEN":
+      return asyncHandler(async () => {
+        await chrome.storage.local.remove(["savedMsToken", "savedMsTokenTime"]);
+        const msToken = await getMsToken();
+        const { savedMsTokenTime } = await chrome.storage.local.get("savedMsTokenTime");
+        sendResponse({ ok: true, msToken, time: savedMsTokenTime || null });
+      }, sendResponse);
+
+    case "REFRESH_WEBID":
+      return asyncHandler(async () => {
+        await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+        const webId = await getWebId();
+        const { savedWebIdTime } = await chrome.storage.local.get("savedWebIdTime");
+        sendResponse({ ok: true, webId, time: savedWebIdTime || null });
+      }, sendResponse);
+
+    case "REFRESH_BROWSER_FEATURES":
+      return asyncHandler(async () => {
+        await chrome.storage.local.remove(["browserFeatures", "browserFeaturesTime"]);
+        const resp = await sendToTabAsync("REQUEST_CAPTURE_BROWSER_FEATURES", { timeout: 10000 });
+        if (resp?.ok && resp.features) {
+          await chrome.storage.local.set({ browserFeatures: resp.features, browserFeaturesTime: Date.now() });
+          abOgus = new ABogus(
+            resp.features.userAgent || navigator.userAgent,
+            resp.features.platform || navigator.platform,
+            resp.features,
+          );
+          sendResponse({ ok: true, features: resp.features, time: Date.now() });
+        } else {
+          sendResponse({ ok: false, error: resp?.error || "CAPTURE_FAILED", hint: "请打开抖音页面后重试" });
+        }
+      }, sendResponse);
+
+    case "REFRESH_COOKIE":
+      return asyncHandler(async () => {
+        try {
+          const cookies = await chrome.cookies.getAll({ domain: "douyin.com" });
+          const pairs = cookies.map((c) => c.name + "=" + c.value);
+          const rawCookie = pairs.join("; ");
+          const time = Date.now();
+          await chrome.storage.local.set({ savedCookie: rawCookie, savedCookieTime: time });
+          sendResponse({
+            ok: true,
+            pairs: cookies.map((c) => ({ key: c.name, value: c.value })),
+            rawCookie,
+            count: cookies.length,
+            time,
+          });
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message });
+        }
       }, sendResponse);
 
     case "CANCEL_ACTIVE_TASK":
@@ -1166,28 +1416,13 @@ async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
     .catch(() => {});
 }
 
-const CANCEL_ENDPOINTS = {
-  like: {
-    url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
-    body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
-    type: "application/x-www-form-urlencoded; charset=UTF-8",
-    referrer: "https://www.douyin.com/user/self?showTab=like",
-  },
-  collection: {
-    url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
-    body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
-    type: "application/x-www-form-urlencoded",
-    referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
-  },
-};
-
 async function handleIndependentCancel(awemeIds, kind, sendResponse) {
   try {
     if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
     const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
     if (!savedCookie) return sendResponse({ ok: false, error: "NO_COOKIE" });
     const key = (browserFeatures && browserFeatures.securityKey) || "";
-    const ep = CANCEL_ENDPOINTS[kind];
+    const ep = CONFIG.CANCEL[kind];
     if (!ep) return sendResponse({ ok: false, error: "UNKNOWN_KIND" });
 
     const requestId = crypto.randomUUID();
@@ -1261,7 +1496,8 @@ async function handleSaveWorks(works, sendResponse) {
 
 async function handleGetWork(awemeId, sendResponse) {
   try {
-    const work = await storage.get(CONFIG.STORAGE_KEYS.WORKS, awemeId);
+    const ds = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
+    const work = await ds.get(awemeId);
     sendResponse({ work: work || null });
   } catch (err) {
     sendResponse({ error: err.message });
@@ -1276,7 +1512,8 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
       return sendResponse({ ok: false, error: "EMPTY" });
     }
 
-    const store = await storage.getAll(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+    const ds = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+    const stored = await ds.getAll();
     const incomingUids = new Set();
     let added = 0,
       updated = 0;
@@ -1287,8 +1524,8 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
       if (!f || !f.uid) continue;
       const uid = String(f.uid);
       incomingUids.add(uid);
-      const old = store[uid];
-      store[uid] = {
+      const old = stored[uid];
+      stored[uid] = {
         ...f,
         uid,
         groupId: isImport
@@ -1302,20 +1539,20 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
 
     // Mark users not in new list as 'lost'
     const lostUids = [];
-    for (const uid of Object.keys(store)) {
+    for (const uid of Object.keys(stored)) {
       if (!incomingUids.has(uid)) {
         lostUids.push(uid);
       }
     }
 
-    await storage.putBatch(CONFIG.STORAGE_KEYS.FOLLOWINGS, Object.values(store));
+    await ds.putBatch(Object.values(stored));
     sendResponse({
       ok: true,
       added,
       updated,
       lost: lostUids.length,
       lostUids,
-      total: Object.keys(store).length,
+      total: Object.keys(stored).length,
     });
   } catch (err) {
     sendResponse({ error: err.message });
@@ -1426,15 +1663,6 @@ async function handleDeleteGroup(domain, groupId, sendResponse) {
 
 // ---------- 同步 Handler ----------
 
-const FATAL_ERRORS = new Set([
-  "NO_DOUYIN_TAB",
-  "TAB_QUERY_FAILED",
-  "NO_LISTENER",
-  "EMPTY_RESPONSE",
-  "RATE_LIMITED",
-  "CANCELLED",
-]);
-
 async function handleSyncWorks(awemeIds, sendResponse) {
   if (!Array.isArray(awemeIds) || awemeIds.length === 0) {
     return sendResponse({ ok: false, error: "EMPTY" });
@@ -1467,7 +1695,7 @@ async function handleSyncWorks(awemeIds, sendResponse) {
 
     if (!resp?.ok) {
       const err = resp?.error || "UNKNOWN";
-      if (FATAL_ERRORS.has(err) || err.startsWith("HTTP 429") || err.startsWith("HTTP 401")) {
+      if (CONFIG.FATAL_ERRORS.has(err) || err.startsWith("HTTP 429") || err.startsWith("HTTP 401")) {
         for (let j = i; j < awemeIds.length; j++) {
           errors.push({ awemeId: awemeIds[j], error: j === i ? err : "BATCH_TERMINATED" });
         }
@@ -1476,6 +1704,8 @@ async function handleSyncWorks(awemeIds, sendResponse) {
       errors.push({ awemeId: awemeIds[i], error: err });
     } else if (resp.work) {
       allWorks.push(resp.work);
+    } else {
+      errors.push({ awemeId: awemeIds[i], error: "DELETED" });
     }
 
     chrome.runtime
@@ -1616,11 +1846,13 @@ async function handleResetDomain(domain, sendResponse) {
 
 async function handleGetStats(sendResponse) {
   try {
+    const dsWorks = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
+    const dsFollowings = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
     const [works, followings, works_groups, followings_groups, est] = await Promise.all([
-      storage.getAll(CONFIG.STORAGE_KEYS.WORKS),
-      storage.getAll(CONFIG.STORAGE_KEYS.FOLLOWINGS),
-      storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS),
-      storage.getGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS),
+      dsWorks.getAll(),
+      dsFollowings.getAll(),
+      dsWorks.getGroups(),
+      dsFollowings.getGroups(),
       storage.estimate(),
     ]);
 

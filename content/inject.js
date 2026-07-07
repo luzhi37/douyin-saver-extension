@@ -87,6 +87,11 @@
   let __capturedCollectionQuery = null;
   let __capturedFavoriteQuery = null;
 
+  const PAGE_KEYS = new Set(["offset", "count"]);
+  const origFetch = window.fetch;
+  let activeTask = null;
+  let observerTimer = null;
+
   // ===== 签名缓存 =====
 
   function captureFromUrl(url, parsedUrl) {
@@ -132,7 +137,6 @@
     return url;
   }
 
-  const PAGE_KEYS = new Set(["offset", "count"]);
   function stripPageKeys(captured) {
     if (!captured) return null;
     const out = new Map();
@@ -447,7 +451,6 @@
 
   // ===== Fetch Hook (合并 saver 提取 + tools 签名缓存) =====
 
-  const origFetch = window.fetch;
   window.fetch = function (...args) {
     const request = args[0];
     const url = typeof request === "string" ? request : request?.url;
@@ -571,8 +574,6 @@
   }
 
   // ===== 后台任务取消支持 =====
-
-  let activeTask = null;
 
   function setActiveTask(abort) {
     activeTask?.abort();
@@ -1055,8 +1056,6 @@
     return null;
   }
 
-  const SAVE_BTN_CLASS = CONFIG.BUTTON.CLASS_SAVE;
-
   function createButton(className, svgContent, tooltipText) {
     const btn = document.createElement("xg-icon");
     btn.className = className;
@@ -1074,16 +1073,16 @@
     const style = document.createElement("style");
     style.id = "dy-saver-styles";
     style.textContent = `
-      .basePlayerContainer .${SAVE_BTN_CLASS} {
+      .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} {
         cursor: pointer;
         position: relative;
       }
-      .basePlayerContainer .${SAVE_BTN_CLASS} .semi-icon {
+      .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .semi-icon {
         display: flex;
         justify-content: center;
         align-items: center;
       }
-      .basePlayerContainer .${SAVE_BTN_CLASS} .xg-tips {
+      .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .xg-tips {
         left: auto;
         right: 0;
         transform: none;
@@ -1094,7 +1093,7 @@
 
   function createSaveButton() {
     const btn = createButton(
-      SAVE_BTN_CLASS,
+      CONFIG.BUTTON.CLASS_SAVE,
       `
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -4 40 40" width="1em" height="1em" style="font-size:32px;">
         <path fill="currentColor" d="M26 4H6a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h20a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 22H6V6h20v20zm-4-11h-5v-5h-2v5h-5v2h5v5h2v-5h5v-2z"/>
@@ -1136,10 +1135,8 @@
     document.dispatchEvent(new CustomEvent(CONFIG.EVENTS.BUTTON_CLICK, { detail: { fullWork } }));
   }
 
-  let observerTimer = null;
-
   function injectButtons() {
-    const grids = document.querySelectorAll(`${CONFIG.BUTTON.GRID}:not(:has(.${SAVE_BTN_CLASS}))`);
+    const grids = document.querySelectorAll(`${CONFIG.BUTTON.GRID}:not(:has(.${CONFIG.BUTTON.CLASS_SAVE}))`);
     for (const grid of grids) {
       const saveBtn = createSaveButton();
       saveBtn.addEventListener("click", (e) => onSaveButtonClick(saveBtn, e));
@@ -1167,6 +1164,13 @@
 
     observer.observe(document, { subtree: true, childList: true });
   }
+
+  document.addEventListener("DY_REQUEST_BROWSER_FEATURES", (event) => {
+    const features = collectBrowserFeatures();
+    document.dispatchEvent(new CustomEvent("DY_CAPTURE_BROWSER_FEATURES_REFRESH", {
+      detail: { features, requestId: event.detail?.requestId },
+    }));
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
