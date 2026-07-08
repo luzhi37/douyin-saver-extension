@@ -1,9 +1,5 @@
 import { storage } from "./storage.js";
-import {
-  ABogus,
-  parseCookieToPairs,
-  generateRandomMsToken,
-} from "./crypto.js";
+import { ABogus, parseCookieToPairs, generateRandomMsToken } from "./crypto.js";
 
 // ===== 抖音数据管理 - Background Service Worker =====
 
@@ -22,104 +18,107 @@ const CONFIG = {
     { id: "all", name: "全部关注", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
-  DNR: {
-    RULES: [
-      {
-        id: 1,
-        priority: 1,
-        condition: {
-          urlFilter: "douyinvod.com",
-          resourceTypes: ["media", "image", "xmlhttprequest"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            {
-              header: "Referer",
-              operation: "set",
-              value: "https://www.douyin.com/",
-            },
-            {
-              header: "Origin",
-              operation: "set",
-              value: "https://www.douyin.com",
-            },
-          ],
-        },
+  DNR_RULES: [
+    {
+      id: 1,
+      priority: 1,
+      condition: {
+        urlFilter: "douyinvod.com",
+        resourceTypes: ["media", "image", "xmlhttprequest"],
       },
-      {
-        id: 2,
-        priority: 1,
-        condition: {
-          urlFilter: "douyinpic.com",
-          resourceTypes: ["image", "xmlhttprequest"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            {
-              header: "Referer",
-              operation: "set",
-              value: "https://www.douyin.com/",
-            },
-          ],
-        },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/",
+          },
+          {
+            header: "Origin",
+            operation: "set",
+            value: "https://www.douyin.com",
+          },
+        ],
       },
-      {
-        id: 3,
-        priority: 1,
-        condition: {
-          urlFilter: "||douyin.com/aweme/v1/web/",
-          resourceTypes: ["xmlhttprequest"],
-          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "Sec-Fetch-Site", operation: "remove" },
-            { header: "Sec-Fetch-Mode", operation: "remove" },
-            { header: "Sec-Fetch-Dest", operation: "remove" },
-            { header: "Sec-Fetch-User", operation: "remove" },
-            { header: "Sec-Fetch-Storage-Access", operation: "remove" },
-            { header: "Origin", operation: "remove" },
-            { header: "Accept-Language", operation: "remove" },
-            { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
-            { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
-          ],
-        },
+    },
+    {
+      id: 2,
+      priority: 1,
+      condition: {
+        urlFilter: "douyinpic.com",
+        resourceTypes: ["image", "xmlhttprequest"],
       },
-      {
-        id: 5,
-        priority: 1,
-        condition: {
-          urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
-          resourceTypes: ["xmlhttprequest"],
-          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=favorite_collection" },
-          ],
-        },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/",
+          },
+        ],
       },
-      {
-        id: 6,
-        priority: 1,
-        condition: {
-          urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
-          resourceTypes: ["xmlhttprequest"],
-          excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-        },
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
-          ],
-        },
+    },
+    {
+      id: 3,
+      priority: 1,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/",
+        resourceTypes: ["xmlhttprequest", "other"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
       },
-    ],
-  },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Sec-Fetch-Site", operation: "remove" },
+          { header: "Sec-Fetch-Mode", operation: "remove" },
+          { header: "Sec-Fetch-Dest", operation: "remove" },
+          { header: "Sec-Fetch-User", operation: "remove" },
+          { header: "Sec-Fetch-Storage-Access", operation: "remove" },
+          { header: "Origin", operation: "remove" },
+          { header: "Accept-Language", operation: "remove" },
+          { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
+          { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
+        ],
+      },
+    },
+    {
+      id: 5,
+      priority: 1,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
+        resourceTypes: ["xmlhttprequest"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/user/self?showTab=favorite_collection",
+          },
+        ],
+      },
+    },
+    {
+      id: 6,
+      priority: 1,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
+        resourceTypes: ["xmlhttprequest"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
+        ],
+      },
+    },
+  ],
+  URL_BASE: "https://www.douyin.com",
   TIMEOUT: {
     REQUEST: 30000,
     SECURITY_STATUS: 5000,
@@ -133,6 +132,7 @@ const CONFIG = {
     BATCH_PAUSE_MIN: 10000,
     BATCH_PAUSE_MAX: 20000,
     KEEPALIVE_INTERVAL: 2000,
+    RETRY_MAX: 2,
   },
   GROUPS: {
     ID_PREFIX: "custom_",
@@ -144,19 +144,123 @@ const CONFIG = {
     AUTHOR: 20,
     FOLLOWING: 20,
   },
+  WEBID_API: "https://mcs.zijieapi.com/webid",
+  WEBID_QUERY: "aid=6383&sdk_version=5.1.18_zip&device_platform=web",
+  AWEME_TYPE_NOTE: 68,
+  API: {
+    FOLLOWING: "/aweme/v1/web/user/following/list",
+    COLLECTION: "/aweme/v1/web/aweme/listcollection/",
+    DETAIL: "/aweme/v1/web/aweme/detail/",
+    POST: "/aweme/v1/web/aweme/post/",
+  },
+  CANCEL: {
+    like: {
+      url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
+      body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+      type: "application/x-www-form-urlencoded; charset=UTF-8",
+      referrer: "https://www.douyin.com/user/self?showTab=like",
+    },
+    collection: {
+      url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
+      body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
+      type: "application/x-www-form-urlencoded",
+      referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
+    },
+  },
+  DOUYIN_URL_PATTERN: "*://*.douyin.com/*",
+  DOUYIN_EXCLUDE_DOMAIN: "creator.douyin.com",
+  FATAL_ERRORS: new Set([
+    "NO_DOUYIN_TAB",
+    "TAB_QUERY_FAILED",
+    "NO_LISTENER",
+    "EMPTY_RESPONSE",
+    "RATE_LIMITED",
+    "CANCELLED",
+  ]),
 };
 
-// ---------- 独立模式状态 ----------
+// ---------- 模块级常量 ----------
 let abOgus = null;
+let cachedClockSkew = 0;
+let clockSkewTime = 0;
+
+const DOMAIN_CONFIG = {
+  [CONFIG.STORAGE_KEYS.WORKS]: {
+    storeName: CONFIG.STORAGE_KEYS.WORKS,
+    groupsName: CONFIG.STORAGE_KEYS.WORKS_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_WORKS_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.WORKS,
+    idField: "awemeId",
+  },
+  [CONFIG.STORAGE_KEYS.FOLLOWINGS]: {
+    storeName: CONFIG.STORAGE_KEYS.FOLLOWINGS,
+    groupsName: CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_FOLLOWINGS_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.FOLLOWINGS,
+    idField: "uid",
+    idToString: true,
+  },
+};
 
 async function ensureABogus() {
-  if (abOgus) return;
   const { browserFeatures } = await chrome.storage.local.get("browserFeatures");
   const f = browserFeatures || {};
-  abOgus = new ABogus(f.userAgent || navigator.userAgent, f.platform || navigator.platform);
+  abOgus = new ABogus(f.userAgent || navigator.userAgent, f.platform || navigator.platform, f);
 }
 
-const MSTOKEN_TTL = 3600000;
+async function getClockSkew() {
+  if (Date.now() - clockSkewTime < 300000) return cachedClockSkew;
+  try {
+    const t0 = Date.now();
+    const resp = await fetch("https://www.douyin.com/", { method: "HEAD", cache: "no-store" });
+    const date = resp.headers.get("Date");
+    if (date) {
+      const serverTime = new Date(date).getTime();
+      const t1 = Date.now();
+      cachedClockSkew = serverTime - Math.round((t0 + t1) / 2);
+    }
+  } catch {}
+  clockSkewTime = Date.now();
+  return cachedClockSkew;
+}
+
+async function resolveSelfSecUid() {
+  let uid = "";
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: "douyin.com", name: "uid" });
+    uid = cookies[0]?.value || "";
+  } catch {}
+
+  if (!uid) {
+    const { savedCookie } = await chrome.storage.local.get("savedCookie");
+    if (savedCookie) {
+      for (const pair of savedCookie.split(";")) {
+        const trimmed = pair.trim();
+        const idx = trimmed.indexOf("=");
+        if (idx > 0 && trimmed.slice(0, idx).toLowerCase() === "uid") {
+          uid = trimmed.slice(idx + 1);
+          break;
+        }
+      }
+    }
+  }
+
+  if (!uid) return "";
+
+  try {
+    const data = await independentRequest("/aweme/v1/web/im/user/info/", await buildBaseParams(), {
+      method: "POST",
+      body: JSON.stringify({ sec_user_ids: [uid] }),
+    });
+    const users = data.data?.users || data.users || (Array.isArray(data.data) ? data.data : []);
+    for (const u of users) {
+      if (u.sec_uid) return u.sec_uid;
+    }
+  } catch (e) {
+    console.warn("[DY] resolveSelfSecUid failed:", e.message);
+  }
+  return "";
+}
 
 function extractMsTokenFromCookie(cookieStr) {
   if (!cookieStr) return "";
@@ -179,6 +283,13 @@ async function fetchMsToken() {
   } catch {}
 
   try {
+    const browserCookies = await chrome.cookies.getAll({ domain: "bytedance.com", name: "msToken" });
+    if (browserCookies.length > 0 && browserCookies[0].value) {
+      return browserCookies[0].value;
+    }
+  } catch {}
+
+  try {
     const { savedCookie } = await chrome.storage.local.get("savedCookie");
     const msToken = extractMsTokenFromCookie(savedCookie);
     if (msToken) return msToken;
@@ -188,25 +299,19 @@ async function fetchMsToken() {
 }
 
 async function getMsToken() {
-  const { savedMsToken, savedMsTokenTime } = await chrome.storage.local.get(["savedMsToken", "savedMsTokenTime"]);
-  if (savedMsToken && savedMsTokenTime && Date.now() - savedMsTokenTime < MSTOKEN_TTL) {
-    return savedMsToken;
-  }
+  const { savedMsToken } = await chrome.storage.local.get("savedMsToken");
+  if (savedMsToken) return savedMsToken;
   const msToken = (await fetchMsToken()) || generateRandomMsToken();
   await chrome.storage.local.set({ savedMsToken: msToken, savedMsTokenTime: Date.now() });
   return msToken;
 }
 
-const WEBID_API = "https://mcs.zijieapi.com/webid";
-
 async function getWebId() {
-  const { savedWebId, savedWebIdTime } = await chrome.storage.local.get(["savedWebId", "savedWebIdTime"]);
-  if (savedWebId && savedWebIdTime && Date.now() - savedWebIdTime < MSTOKEN_TTL) {
-    return savedWebId;
-  }
+  const { savedWebId } = await chrome.storage.local.get("savedWebId");
+  if (savedWebId) return savedWebId;
   try {
     const ua = abOgus ? abOgus.userAgent : navigator.userAgent;
-    const resp = await fetch(WEBID_API + "?aid=6383&sdk_version=5.1.18_zip&device_platform=web", {
+    const resp = await fetch(CONFIG.WEBID_API + "?" + CONFIG.WEBID_QUERY, {
       method: "POST",
       headers: {
         Accept: "*/*",
@@ -284,8 +389,8 @@ async function independentRequest(apiPath, params, options = {}) {
   params.msToken = await getMsToken();
   const method = options.method || "GET";
   const qs = new URLSearchParams(params).toString();
-  const a_bogus = abOgus.getValue(qs, method);
-  const url = "https://www.douyin.com" + apiPath + "?" + qs + "&a_bogus=" + a_bogus;
+  const a_bogus = abOgus.getValue(qs, method, await getClockSkew());
+  const url = CONFIG.URL_BASE + apiPath + "?" + qs + "&a_bogus=" + a_bogus;
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
   try {
@@ -296,15 +401,20 @@ async function independentRequest(apiPath, params, options = {}) {
       headers: {
         Accept: "application/json, text/plain, */*",
         "User-Agent": abOgus ? abOgus.userAgent : navigator.userAgent,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...options.headers,
       },
       method,
+      body: options.body,
       signal: controller.signal,
     });
     clearTimeout(tid);
     if (!resp.ok) throw new Error("HTTP_" + resp.status);
     const data = await resp.json();
-    if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+    if (data.status_code !== undefined && data.status_code !== 0) {
+      console.warn("[DY] API_ERROR status_code=%s url=%s", data.status_code, apiPath);
+      throw new Error("API_ERROR");
+    }
     return data;
   } catch (e) {
     clearTimeout(tid);
@@ -339,11 +449,11 @@ function formatWork(aw) {
         : null;
   return {
     awemeId: String(aw.aweme_id),
-    type: (aw.aweme_type || aw.awemeType) === 68 ? "note" : "video",
+    type: (aw.aweme_type || aw.awemeType) === CONFIG.AWEME_TYPE_NOTE ? "note" : "video",
     desc: aw.desc || "",
     nickname: String(author.nickname || author.nickName || ""),
     uid: String(author.uid || ""),
-    authorHomeUrl: author.sec_uid ? "https://www.douyin.com/user/" + author.sec_uid : "",
+    authorHomeUrl: author.sec_uid ? CONFIG.URL_BASE + "/user/" + author.sec_uid : "",
     cover: ((video.cover && video.cover.url_list) || [])[0] ? video.cover.url_list[0].replace(/^http:/, "") : "",
     video: videoUrl,
     images: (aw.images || [])
@@ -362,7 +472,7 @@ function formatFollowing(item) {
     nickname: item.nickname || "未知",
     avatarLarger: ((item.avatar_larger && item.avatar_larger.url_list) || [])[0] || "",
     followerCount: item.follower_count || 0,
-    profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
+    profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
   };
 }
 
@@ -371,11 +481,14 @@ function formatFollowing(item) {
 async function handleIndependentFetchFollowing(secUid, sendResponse) {
   try {
     await ensureABogus();
+    if (secUid === "self" || !secUid) {
+      secUid = await resolveSelfSecUid();
+      if (!secUid) return sendResponse({ ok: false, error: "NO_SEC_UID" });
+    }
     const requestId = crypto.randomUUID();
     let cancelled = false,
       hasMore = true,
-      offset = 0,
-      maxTime = 0;
+      offset = 0;
     const all = [];
     const cancelHandler = (msg) => {
       if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
@@ -383,17 +496,12 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
       const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset) };
-      if (maxTime > 0) params.max_time = String(maxTime);
-      const data = await independentRequest(
-        "/aweme/v1/web/user/following/list",
-        await buildBaseParams(params),
-      );
+      const data = await independentRequest(CONFIG.API.FOLLOWING, await buildBaseParams(params));
       if (data.status_code === 0 && Array.isArray(data.followings)) {
         if (data.followings.length === 0) break;
         all.push(...data.followings.map(formatFollowing));
         hasMore = data.has_more === true || data.has_more === 1;
         offset += data.followings.length;
-        maxTime = data.min_time || 0;
       } else break;
       chrome.runtime
         .sendMessage({ type: "FOLLOWING_PROGRESS", collected: all.length, hasMore, total: data.total || 0, requestId })
@@ -424,7 +532,7 @@ async function handleIndependentFetchCollection(sendResponse) {
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
       const data = await independentRequest(
-        "/aweme/v1/web/aweme/listcollection/",
+        CONFIG.API.COLLECTION,
         await buildBaseParams({ sec_user_id: "self", count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }),
         { method: "POST" },
       );
@@ -432,7 +540,7 @@ async function handleIndependentFetchCollection(sendResponse) {
         if (data.aweme_list.length === 0) break;
         all.push(...data.aweme_list.map(formatWork).filter(Boolean));
         hasMore = data.has_more === true || data.has_more === 1;
-        cursor = data.cursor || data.max_cursor || cursor + 20;
+        cursor = data.cursor || data.max_cursor || cursor + CONFIG.PAGE.COLLECTION;
       } else break;
       const un = all.filter((w) => w.authorFollowed === false).length;
       chrome.runtime
@@ -472,13 +580,13 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
     sendResponse({ ok: true, requestId, total: awemeIds.length });
     for (let i = 0; i < awemeIds.length && !cancelled; i++) {
       try {
-        const params = await buildBaseParams({ aweme_id: awemeIds[i] });
+        const params = await buildBaseParams({ aweme_id: awemeIds[i], request_source: "600", origin_type: "video_page" });
         let data, w;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          data = await independentRequest("/aweme/v1/web/aweme/detail/", params);
+        for (let attempt = 0; attempt < CONFIG.SYNC.RETRY_MAX; attempt++) {
+          data = await independentRequest(CONFIG.API.DETAIL, params);
           w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
           if (w) break;
-          if (attempt === 0) await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
+          if (attempt === 0) await new Promise((r) => setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)));
         }
         if (w) allWorks.push(w);
       } catch (e) {
@@ -535,8 +643,8 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
 async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
   try {
     await ensureABogus();
-    const data = await independentRequest(
-      "/aweme/v1/web/aweme/post/",
+      const data = await independentRequest(
+      CONFIG.API.POST,
       await buildBaseParams({
         sec_user_id: secUid,
         max_cursor: String(cursor || 0),
@@ -559,8 +667,12 @@ async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
 
 async function handleCaptureBrowserFeatures(message, sendResponse) {
   if (message.features) {
-    await chrome.storage.local.set({ browserFeatures: message.features });
-    abOgus = new ABogus(message.features.userAgent || navigator.userAgent, message.features.platform || navigator.platform);
+    await chrome.storage.local.set({ browserFeatures: message.features, browserFeaturesTime: Date.now() });
+    abOgus = new ABogus(
+      message.features.userAgent || navigator.userAgent,
+      message.features.platform || navigator.platform,
+      message.features,
+    );
   }
   sendResponse({ ok: true });
 }
@@ -575,7 +687,7 @@ async function handleSetMode(message, sendResponse) {
 
 // ---------- 初始化 ----------
 async function setupDeclarativeNetRequest() {
-  const rules = CONFIG.DNR.RULES;
+  const rules = CONFIG.DNR_RULES;
 
   try {
     const existing = await chrome.declarativeNetRequest.getDynamicRules();
@@ -627,24 +739,6 @@ function asyncHandler(fn, sendResponse) {
   }
   return true;
 }
-
-const DOMAIN_CONFIG = {
-  [CONFIG.STORAGE_KEYS.WORKS]: {
-    storeName: CONFIG.STORAGE_KEYS.WORKS,
-    groupsName: CONFIG.STORAGE_KEYS.WORKS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_WORKS_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.WORKS,
-    idField: "awemeId",
-  },
-  [CONFIG.STORAGE_KEYS.FOLLOWINGS]: {
-    storeName: CONFIG.STORAGE_KEYS.FOLLOWINGS,
-    groupsName: CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_FOLLOWINGS_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.FOLLOWINGS,
-    idField: "uid",
-    idToString: true,
-  },
-};
 
 function getStoreName(domain) {
   return DOMAIN_CONFIG[domain || CONFIG.STORAGE_KEYS.WORKS].storeName;
@@ -765,8 +859,8 @@ function sendSyncDone(requestId, result) {
 }
 
 async function withDouyinTab() {
-  const tabs = await chrome.tabs.query({ url: "*://*.douyin.com/*" });
-  const tab = tabs.find((t) => t.url && !t.url.includes("creator.douyin.com") && t.status === "complete");
+  const tabs = await chrome.tabs.query({ url: CONFIG.DOUYIN_URL_PATTERN });
+  const tab = tabs.find((t) => t.url && !t.url.includes(CONFIG.DOUYIN_EXCLUDE_DOMAIN) && t.status === "complete");
   return tab || null;
 }
 
@@ -899,7 +993,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (independentMode) return handleIndependentFetchWorksPage(message.secUid, message.cursor || "", sendResponse);
         sendToTab(
           "FETCH_WORKS_PAGE",
-          { secUid: message.secUid, cursor: message.cursor || "", count: CONFIG.PAGE.AUTHOR, timeout: CONFIG.TIMEOUT.REQUEST },
+          {
+            secUid: message.secUid,
+            cursor: message.cursor || "",
+            count: CONFIG.PAGE.AUTHOR,
+            timeout: CONFIG.TIMEOUT.REQUEST,
+          },
           sendResponse,
         );
       }, sendResponse);
@@ -924,10 +1023,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return asyncHandler(() => handleCaptureBrowserFeatures(message, sendResponse), sendResponse);
     case "GET_COOKIE_INFO":
       return asyncHandler(async () => {
-        const { savedCookie } = await chrome.storage.local.get("savedCookie");
-        if (!savedCookie) return sendResponse({ ok: true, pairs: [], hasSessionid: false });
+        const { savedCookie, savedCookieTime } = await chrome.storage.local.get(["savedCookie", "savedCookieTime"]);
+        if (!savedCookie) return sendResponse({ ok: true, pairs: [], hasSessionid: false, time: null });
         const pairs = parseCookieToPairs(savedCookie);
-        sendResponse({ ok: true, pairs, rawCookie: savedCookie, hasSessionid: pairs.some((p) => p.key === "sessionid"), count: pairs.length });
+        sendResponse({
+          ok: true,
+          pairs,
+          rawCookie: savedCookie,
+          hasSessionid: pairs.some((p) => p.key === "sessionid"),
+          count: pairs.length,
+          time: savedCookieTime || null,
+        });
       }, sendResponse);
     case "GET_MSTOKEN":
       return asyncHandler(async () => {
@@ -937,6 +1043,80 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return asyncHandler(async () => {
         const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures;
         sendResponse({ ok: true, features: bf || null });
+      }, sendResponse);
+
+    case "GET_CACHE_TIMES":
+      return asyncHandler(async () => {
+        const { savedMsTokenTime, savedWebIdTime, browserFeaturesTime, savedCookieTime } =
+          await chrome.storage.local.get(["savedMsTokenTime", "savedWebIdTime", "browserFeaturesTime", "savedCookieTime"]);
+        sendResponse({
+          ok: true,
+          times: {
+            msToken: savedMsTokenTime || null,
+            webId: savedWebIdTime || null,
+            browserFeatures: browserFeaturesTime || null,
+            cookie: savedCookieTime || null,
+          },
+        });
+      }, sendResponse);
+
+    case "RESOLVE_SEC_UID":
+      return asyncHandler(async () => {
+        const secUid = await resolveSelfSecUid();
+        sendResponse({ ok: !!secUid, secUid });
+      }, sendResponse);
+
+    case "REFRESH_MSTOKEN":
+      return asyncHandler(async () => {
+        await chrome.storage.local.remove(["savedMsToken", "savedMsTokenTime"]);
+        const msToken = await getMsToken();
+        const { savedMsTokenTime } = await chrome.storage.local.get("savedMsTokenTime");
+        sendResponse({ ok: true, msToken, time: savedMsTokenTime || null });
+      }, sendResponse);
+
+    case "REFRESH_WEBID":
+      return asyncHandler(async () => {
+        await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+        const webId = await getWebId();
+        const { savedWebIdTime } = await chrome.storage.local.get("savedWebIdTime");
+        sendResponse({ ok: true, webId, time: savedWebIdTime || null });
+      }, sendResponse);
+
+    case "REFRESH_BROWSER_FEATURES":
+      return asyncHandler(async () => {
+        await chrome.storage.local.remove(["browserFeatures", "browserFeaturesTime"]);
+        const resp = await sendToTabAsync("REQUEST_CAPTURE_BROWSER_FEATURES", { timeout: 10000 });
+        if (resp?.ok && resp.features) {
+          await chrome.storage.local.set({ browserFeatures: resp.features, browserFeaturesTime: Date.now() });
+          abOgus = new ABogus(
+            resp.features.userAgent || navigator.userAgent,
+            resp.features.platform || navigator.platform,
+            resp.features,
+          );
+          sendResponse({ ok: true, features: resp.features, time: Date.now() });
+        } else {
+          sendResponse({ ok: false, error: resp?.error || "CAPTURE_FAILED", hint: "请打开抖音页面后重试" });
+        }
+      }, sendResponse);
+
+    case "REFRESH_COOKIE":
+      return asyncHandler(async () => {
+        try {
+          const cookies = await chrome.cookies.getAll({ domain: "douyin.com" });
+          const pairs = cookies.map((c) => c.name + "=" + c.value);
+          const rawCookie = pairs.join("; ");
+          const time = Date.now();
+          await chrome.storage.local.set({ savedCookie: rawCookie, savedCookieTime: time });
+          sendResponse({
+            ok: true,
+            pairs: cookies.map((c) => ({ key: c.name, value: c.value })),
+            rawCookie,
+            count: cookies.length,
+            time,
+          });
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message });
+        }
       }, sendResponse);
 
     case "CANCEL_ACTIVE_TASK":
@@ -1168,28 +1348,13 @@ async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
     .catch(() => {});
 }
 
-const CANCEL_ENDPOINTS = {
-  like: {
-    url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
-    body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
-    type: "application/x-www-form-urlencoded; charset=UTF-8",
-    referrer: "https://www.douyin.com/user/self?showTab=like",
-  },
-  collection: {
-    url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
-    body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
-    type: "application/x-www-form-urlencoded",
-    referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
-  },
-};
-
 async function handleIndependentCancel(awemeIds, kind, sendResponse) {
   try {
     if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
     const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
     if (!savedCookie) return sendResponse({ ok: false, error: "NO_COOKIE" });
     const key = (browserFeatures && browserFeatures.securityKey) || "";
-    const ep = CANCEL_ENDPOINTS[kind];
+    const ep = CONFIG.CANCEL[kind];
     if (!ep) return sendResponse({ ok: false, error: "UNKNOWN_KIND" });
 
     const requestId = crypto.randomUUID();
@@ -1428,15 +1593,6 @@ async function handleDeleteGroup(domain, groupId, sendResponse) {
 
 // ---------- 同步 Handler ----------
 
-const FATAL_ERRORS = new Set([
-  "NO_DOUYIN_TAB",
-  "TAB_QUERY_FAILED",
-  "NO_LISTENER",
-  "EMPTY_RESPONSE",
-  "RATE_LIMITED",
-  "CANCELLED",
-]);
-
 async function handleSyncWorks(awemeIds, sendResponse) {
   if (!Array.isArray(awemeIds) || awemeIds.length === 0) {
     return sendResponse({ ok: false, error: "EMPTY" });
@@ -1469,7 +1625,7 @@ async function handleSyncWorks(awemeIds, sendResponse) {
 
     if (!resp?.ok) {
       const err = resp?.error || "UNKNOWN";
-      if (FATAL_ERRORS.has(err) || err.startsWith("HTTP 429") || err.startsWith("HTTP 401")) {
+      if (CONFIG.FATAL_ERRORS.has(err) || err.startsWith("HTTP 429") || err.startsWith("HTTP 401")) {
         for (let j = i; j < awemeIds.length; j++) {
           errors.push({ awemeId: awemeIds[j], error: j === i ? err : "BATCH_TERMINATED" });
         }

@@ -141,6 +141,16 @@
           return {};
         })(message, _sender, sendResponse);
 
+      case "REQUEST_CAPTURE_BROWSER_FEATURES":
+        return requestResponse(
+          "DY_REQUEST_BROWSER_FEATURES",
+          "DY_CAPTURE_BROWSER_FEATURES_REFRESH",
+          message.timeout || 10000,
+          function () {
+            return {};
+          },
+        )(message, _sender, sendResponse);
+
       case "CANCEL_ACTIVE_TASK":
         document.dispatchEvent(new CustomEvent("DY_CANCEL_ACTIVE_TASK"));
         sendResponse({ ok: true });

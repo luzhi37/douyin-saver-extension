@@ -1,51 +1,31 @@
-> 本文件是面向 AI Agent 的项目速览与入口索引。**任何具体行为以源码为准。**
-> 深度技术细节已拆分到 `docs/*.md`，见下方 [文档索引](#文档索引)。
+> 本文件是面向 **AI Agent**（Claude Code 等）的技术参考，内容侧重于实现细节与设计约束。
+> 人类用户请先阅读 [README.md](./README.md) 了解功能与安装。
 
 # AGENTS.md — 抖音数据管理 (Douyin Data Manager)
 
-## 项目性质
+任何具体行为以源码为准。深度技术细节已拆分到 `docs/*.md`，见下方[文档索引](#文档索引)。
 
-Chrome Manifest V3 扩展，统一管理抖音作品、关注、点赞与收藏数据。
-**纯原生 JS，无构建工具、无 npm、无 package.json、无 bundler。** 不要尝试 `npm install` 或 `npm run dev`。
+## 代码布局规范
 
-## 文件结构
+**所有 JS 文件必须遵守从上到下、先声明后使用的顺序**。不允许将 config/const 放在文件中部或底部、类定义与实例化分开、或执行语句出现在声明之前。
+
+### 通用层级
 
 ```
-manifest.json
-background/
-  background.js          — Service Worker（ES Module）
-  storage.js             — IndexedDB 封装层
-content/
-  content.js             — 隔离世界桥接层
-  inject.js              — 主世界脚本
-options/
-  options.css            — 样式（~2036 行）
-  options.html           — 管理页面
-  options.js             — 全部 View 逻辑（VirtualGrid 基类 + 10 个业务 class）
-assets/
-  LXGWWenKai-Regular.ttf — 楷体字体
-  icon16.png / icon48.png / icon128.png
-docs/                    — 深度技术文档（见索引）
+config/const 定义          ┐ 常量在最顶部
+模块级变量声明             ┘ let/const 集中
+函数定义（分组）           以 `// ---------- 标签 ----------` 分隔
+类定义 + 立即实例化         类定义后紧跟 const instance = new Class()
+事件绑定 / 消息监听         函数定义之后，执行之前
+启动逻辑                    IIFE / DOMContentLoaded 在最底部
 ```
 
-## 加载顺序
+### 核心规则
 
-options.html 只加载一个脚本：
-```html
-<script src="options.js"></script>
-```
-
-options.js 内部从上到下：
-1. `config` 常量对象
-2. `dom` 对象 — 常用 DOM 引用
-3. `state` 对象 — 可变应用状态
-4. `store` 对象 — 响应式事件系统
-5. `utils` 工具函数
-6. `services` 业务服务
-7. 11 个 class 定义并立即实例化
-8. `chrome.runtime.onMessage` 监听器
-9. 顶层函数与 DOM 事件绑定
-10. IIFE `init()` — 异步启动、响应式监听、首屏数据
+1. **config/const 必须在文件最顶部** — 所有后续代码可能直接引用，不允许出现在文件中部或底部
+2. **class 定义与实例化成对出现** — 每个 class 定义后紧跟 `const name = new Class()`，不允许先集中列出所有 class 再集中实例化
+3. **执行语句不得出现在声明之前** — 函数调用、事件绑定必须在所有配置和定义之后
+4. **大段分隔用 `// ---------- 标签 ----------`** — 每个逻辑段的开头用带边框的注释标记
 
 ## 四层架构
 
@@ -142,11 +122,9 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；长操作 X 按钮始终可点以发送 `CANCEL_ACTIVE_TASK`。为避免短操作误发，`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
 - **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject.js 的 6 个 API 请求函数全部使用 `window.fetch`（经 Fetch Hook），通过 `_dyInternal: true` 避免被 Hook 再次捕获，而非 `origFetch.call(window, ...)`（绕 Hook）。因为 Douyin 可能通过覆盖 `window.fetch` 注入签名参数，走 `origFetch` 会错过注入。详见 [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)。
 
-> CSS、VirtualGrid、弹窗关闭策略、UI 约定见 [docs/CSS_AND_UI.md](./docs/CSS_AND_UI.md)。
-
 ## config 分组速查
 
-`options/options.js` 顶层 `config` 常量（29 个键。`background.js` 另有 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR` / `GROUPS` / `PAGE` 等）：
+`options/options.js` 顶层 `config` 常量（29 个键。`background.js` 另有 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `TOKEN_TTL` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` 等）：
 
 | 分组 | 键 |
 |---|---|
@@ -159,7 +137,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | 分块渲染 | `RENDER_CHUNK_SIZE` `50` / `OBSERVER_ROOT_MARGIN` `'400px'` / `CARD_FILL_MAX_CONCURRENT` `12` |
 | 分组/存储 | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'` |
 | Tab 滚动 | `TAB_SCROLL_THRESHOLD` `2` |
-| 抖音 URL | `URLS` `{ BASE, USER_SELF, LIKE_TAB, COLLECTION_TAB, FOLLOWING_TAB }` |
+| 抖音 URL | `URL_BASE` / `URL_USER_SELF` / `URL_LIKE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB` |
 | 正则/图标 | `SEC_UID_REGEX` `/^\/user\/([^/?]+)/` / `icons` `{}`（init 填充） |
 
 ## 文档索引
@@ -171,26 +149,5 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md) | window.fetch 与 origFetch 的抉择、save/restore 缓存保护机制、六类 API 请求对比 |
 | [docs/STORAGE_AND_MERGE.md](./docs/STORAGE_AND_MERGE.md) | IndexedDB 结构、作品合并、关注丢失检测、导入分组去重合并 |
 | [docs/SECURITY_AND_DNR.md](./docs/SECURITY_AND_DNR.md) | declarativeNetRequest 规则、安全状态查询链路、安全风险 |
-| [docs/CSS_AND_UI.md](./docs/CSS_AND_UI.md) | CSS 架构、VirtualGrid 渲染约定、弹窗/详情页/UI 约定 |
-| [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md) | 独立模式架构：不依赖抖音标签页的签名生成与 API 请求方案 |
-| [docs/FAVORITES_SCAN_INVESTIGATION.md](./docs/FAVORITES_SCAN_INVESTIGATION.md) | 点赞/收藏扫描独立模式适配的探索过程与未解问题 |
-| [docs/TIKTOK_ALGORITHMS.md](./docs/TIKTOK_ALGORITHMS.md) | 参考项目 TikTokDownloader 8 个算法/凭据模块对照（ABogus/XBogus/XGnarly/msToken/ttwid/verifyFp/webID/device_id）；本扩展 8/8 全部已实现 |
-| [docs/TIKTOK_API_ENDPOINTS.md](./docs/TIKTOK_API_ENDPOINTS.md) | 参考项目 TikTokDownloader 全部 API 端点对照：6 大主流程需求覆盖 + 抖音/TikTok 端点总表 + 彩蛋能力 + 盲区 |
-
-## 零配置启动
-
-扩展完全零配置即可使用，无需任何手动注入。
-
-**msToken 获取链**（`background.js:getMsToken()`）：
-1. 优先读 `chrome.cookies.getAll({ domain: 'douyin.com', name: 'msToken' })`——浏览抖音时浏览器 Cookie jar 中已存在
-2. 回退解析 `savedCookie` 字符串中的 `msToken=...` 段——用户在设置面板粘贴的 cookie
-3. 都没有则随机生成（兜底，服务端会拒绝）
-
-**浏览器特征**：`CAPTURE_BROWSER_FEATURES` 在浏览抖音页面时由 content.js 自动捕获，写入 `chrome.storage.local.browserFeatures`。`buildBaseParams` 内部各字段都有 `|| 默认值` 字面 fallback（如 `|| 8`、`|| 1536`），缺失时也能正常签名。
-
-**算法实现常量**（`S3`/`S4`/`END_STRING`/`UA_ENCRYPT_KEY`/`UA_DEFAULT`）属于 ABogus 算法的实现，缺失则签名无法计算，必须保留在代码中。
-
-## 验证
-
-- 语法检查：`node --check background/background.js content/content.js content/inject.js options/options.js`
-- 实机测试：在 `chrome://extensions` 开启开发者模式 → 重新加载
+| [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md) | 独立模式架构 + msToken/webId/Cookie/浏览器特征缓存模型与存储键表 |
+| [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md) | 参考项目 TikTokDownloader 算法/凭据模块 + Douyin API 端点总表 |

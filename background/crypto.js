@@ -1,5 +1,39 @@
 const IV = [0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa, 0xe38dee4d, 0xb0fb0e4e];
 
+// ===== ABogus 算法实现常量 =====
+const S3 = "ckdp1h4ZKsUB80/Mfvw36XIgR25+WQAlEi7NLboqYTOPuzmFjJnryx9HVGDaStCe";
+const S4 = "Dkdpgh2ZmsQB80/MfvV36XI1R45-WUAlEixNLwoqYTOPuzKFjJnry79HbGcaStCe";
+const END_STRING = "cus";
+const UA_ENCRYPT_KEY = "\x00\x01\x0e";
+const UA_DEFAULT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
+
+// ===== XBogus 常量 =====
+const XBOGUS_ALPHABET = "Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe=";
+const XBOGUS_MD5_INDEX = [
+  ...Array(48).fill(null),
+  ...Array.from({ length: 10 }, (_, i) => i),
+  ...Array(39).fill(null),
+  ...Array.from({ length: 6 }, (_, i) => i + 10),
+];
+const XBOGUS_CANVAS = 3873194319;
+
+// ===== XGnarly 常量 =====
+const XGNARLY_AA = [
+  0xFFFFFFFF, 138, 1498001188, 211147047, 253, null, 203, 288, 9, 1196819126,
+  3212677781, 135, 263, 193, 58, 18, 244, 2931180889, 240, 173, 268, 2157053261,
+  261, 175, 14, 5, 171, 270, 156, 258, 13, 15, 3732962506, 185, 169, 2, 6, 132,
+  162, 200, 3, 160, 217618912, 62, 2517678443, 44, 164, 4, 96, 183, 2903579748,
+  3863347763, 119, 181, 10, 190, 8, 2654435769, 259, 104, 230, 128, 2633865432,
+  225, 1, 257, 143, 179, 16, 600974999, 185100057, 32, 188, 53, 2718276124, 177,
+  196, 4294967296, 147, 117, 17, 49, 7, 28, 12, 266, 216, 11, 0, 45, 166, 247,
+  1451689750,
+];
+const XGNARLY_OT = [XGNARLY_AA[9], XGNARLY_AA[69], XGNARLY_AA[51], XGNARLY_AA[92]];
+const XGNARLY_ALPHABET = "u09tbS3UvgDEe6r-ZVMXzLpsAohTn7mdINQlW412GqBjfYiyk8JORCF5/xKHwacP=";
+
+// ===== TikTok 常量 =====
+const TIKTOK_DEVICE_ID_REGEX = /"wid":"(\d{19})"/;
+
 function rotl(x, n) {
   return ((x << n) | (x >>> (32 - n))) >>> 0;
 }
@@ -75,6 +109,10 @@ function abogusSum(str) {
   }
   const size = codes.length;
   chunk.push(0x80);
+  if (chunk.length > 60) {
+    while (chunk.length < 64) chunk.push(0);
+    sm3Compress(v, new Uint8Array(chunk.splice(0, 64)));
+  }
   while (chunk.length < 60) chunk.push(0);
   const bitLen = size * 8;
   for (let i = 3; i >= 0; i--) chunk.push((bitLen >>> (i * 8)) & 0xff);
@@ -120,16 +158,6 @@ function customB64Encode(str, alphabet) {
   return out.join("");
 }
 
-// ===== ABogus 算法实现常量 =====
-// 抖音 ABogus 签名算法的实现常量（编码表、字符串后缀、RC4 密钥）。
-// 属于算法实现的一部分，缺失则 ABogus 无法计算，故需在代码中。
-
-const S3 = "ckdp1h4ZKsUB80/Mfvw36XIgR25+WQAlEi7NLboqYTOPuzmFjJnryx9HVGDaStCe";
-const S4 = "Dkdpgh2ZmsQB80/MfvV36XI1R45-WUAlEixNLwoqYTOPuzKFjJnry79HbGcaStCe";
-const END_STRING = "cus";
-const UA_ENCRYPT_KEY = "\x00\x01\x0e";
-const UA_DEFAULT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
-
 function list1(r, a = 170, b = 85, c = 45) {
   const v = [r, r & 255, (r >> 8) & 255];
   return [(v[1] & a) | 1, (v[1] & b) | 2, (v[2] & a) | 5, (v[2] & b) | (c & a)];
@@ -152,12 +180,12 @@ function genString1(rand1, rand2, rand3) {
   return String.fromCharCode(a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], c[0], c[1], c[2], c[3]);
 }
 
-function genBrowserInfo(platform) {
-  const iw = (1280 + Math.random() * 640) | 0,
-    ih = (720 + Math.random() * 360) | 0;
-  const ow = (iw + Math.random() * (1920 - iw)) | 0,
-    oh = (ih + Math.random() * (1080 - ih)) | 0;
-  return `${iw}|${ih}|${ow}|${oh}|0|${Math.random() < 0.5 ? 0 : 30}|0|0|${ow}|${oh}|${ow}|${oh}|${iw}|${ih}|24|24|${platform || "Win32"}`;
+function genBrowserInfo(platform, features = {}) {
+  const sw = features.screenWidth || 1536;
+  const sh = features.screenHeight || 864;
+  const iw = sw, ih = sh - 122;
+  const ow = sw, oh = sh;
+  return `${iw}|${ih}|${ow}|${oh}|0|0|0|0|${ow}|${oh}|${ow}|${oh}|${iw}|${ih}|24|24|${platform || "Win32"}`;
 }
 
 function endCheck(a) {
@@ -167,9 +195,9 @@ function endCheck(a) {
 }
 
 export class ABogus {
-  constructor(userAgent, platform) {
+  constructor(userAgent, platform, features = {}) {
     this.userAgent = userAgent || UA_DEFAULT;
-    const browser = genBrowserInfo(platform);
+    const browser = genBrowserInfo(platform, features);
     this.uaCode = this.#genUaCode(this.userAgent);
     this.browserLen = browser.length;
     this.browserCode = [...browser].map((c) => c.charCodeAt(0));
@@ -181,9 +209,9 @@ export class ABogus {
     return abogusSum(b64);
   }
 
-  #genString2(params, method, startTime, endTime) {
-    startTime = startTime || Date.now();
-    endTime = endTime || (startTime + 4 + Math.random() * 4) | 0;
+  #genString2(params, method, startTime, endTime, clockSkew = 0) {
+    startTime = startTime || (Date.now() + clockSkew) >>> 0;
+    endTime = endTime || (startTime + 4 + Math.random() * 4) >>> 0;
     const pa = sm3ToArray(sm3ToArray(params + END_STRING));
     const ma = sm3ToArray(sm3ToArray(method + END_STRING));
     const list = [
@@ -237,13 +265,13 @@ export class ABogus {
     return rc4Encrypt(String.fromCharCode(...all), "y");
   }
 
-  getValue(urlParams, method = "GET") {
+  getValue(urlParams, method = "GET", clockSkew = 0) {
     const qs = typeof urlParams === "string" ? urlParams : new URLSearchParams(urlParams).toString();
     const r1 = (Math.random() * 10000) | 0,
       r2 = (Math.random() * 10000) | 0,
       r3 = (Math.random() * 10000) | 0;
     const s1 = genString1(r1, r2, r3);
-    const s2 = this.#genString2(qs, method);
+    const s2 = this.#genString2(qs, method, undefined, undefined, clockSkew);
     return customB64Encode(s1 + s2, S4);
   }
 }
@@ -405,15 +433,6 @@ function md5Bytes(input) {
 }
 
 // ===== XBogus - 抖音/TikTok 旧版签名 =====
-
-const XBOGUS_ALPHABET = "Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe=";
-const XBOGUS_MD5_INDEX = [
-  ...Array(48).fill(null),
-  ...Array.from({ length: 10 }, (_, i) => i),
-  ...Array(39).fill(null),
-  ...Array.from({ length: 6 }, (_, i) => i + 10),
-];
-const XBOGUS_CANVAS = 3873194319;
 
 function xbogusDisturbArray(a, b, e, d, c, f, t, n, o, i, r, _, x, u, s, l, v, h, g) {
   const arr = new Array(19);
@@ -590,19 +609,6 @@ function chachaBlock(state, rounds) {
 }
 
 // ===== XGnarly - TikTok Web 最新签名 =====
-
-const XGNARLY_AA = [
-  0xFFFFFFFF, 138, 1498001188, 211147047, 253, null, 203, 288, 9, 1196819126,
-  3212677781, 135, 263, 193, 58, 18, 244, 2931180889, 240, 173, 268, 2157053261,
-  261, 175, 14, 5, 171, 270, 156, 258, 13, 15, 3732962506, 185, 169, 2, 6, 132,
-  162, 200, 3, 160, 217618912, 62, 2517678443, 44, 164, 4, 96, 183, 2903579748,
-  3863347763, 119, 181, 10, 190, 8, 2654435769, 259, 104, 230, 128, 2633865432,
-  225, 1, 257, 143, 179, 16, 600974999, 185100057, 32, 188, 53, 2718276124, 177,
-  196, 4294967296, 147, 117, 17, 49, 7, 28, 12, 266, 216, 11, 0, 45, 166, 247,
-  1451689750,
-];
-const XGNARLY_OT = [XGNARLY_AA[9], XGNARLY_AA[69], XGNARLY_AA[51], XGNARLY_AA[92]];
-const XGNARLY_ALPHABET = "u09tbS3UvgDEe6r-ZVMXzLpsAohTn7mdINQlW412GqBjfYiyk8JORCF5/xKHwacP=";
 
 function xgnarlyNumToBytes(val) {
   if (val < 65535) return [(val >> 8) & 0xff, val & 0xff];
@@ -793,8 +799,6 @@ export class XGnarly {
 }
 
 // ===== device_id - TikTok 设备 ID =====
-
-const TIKTOK_DEVICE_ID_REGEX = /"wid":"(\d{19})"/;
 
 export async function fetchDeviceId(userAgent) {
   const { savedDeviceId, savedDeviceIdTime } = await chrome.storage.local.get(["savedDeviceId", "savedDeviceIdTime"]);
