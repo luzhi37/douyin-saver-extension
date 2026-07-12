@@ -58,7 +58,7 @@ DOMAIN_CONFIG = {
 background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 | 类别 | 消息类型 |
-|---|---|---|
+|---|---|
 | 数据操作 | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` |
 | 分组管理 | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS` |
 | 工具 | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` |
@@ -143,7 +143,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 ## 文档索引
 
 | 文档 | 阅读场景 |
-|---|---|---|
+|---|---|
 | [docs/SYNC_AND_SCAN.md](./docs/SYNC_AND_SCAN.md) | 作品同步、关注同步、点赞/收藏扫描、取消点赞/收藏、作者主页分页的完整链路与时序 |
 | [docs/INJECT_INTERNALS.md](./docs/INJECT_INTERNALS.md) | inject.js 数据提取、签名捕获与缓存、fetch/XHR Hook、安全密钥获取 |
 | [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md) | window.fetch 与 origFetch 的抉择、save/restore 缓存保护机制、六类 API 请求对比 |

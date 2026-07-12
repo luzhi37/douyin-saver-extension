@@ -89,6 +89,7 @@ const dom = {
   detailSyncBtn: document.querySelector("#detailSyncBtn"),
   detailDownloadBtn: document.querySelector("#detailDownloadBtn"),
   detailCounter: document.querySelector("#detailCounter"),
+  detailBody: document.querySelector(".detail-body"),
   dialogOverlay: document.querySelector("#dialogOverlay"),
   dialogTitle: document.querySelector("#dialogTitle"),
   dialogBody: document.querySelector("#dialogBody"),
@@ -163,6 +164,29 @@ const store = {
     const old = state[key];
     state[key] = val;
     if (old !== val) this.notify(key, val, old);
+  },
+
+  // 批量更新：在一个 rAF 批次内完成多个 state 变更
+  batch(fn) {
+    const oldValues = new Map();
+    const track = (key, val) => {
+      if (!oldValues.has(key)) oldValues.set(key, state[key]);
+      state[key] = val;
+    };
+    fn(track);
+    requestAnimationFrame(() => {
+      for (const [key, old] of oldValues) {
+        if (state[key] !== old) {
+          const fns = this._listeners.get(key);
+          if (fns) fns.forEach((fn) => fn(state[key], old));
+        }
+      }
+    });
+  },
+
+  // 触发 groups 数据重新加载（总是从 background 获取最新分组数据）
+  refreshGroups() {
+    this.notify("groups");
   },
 
   updateWork(awemeId, newWork) {
@@ -431,6 +455,7 @@ class VirtualGrid {
       for (let i = index; i < end; i++) {
         const card = skelTmpl.content.cloneNode(true).firstElementChild;
         card.dataset[this.#itemKey] = items[i][this.#itemKey];
+        card.dataset.cardIndex = i;
         fragment.appendChild(card);
       }
 
@@ -522,8 +547,6 @@ class VirtualGrid {
     if (!skeleton.parentNode) return;
     const fullCard = this.createItem(item);
     skeleton.parentNode.replaceChild(fullCard, skeleton);
-    fullCard.style.animation = "cardFadeIn 0.3s ease forwards";
-    fullCard.style.opacity = "0";
   }
 
   #onClick(event) {
@@ -604,12 +627,12 @@ class Dialog {
   showToast(message) {
     const toast = document.getElementById("dy-options-toast");
     toast.textContent = message;
-    toast.style.opacity = "1";
-    toast.style.transform = "translateX(-50%) translateY(0)";
+    toast.classList.remove("hide");
+    toast.classList.add("show");
     if (this.__toastTimer) clearTimeout(this.__toastTimer);
     this.__toastTimer = setTimeout(() => {
-      toast.style.opacity = "0";
-      toast.style.transform = "translateX(-50%) translateY(-20px)";
+      toast.classList.remove("show");
+      toast.classList.add("hide");
     }, config.TOAST_DURATION);
   }
 
@@ -802,7 +825,7 @@ class Groups {
           const newName = input.value.trim();
           if (newName && newName !== oldName) {
             await services.bgMsg({ type: "RENAME_GROUP", domain: state.domain, groupId: g.id, newName });
-            store.notify("groups");
+            store.refreshGroups();
             nameSpan.textContent = newName;
           } else nameSpan.textContent = oldName;
           input.replaceWith(nameSpan);
@@ -834,7 +857,7 @@ class Groups {
               try {
                 await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
                 item.remove();
-                store.notify("groups");
+                store.refreshGroups();
                 dom.dialogTitle.textContent = "删除完成";
                 dom.dialogBody.innerHTML = `<p>已删除"${g.name}"</p>`;
                 dialog.showOkDialog();
@@ -881,7 +904,7 @@ class Groups {
     const customIds = Array.from(items).map((el) => el.dataset.groupId);
     const defaultIds = ["all", "uncategorized"];
     await services.bgMsg({ type: "REORDER_GROUPS", domain: state.domain, groupIds: [...defaultIds, ...customIds] });
-    store.notify("groups");
+    store.refreshGroups();
   }
 
   #updateStorageIndicator(stats) {
@@ -955,7 +978,7 @@ class Batch {
 
     this.#clearAllCheckboxes();
     dom.batchSelectAll.innerHTML = "全选";
-    store.notify("groups");
+    store.refreshGroups();
     return { count: ids.length, isFollowings };
   }
 
@@ -1110,9 +1133,11 @@ class ImportExport {
 
       if (domain === "works") {
         const works = await services.loadWorks(state.currentGroupId);
+        if (state.domain !== "works") return;
         store.set("works", works);
       } else {
         const followings = await services.loadFollowings(state.currentGroupId);
+        if (state.domain !== "followings") return;
         store.set("followings", followings);
       }
 
@@ -1613,7 +1638,7 @@ class Sync {
     if (result && result.added !== undefined) {
       const fresh = await services.loadFollowings(state.currentGroupId);
       store.set("followings", fresh);
-      store.notify("groups");
+      store.refreshGroups();
       this.#setSummary(`新增关注 ${result.added}，取消关注 ${result.lost}`);
       if (this.#statusEl) this.#statusEl.textContent = "DONE";
       const lostUids = result.lostUids || [];
@@ -1634,7 +1659,7 @@ class Sync {
     if (trashGroup) {
       await services.bgMsg({ type: "MOVE_WORKS", awemeIds: failedIds, targetGroupId: trashGroup.id });
       await services.loadDomainData();
-      store.notify("groups");
+      store.refreshGroups();
     }
     return trashGroup;
   }
@@ -1650,7 +1675,7 @@ class Sync {
     if (trashGroup) {
       await services.moveFollowings(lostUids, trashGroup.id);
       await services.loadDomainData();
-      store.notify("groups");
+      store.refreshGroups();
     }
     return trashGroup;
   }
@@ -2216,8 +2241,7 @@ class Favorites {
 
     let fetchArgs = cfg.buildFetchArgs();
     if (cfg.needSecUid) {
-      const { independentMode } = await chrome.storage.local.get("independentMode");
-      const secUid = independentMode ? "self" : await services.findSecUid();
+      const secUid = await services.findSecUid();
       if (!secUid) {
         dialog.showDialog("需要打开抖音用户页面", `<p>请先在浏览器中打开一个抖音用户页面，然后重试。</p>`, [
           { text: "好的", primary: true, callback: () => dialog.closeDialog() },
@@ -2585,9 +2609,21 @@ class Detail {
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
-    img.src = utils.pickHttpsUrl(this.#noteWork.images[this.#noteImgIndex])
-      || utils.pickHttpsUrl(this.#noteWork.cover)
-      || "";
+    // 淡出当前图片
+    img.style.opacity = '0';
+    requestAnimationFrame(() => {
+      img.src = utils.pickHttpsUrl(this.#noteWork.images[this.#noteImgIndex])
+        || utils.pickHttpsUrl(this.#noteWork.cover)
+        || "";
+      // 新图片加载完成后淡入
+      const onLoad = () => {
+        img.style.opacity = '1';
+        img.removeEventListener('load', onLoad);
+        img.removeEventListener('error', onLoad);
+      };
+      img.addEventListener('load', onLoad, { once: true });
+      img.addEventListener('error', onLoad, { once: true });
+    });
     dom.detailImgCounter.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
     dom.detailTime.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
   }
@@ -2765,85 +2801,131 @@ class Detail {
   }
 
   renderDetail() {
-    this.runCleanups();
-    const work = this.getCurrentWork();
-    if (!work) return this.closeDetail();
-
-    const isVideo = work.type === "video" && utils.getVideoUrl(work);
-    if (isVideo) {
-      this.resetAudio();
-    } else {
-      this.resetMediaElements();
+    const isSwitch = !dom.detailOverlay.classList.contains("hidden");
+    const body = dom.detailBody || document.querySelector(".detail-body");
+    // 如果不是首次打开，执行淡出过渡
+    if (isSwitch) {
+      body.classList.add("detail-transitioning");
     }
+    this.#transitionToNext(body, isSwitch);
+  }
 
-    const bgUrl = work.cover || work.images?.[0] || "";
-    if (bgUrl) {
-      const absBg = utils.pickHttpsUrl(bgUrl);
-      const newUrl = `url(${absBg})`;
-      if (dom.detailOverlay.style.getPropertyValue("--bg-url") !== newUrl) {
-        dom.detailOverlay.style.setProperty("--bg-url", newUrl);
+  #transitionToNext(body, isSwitch) {
+    // 等待淡出完成
+    const doRender = () => {
+      this.runCleanups();
+      const work = this.getCurrentWork();
+      if (!work) return this.closeDetail();
+
+      const isVideo = work.type === "video" && utils.getVideoUrl(work);
+      if (isVideo) {
+        this.resetAudio();
+      } else {
+        this.resetMediaElements();
       }
-    }
 
-    const typePath = work.type === "note" ? "note" : "video";
-    const fullLink = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
-    const totalWorks = state.works.length;
-    const isNote = work.type === "note" && work.images?.length > 0;
+      const bgUrl = work.cover || work.images?.[0] || "";
+      if (bgUrl) {
+        const absBg = utils.pickHttpsUrl(bgUrl);
+        const newUrl = `url(${absBg})`;
+        if (dom.detailOverlay.style.getPropertyValue("--bg-url") !== newUrl) {
+          dom.detailOverlay.style.setProperty("--bg-url", newUrl);
+        }
+      }
 
-    dom.detailPlayBtn.style.display = "";
-    dom.detailMuteBtn.style.display = "";
+      const typePath = work.type === "note" ? "note" : "video";
+      const fullLink = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
+      const totalWorks = state.works.length;
+      const isNote = work.type === "note" && work.images?.length > 0;
 
-    dom.detailVideoContainer.classList.toggle("hidden", !isVideo);
-    dom.detailImageContainer.classList.toggle("hidden", !isNote && (isVideo || !work.cover));
-    dom.detailProgressSlider.classList.toggle("hidden", !isVideo);
+      dom.detailPlayBtn.style.display = "";
+      dom.detailMuteBtn.style.display = "";
 
-    if (isVideo) {
-      dom.detailTime.textContent = "0:00 / 0:00";
-    } else if (isNote) {
-      dom.detailTime.textContent = `1 / ${work.images.length}`;
+      dom.detailVideoContainer.classList.toggle("hidden", !isVideo);
+      dom.detailImageContainer.classList.toggle("hidden", !isNote && (isVideo || !work.cover));
+      dom.detailProgressSlider.classList.toggle("hidden", !isVideo);
+
+      if (isVideo) {
+        dom.detailTime.textContent = "0:00 / 0:00";
+      } else if (isNote) {
+        dom.detailTime.textContent = `1 / ${work.images.length}`;
+      } else {
+        dom.detailTime.textContent = "";
+      }
+
+      if (work.authorHomeUrl) {
+        dom.detailAuthor.textContent = `@${work.nickname || "未知作者"}`;
+        dom.detailAuthor.title = work.authorHomeUrl;
+        dom.detailAuthor.classList.remove("hidden");
+      } else {
+        dom.detailAuthor.classList.add("hidden");
+      }
+
+      dom.detailTitle.textContent = (work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN);
+      dom.detailTitle.title = fullLink;
+
+      this.updateLoopBtn(isVideo);
+
+      if (totalWorks > 1) {
+        dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${totalWorks}`;
+        dom.detailCounter.classList.remove("hidden");
+      } else {
+        dom.detailCounter.classList.add("hidden");
+      }
+
+      const onReady = () => {
+        body.classList.remove("detail-transitioning");
+      };
+
+      if (isVideo) {
+        this.renderDetailVideo(work, onReady);
+      } else if (isNote) {
+        this.renderDetailNote(work, onReady);
+      } else if (work.cover) {
+        dom.detailImage.src = work.cover;
+        dom.detailPlayBtn.style.display = "none";
+        dom.detailMuteBtn.style.display = "none";
+        dom.detailImgCounter.classList.add("hidden");
+        dom.detailNavLeft.classList.add("hidden");
+        dom.detailNavRight.classList.add("hidden");
+        onReady();
+      } else {
+        onReady();
+      }
+
+      // 安全兜底：10 秒后强制结束过渡（防止网络异常卡死）
+      if (isSwitch) {
+        setTimeout(() => {
+          body.classList.remove("detail-transitioning");
+        }, 10000);
+      }
+    };
+
+    if (isSwitch) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(doRender);
+      });
     } else {
-      dom.detailTime.textContent = "";
-    }
-
-    if (work.authorHomeUrl) {
-      dom.detailAuthor.textContent = `@${work.nickname || "未知作者"}`;
-      dom.detailAuthor.title = work.authorHomeUrl;
-      dom.detailAuthor.classList.remove("hidden");
-    } else {
-      dom.detailAuthor.classList.add("hidden");
-    }
-
-    dom.detailTitle.textContent = (work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN);
-    dom.detailTitle.title = fullLink;
-
-    this.updateLoopBtn(isVideo);
-
-    if (totalWorks > 1) {
-      dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${totalWorks}`;
-      dom.detailCounter.classList.remove("hidden");
-    } else {
-      dom.detailCounter.classList.add("hidden");
-    }
-
-    if (isVideo) {
-      this.renderDetailVideo(work);
-    } else if (isNote) {
-      this.renderDetailNote(work);
-    } else if (work.cover) {
-      dom.detailImage.src = work.cover;
-      dom.detailPlayBtn.style.display = "none";
-      dom.detailMuteBtn.style.display = "none";
-      dom.detailImgCounter.classList.add("hidden");
-      dom.detailNavLeft.classList.add("hidden");
-      dom.detailNavRight.classList.add("hidden");
+      doRender();
     }
   }
 
-  renderDetailVideo(work) {
+  renderDetailVideo(work, onReady) {
     const video = dom.detailVideo;
+    const readyFn = () => { if (onReady) onReady(); };
     video.src = utils.getVideoUrl(work);
 
     dom.detailMuteBtn.innerHTML = video.muted ? config.icons.mute : config.icons.unmute;
+
+    // 视频可播放时结束过渡
+    let readyFired = false;
+    const fireReady = () => {
+      if (readyFired) return;
+      readyFired = true;
+      readyFn();
+    };
+    video.addEventListener("canplay", fireReady, { once: true });
+    video.addEventListener("loadedmetadata", fireReady, { once: true });
 
     video.play().catch((err) => {
       if (err.name === "NotAllowedError") {
@@ -2851,9 +2933,12 @@ class Detail {
         dom.detailMuteBtn.innerHTML = config.icons.mute;
         video.play().catch(() => {});
       }
+      // 播放失败也算准备完成，避免卡死
+      fireReady();
     });
 
     video.onerror = () => {
+      fireReady();
       this.handleVideoError(video, {
         onMax: () => {
           dom.detailPlayBtn.innerHTML = config.icons.play;
@@ -2874,7 +2959,7 @@ class Detail {
     slider.style.background = "linear-gradient(to right, #fff 0%, rgba(255,255,255,0.2) 0%)";
   }
 
-  renderDetailNote(work) {
+  renderDetailNote(work, onReady) {
     this.#noteWork = work;
     this.#noteImgIndex = 0;
     this.#noteAutoPlayTimer = null;
@@ -2882,7 +2967,17 @@ class Detail {
     const img = dom.detailImage;
     const audio = dom.detailAudio;
 
+    const readyFn = () => { if (onReady) onReady(); };
     img.src = work.images[0] || work.cover || "";
+    // 图片加载完成时结束过渡
+    let readyFired = false;
+    const fireReady = () => {
+      if (readyFired) return;
+      readyFired = true;
+      readyFn();
+    };
+    img.addEventListener("load", fireReady, { once: true });
+    img.addEventListener("error", fireReady, { once: true });
     img.alt = work.desc || "";
 
     dom.detailImgCounter.textContent = `1 / ${work.images.length}`;
@@ -2982,7 +3077,7 @@ class Detail {
                 if (this.getDetailIndex() >= state.works.length) this.#index = state.works.length - 1;
                 this.renderDetail();
               }
-              store.notify("groups");
+              store.refreshGroups();
               dom.dialogTitle.textContent = "移除完成";
               dom.dialogBody.innerHTML = "<p>已移除该作品</p>";
               dialog.showOkDialog();
@@ -3477,7 +3572,9 @@ dom.btnSync.addEventListener("click", async () => {
   dom.btnRetry.addEventListener("click", async () => {
     document.getElementById("errorState").classList.add("hidden");
     try {
-      const works = await services.loadWorks(state.currentGroupId);
+      const groupId = state.currentGroupId;
+      const works = await services.loadWorks(groupId);
+      if (state.currentGroupId !== groupId) return;
       store.set("works", works);
     } catch (err) {
       console.error("[DY] load works failed:", err);

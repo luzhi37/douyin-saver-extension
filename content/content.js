@@ -74,91 +74,81 @@
 
   // ===== 消息路由 =====
 
+  const BRIDGE = {
+    FETCH_SINGLE_WORK: {
+      req: "DY_FETCH_SINGLE_WORK_REQUEST",
+      res: "DY_FETCH_SINGLE_WORK_RESULT",
+      timeout: (msg) => msg.timeout,
+      detail: (msg) => ({ awemeId: msg.awemeId }),
+    },
+    FETCH_FOLLOWING_PAGE: {
+      req: "DY_FETCH_FOLLOWING_PAGE_REQUEST",
+      res: "DY_FETCH_FOLLOWING_PAGE_RESULT",
+      timeout: (msg) => msg.timeout,
+      detail: (msg) => ({ secUid: msg.secUid, offset: msg.offset || 0, count: msg.count }),
+    },
+    FETCH_WORKS_PAGE: {
+      req: "DY_FETCH_WORKS_REQUEST",
+      res: "DY_FETCH_WORKS_RESULT",
+      timeout: () => 60000,
+      detail: (msg) => ({ secUid: msg.secUid, maxCursor: msg.cursor || 0, count: msg.count }),
+    },
+    FETCH_FAVORITES_PAGE: {
+      req: "DY_FETCH_FAVORITES_PAGE_REQUEST",
+      res: "DY_FETCH_FAVORITES_PAGE_RESULT",
+      timeout: (msg) => msg.timeout,
+      detail: (msg) => ({ secUid: msg.secUid, cursor: msg.cursor || 0, count: msg.count }),
+    },
+    CANCEL_ONE_LIKE: {
+      req: "DY_CANCEL_ONE_LIKE_REQUEST",
+      res: "DY_CANCEL_ONE_LIKE_RESULT",
+      timeout: () => 30000,
+      detail: (msg) => ({ awemeId: msg.awemeId }),
+    },
+    FETCH_COLLECTION_PAGE: {
+      req: "DY_FETCH_COLLECTION_PAGE_REQUEST",
+      res: "DY_FETCH_COLLECTION_PAGE_RESULT",
+      timeout: (msg) => msg.timeout,
+      detail: (msg) => ({ cursor: msg.cursor || 0, count: msg.count }),
+    },
+    CANCEL_ONE_COLLECTION: {
+      req: "DY_CANCEL_ONE_COLLECTION_REQUEST",
+      res: "DY_CANCEL_ONE_COLLECTION_RESULT",
+      timeout: () => 30000,
+      detail: (msg) => ({ awemeId: msg.awemeId }),
+    },
+    GET_SECURITY_STATUS: {
+      req: "DY_GET_SECURITY_STATUS_REQUEST",
+      res: "DY_GET_SECURITY_STATUS_RESULT",
+      timeout: () => 5000,
+      detail: () => ({}),
+    },
+    REQUEST_CAPTURE_BROWSER_FEATURES: {
+      req: "DY_REQUEST_BROWSER_FEATURES",
+      res: "DY_CAPTURE_BROWSER_FEATURES_REFRESH",
+      timeout: (msg) => msg.timeout || 10000,
+      detail: () => ({}),
+    },
+  };
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    switch (message.type) {
-      case "FETCH_SINGLE_WORK":
-        return requestResponse(
-          "DY_FETCH_SINGLE_WORK_REQUEST",
-          "DY_FETCH_SINGLE_WORK_RESULT",
-          message.timeout,
-          function (msg) {
-            return { awemeId: msg.awemeId };
-          },
-        )(message, _sender, sendResponse);
-
-      case "FETCH_FOLLOWING_PAGE":
-        return requestResponse(
-          "DY_FETCH_FOLLOWING_PAGE_REQUEST",
-          "DY_FETCH_FOLLOWING_PAGE_RESULT",
-          message.timeout,
-          function (msg) {
-            return { secUid: msg.secUid, offset: msg.offset || 0, count: msg.count };
-          },
-        )(message, _sender, sendResponse);
-
-      case "FETCH_WORKS_PAGE":
-        return requestResponse("DY_FETCH_WORKS_REQUEST", "DY_FETCH_WORKS_RESULT", 60000, function (msg) {
-          return { secUid: msg.secUid, maxCursor: msg.cursor || 0, count: msg.count };
-        })(message, _sender, sendResponse);
-
-      case "FETCH_FAVORITES_PAGE":
-        return requestResponse(
-          "DY_FETCH_FAVORITES_PAGE_REQUEST",
-          "DY_FETCH_FAVORITES_PAGE_RESULT",
-          message.timeout,
-          function (msg) {
-            return { secUid: msg.secUid, cursor: msg.cursor || 0, count: msg.count };
-          },
-        )(message, _sender, sendResponse);
-
-      case "CANCEL_ONE_LIKE":
-        return requestResponse("DY_CANCEL_ONE_LIKE_REQUEST", "DY_CANCEL_ONE_LIKE_RESULT", 30000, function (msg) {
-          return { awemeId: msg.awemeId };
-        })(message, _sender, sendResponse);
-
-      case "FETCH_COLLECTION_PAGE":
-        return requestResponse(
-          "DY_FETCH_COLLECTION_PAGE_REQUEST",
-          "DY_FETCH_COLLECTION_PAGE_RESULT",
-          message.timeout,
-          function (msg) {
-            return { cursor: msg.cursor || 0, count: msg.count };
-          },
-        )(message, _sender, sendResponse);
-
-      case "CANCEL_ONE_COLLECTION":
-        return requestResponse(
-          "DY_CANCEL_ONE_COLLECTION_REQUEST",
-          "DY_CANCEL_ONE_COLLECTION_RESULT",
-          30000,
-          function (msg) {
-            return { awemeId: msg.awemeId };
-          },
-        )(message, _sender, sendResponse);
-
-      case "GET_SECURITY_STATUS":
-        return requestResponse("DY_GET_SECURITY_STATUS_REQUEST", "DY_GET_SECURITY_STATUS_RESULT", 5000, function (msg) {
-          return {};
-        })(message, _sender, sendResponse);
-
-      case "REQUEST_CAPTURE_BROWSER_FEATURES":
-        return requestResponse(
-          "DY_REQUEST_BROWSER_FEATURES",
-          "DY_CAPTURE_BROWSER_FEATURES_REFRESH",
-          message.timeout || 10000,
-          function () {
-            return {};
-          },
-        )(message, _sender, sendResponse);
-
-      case "CANCEL_ACTIVE_TASK":
-        document.dispatchEvent(new CustomEvent("DY_CANCEL_ACTIVE_TASK"));
-        sendResponse({ ok: true });
-        return false;
-
-      default:
-        return false;
+    const entry = BRIDGE[message.type];
+    if (entry) {
+      return requestResponse(
+        entry.req,
+        entry.res,
+        entry.timeout(message),
+        entry.detail,
+      )(message, _sender, sendResponse);
     }
+
+    if (message.type === "CANCEL_ACTIVE_TASK") {
+      document.dispatchEvent(new CustomEvent("DY_CANCEL_ACTIVE_TASK"));
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    return false;
   });
 
   // ===== 作品详情 + 保存 (saver 现有) =====

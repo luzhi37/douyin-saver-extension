@@ -183,6 +183,8 @@ const CONFIG = {
 let abOgus = null;
 let cachedClockSkew = 0;
 let clockSkewTime = 0;
+let _independentMode = false;
+let _independentModeLoaded = false;
 
 const DOMAIN_CONFIG = {
   [CONFIG.STORAGE_KEYS.WORKS]: {
@@ -206,6 +208,20 @@ async function ensureABogus() {
   const { browserFeatures } = await chrome.storage.local.get("browserFeatures");
   const f = browserFeatures || {};
   abOgus = new ABogus(f.userAgent || navigator.userAgent, f.platform || navigator.platform, f);
+}
+
+async function loadIndependentMode() {
+  if (!_independentModeLoaded) {
+    const { independentMode } = await chrome.storage.local.get("independentMode");
+    _independentMode = independentMode === true;
+    _independentModeLoaded = true;
+  }
+  return _independentMode;
+}
+
+function setIndependentMode(enabled) {
+  _independentMode = enabled === true;
+  _independentModeLoaded = true;
 }
 
 async function getClockSkew() {
@@ -482,26 +498,52 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
   try {
     await ensureABogus();
     if (secUid === "self" || !secUid) {
-      secUid = await resolveSelfSecUid();
+      const { secUid: stored } = await chrome.storage.local.get("secUid");
+      if (stored && stored !== "self") secUid = stored;
+      else secUid = await resolveSelfSecUid();
       if (!secUid) return sendResponse({ ok: false, error: "NO_SEC_UID" });
+    }
+    let userId = "";
+    try {
+      const cookies = await chrome.cookies.getAll({ domain: "douyin.com", name: "uid" });
+      userId = cookies[0]?.value || "";
+    } catch {}
+    if (!userId) {
+      const { savedCookie } = await chrome.storage.local.get("savedCookie");
+      if (savedCookie) {
+        for (const pair of savedCookie.split(";")) {
+          const trimmed = pair.trim();
+          const idx = trimmed.indexOf("=");
+          if (idx > 0 && trimmed.slice(0, idx).toLowerCase() === "uid") {
+            userId = trimmed.slice(idx + 1);
+            break;
+          }
+        }
+      }
     }
     const requestId = crypto.randomUUID();
     let cancelled = false,
       hasMore = true,
       offset = 0;
     const all = [];
+    const seen = new Set();
     const cancelHandler = (msg) => {
       if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
     };
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
-      const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset) };
+      const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset), min_time: "0", max_time: "0", source_type: "4", gps_access: "0", address_book_access: "0", is_top: "1" };
+      if (userId) params.user_id = userId;
       const data = await independentRequest(CONFIG.API.FOLLOWING, await buildBaseParams(params));
       if (data.status_code === 0 && Array.isArray(data.followings)) {
         if (data.followings.length === 0) break;
-        all.push(...data.followings.map(formatFollowing));
+        const newItems = data.followings.filter((item) => !seen.has(String(item.uid)));
+        if (newItems.length === 0) break;
+        newItems.forEach((item) => seen.add(String(item.uid)));
+        all.push(...newItems.map(formatFollowing));
         hasMore = data.has_more === true || data.has_more === 1;
-        offset += data.followings.length;
+        if (data.total > 0 && all.length >= data.total) hasMore = false;
+        offset += CONFIG.PAGE.FOLLOWING;
       } else break;
       chrome.runtime
         .sendMessage({ type: "FOLLOWING_PROGRESS", collected: all.length, hasMore, total: data.total || 0, requestId })
@@ -579,6 +621,7 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
     chrome.runtime.onMessage.addListener(cancelHandler);
     sendResponse({ ok: true, requestId, total: awemeIds.length });
     for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+      let currentOk = true;
       try {
         const params = await buildBaseParams({ aweme_id: awemeIds[i], request_source: "600", origin_type: "video_page" });
         let data, w;
@@ -589,8 +632,10 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
           if (attempt === 0) await new Promise((r) => setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)));
         }
         if (w) allWorks.push(w);
+        else { errors.push({ awemeId: awemeIds[i], error: "DELETED" }); currentOk = false; }
       } catch (e) {
         errors.push({ awemeId: awemeIds[i], error: e.message });
+        currentOk = false;
       }
       chrome.runtime
         .sendMessage({
@@ -598,7 +643,7 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
           requestId,
           index: i,
           total: awemeIds.length,
-          status: errors.length ? "error" : "ok",
+          status: currentOk ? "ok" : "error",
           awemeId: awemeIds[i],
         })
         .catch(() => {});
@@ -679,6 +724,7 @@ async function handleCaptureBrowserFeatures(message, sendResponse) {
 
 async function handleSetMode(message, sendResponse) {
   await chrome.storage.local.set({ independentMode: message.enabled === true });
+  setIndependentMode(message.enabled);
   if (message.enabled) await ensureABogus();
   sendResponse({ ok: true });
 }
@@ -703,6 +749,7 @@ async function setupDeclarativeNetRequest() {
 
 chrome.runtime.onInstalled.addListener(async () => {
   await setupDeclarativeNetRequest();
+  await loadIndependentMode();
 
   const worksGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS);
   if (!worksGroups.length) {
@@ -755,6 +802,26 @@ function getDefaultGroups(domain) {
 function toStorageId(domain, id) {
   const cfg = DOMAIN_CONFIG[domain];
   return cfg.idToString ? String(id) : id;
+}
+
+// domainStorage: 封装 DOMAIN_CONFIG，让调用者只需传 domain 名称，避免硬编码 store 名
+function domainStorage(domain) {
+  const cfg = DOMAIN_CONFIG[domain];
+  if (!cfg) throw new Error("Unknown domain: " + domain);
+  return {
+    getAll: () => storage.getAll(cfg.storeName),
+    get: (key) => storage.get(cfg.storeName, key),
+    putBatch: (items) => storage.putBatch(cfg.storeName, items),
+    deleteBatch: (keys) => storage.deleteBatch(cfg.storeName, keys),
+    count: () => storage.count(cfg.storeName),
+    getByGroup: (groupId) => storage.getByIndex(cfg.storeName, "groupId", groupId),
+    clear: () => storage.clear(cfg.storeName),
+    getGroups: () => storage.getGroups(cfg.groupsName),
+    putGroups: (groups) => storage.putGroups(cfg.groupsName, groups),
+    getDefaultGroups: () => cfg.defaultGroups,
+    idField: cfg.idField,
+    itemKey: cfg.itemKey,
+  };
 }
 
 function createDomainHandlers(domain) {
@@ -830,11 +897,12 @@ function mergeWork(w, old) {
 }
 
 async function mergeAndSaveWorks(works) {
+  const ds = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
   const valid = works.filter((w) => w && w.awemeId);
   if (valid.length === 0) return { added: 0, updated: 0, total: 0 };
 
   const oldItems = await Promise.all(
-    valid.map((w) => storage.get(CONFIG.STORAGE_KEYS.WORKS, w.awemeId).then((old) => ({ w, old }))),
+    valid.map((w) => ds.get(w.awemeId).then((old) => ({ w, old }))),
   );
 
   let added = 0,
@@ -846,9 +914,9 @@ async function mergeAndSaveWorks(works) {
     if (isNew) added++;
     else updated++;
   }
-  await storage.putBatch(CONFIG.STORAGE_KEYS.WORKS, toWrite);
+  await ds.putBatch(toWrite);
 
-  const totalCount = await storage.count(CONFIG.STORAGE_KEYS.WORKS);
+  const totalCount = await ds.count();
   return { added, updated, total: totalCount };
 }
 
@@ -967,8 +1035,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // 独立模式 / Tab 转发
     case "FETCH_FOLLOWING":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchFollowing(message.secUid, sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentFetchFollowing(message.secUid, sendResponse);
         return handleFetchFollowing(message.secUid, sendResponse);
       }, sendResponse);
     case "FETCH_FAVORITES":
@@ -977,20 +1045,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "FETCH_COLLECTION":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchCollection(sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentFetchCollection(sendResponse);
         return handleFetchCollection(sendResponse);
       }, sendResponse);
     case "SYNC_WORKS":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentSyncWorks(message.awemeIds, sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentSyncWorks(message.awemeIds, sendResponse);
         return handleSyncWorks(message.awemeIds, sendResponse);
       }, sendResponse);
     case "FETCH_WORKS_PAGE":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentFetchWorksPage(message.secUid, message.cursor || "", sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentFetchWorksPage(message.secUid, message.cursor || "", sendResponse);
         sendToTab(
           "FETCH_WORKS_PAGE",
           {
@@ -1008,8 +1076,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "CANCEL_COLLECTION":
       return asyncHandler(async () => {
-        const { independentMode } = await chrome.storage.local.get("independentMode");
-        if (independentMode) return handleIndependentCancel(message.awemeIds, "collection", sendResponse);
+        const im = await loadIndependentMode();
+        if (im) return handleIndependentCancel(message.awemeIds, "collection", sendResponse);
         return runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", sendResponse);
       }, sendResponse);
     case "GET_SECURITY_STATUS":
@@ -1428,7 +1496,8 @@ async function handleSaveWorks(works, sendResponse) {
 
 async function handleGetWork(awemeId, sendResponse) {
   try {
-    const work = await storage.get(CONFIG.STORAGE_KEYS.WORKS, awemeId);
+    const ds = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
+    const work = await ds.get(awemeId);
     sendResponse({ work: work || null });
   } catch (err) {
     sendResponse({ error: err.message });
@@ -1443,7 +1512,8 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
       return sendResponse({ ok: false, error: "EMPTY" });
     }
 
-    const store = await storage.getAll(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+    const ds = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+    const stored = await ds.getAll();
     const incomingUids = new Set();
     let added = 0,
       updated = 0;
@@ -1454,8 +1524,8 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
       if (!f || !f.uid) continue;
       const uid = String(f.uid);
       incomingUids.add(uid);
-      const old = store[uid];
-      store[uid] = {
+      const old = stored[uid];
+      stored[uid] = {
         ...f,
         uid,
         groupId: isImport
@@ -1469,20 +1539,20 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
 
     // Mark users not in new list as 'lost'
     const lostUids = [];
-    for (const uid of Object.keys(store)) {
+    for (const uid of Object.keys(stored)) {
       if (!incomingUids.has(uid)) {
         lostUids.push(uid);
       }
     }
 
-    await storage.putBatch(CONFIG.STORAGE_KEYS.FOLLOWINGS, Object.values(store));
+    await ds.putBatch(Object.values(stored));
     sendResponse({
       ok: true,
       added,
       updated,
       lost: lostUids.length,
       lostUids,
-      total: Object.keys(store).length,
+      total: Object.keys(stored).length,
     });
   } catch (err) {
     sendResponse({ error: err.message });
@@ -1634,6 +1704,8 @@ async function handleSyncWorks(awemeIds, sendResponse) {
       errors.push({ awemeId: awemeIds[i], error: err });
     } else if (resp.work) {
       allWorks.push(resp.work);
+    } else {
+      errors.push({ awemeId: awemeIds[i], error: "DELETED" });
     }
 
     chrome.runtime
@@ -1774,11 +1846,13 @@ async function handleResetDomain(domain, sendResponse) {
 
 async function handleGetStats(sendResponse) {
   try {
+    const dsWorks = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
+    const dsFollowings = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
     const [works, followings, works_groups, followings_groups, est] = await Promise.all([
-      storage.getAll(CONFIG.STORAGE_KEYS.WORKS),
-      storage.getAll(CONFIG.STORAGE_KEYS.FOLLOWINGS),
-      storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS),
-      storage.getGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS),
+      dsWorks.getAll(),
+      dsFollowings.getAll(),
+      dsWorks.getGroups(),
+      dsFollowings.getGroups(),
       storage.estimate(),
     ]);
 

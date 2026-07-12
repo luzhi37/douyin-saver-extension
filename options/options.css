@@ -97,53 +97,59 @@ optgroup {
 
 /* ===== 动画 ===== */
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 @keyframes cardFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes dialogIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(10px);
-  }
+  from { opacity: 0; transform: scale(0.92) translateY(12px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
 
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
+@keyframes detailIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes detailContentIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes shimmer {
-  from {
-    transform: translateX(-100%);
-  }
-
-  to {
-    transform: translateX(100%);
-  }
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-16px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes toastOut {
+  from { opacity: 1; transform: translateX(-50%) translateY(0); }
+  to   { opacity: 0; transform: translateX(-50%) translateY(-16px); }
+}
+
+@keyframes checkBounce {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+
+
+:root {
+  --dy-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dy-ease-out: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ===== 顶栏 ===== */
@@ -276,7 +282,7 @@ optgroup {
   color: var(--dy-text-secondary);
   transition: color var(--dy-transition);
   border: none;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
   position: relative;
   z-index: 1;
   font-weight: 500;
@@ -294,14 +300,6 @@ optgroup {
 
 .topbar-right {
   gap: 6px;
-  flex-shrink: 0;
-}
-
-.topbar-divider {
-  width: 1px;
-  height: 20px;
-  background: var(--dy-border);
-  margin: 0 6px;
   flex-shrink: 0;
 }
 
@@ -443,7 +441,8 @@ body.domain-works #sidebarResizeHandle {
     transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 0.25s ease,
     border-color 0.25s ease;
-  animation: cardFadeIn 0.3s ease;
+  animation: cardFadeIn 0.35s ease both;
+  animation-delay: calc(var(--card-index, 0) * 30ms);
   border: 2px solid rgba(255, 255, 255, 0.03);
   z-index: 1;
 }
@@ -461,20 +460,36 @@ body.domain-works #sidebarResizeHandle {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
-  animation: shimmer 1.5s infinite;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
+  animation: shimmer 1.2s ease-in-out infinite;
 }
 
 .work-skeleton .work-title {
   opacity: 0.3;
 }
 
+.work-card::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, transparent 40%, rgba(254, 44, 85, 0.08), transparent 60%);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .work-card:hover {
-  transform: translateY(-6px) scale(1.02);
+  transform: translateY(-4px) scale(1.02);
   box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.6),
-    0 0 0 1px rgba(254, 44, 85, 0.15);
-  border-color: rgba(254, 44, 85, 0.35);
+    0 16px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(254, 44, 85, 0.25);
+  border-color: rgba(254, 44, 85, 0.45);
+}
+
+.work-card:hover::after {
+  opacity: 1;
 }
 
 .work-media {
@@ -491,10 +506,12 @@ body.domain-works #sidebarResizeHandle {
   z-index: 2;
   padding: 4px 8px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .work-type-badge.hidden {
@@ -529,6 +546,17 @@ body.domain-works #sidebarResizeHandle {
   background: var(--dy-primary);
   border-color: var(--dy-primary);
   color: #fff;
+  box-shadow: 0 0 0 0 rgba(254, 44, 85, 0.6);
+  animation: checkBounce 0.25s var(--dy-ease-spring), checkboxPulse 1.5s ease-in-out 0.25s infinite;
+}
+
+@keyframes checkboxPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(254, 44, 85, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(254, 44, 85, 0);
+  }
 }
 
 .following-checkbox {
@@ -567,6 +595,18 @@ body.domain-works #sidebarResizeHandle {
   object-fit: cover;
   display: block;
   transition: transform 0.3s ease, opacity 0.3s ease;
+  animation: thumbFadeIn 0.35s ease both;
+}
+
+@keyframes thumbFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .work-card:hover .work-thumb {
@@ -595,14 +635,15 @@ body.domain-works #sidebarResizeHandle {
 
 .work-video-controls {
   position: absolute;
-  bottom: -2px;
+  bottom: 0;
   left: 0;
   right: 0;
-  padding: 0;
+  padding: 8px 6px 6px;
   display: none;
   flex-direction: column;
   gap: 4px;
   z-index: 2;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
 }
 
 .work-card .work-video-controls.video-ready {
@@ -665,8 +706,8 @@ body.domain-works #sidebarResizeHandle {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 35px;
-  padding: 0 5px;
+  min-height: 35px;
+  padding: 6px 5px;
   gap: 4px;
   background: var(--dy-surface);
   z-index: 1;
@@ -677,6 +718,10 @@ body.domain-works #sidebarResizeHandle {
   color: var(--dy-text);
   font-size: var(--dy-font-size-sm);
   line-height: 1.5;
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(90deg, black 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, black 70%, transparent 100%);
 }
 
 .work-action-btn {
@@ -803,8 +848,8 @@ body.sidebar-open .following-stats {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
-  animation: shimmer 1.5s infinite;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
+  animation: shimmer 1.2s ease-in-out infinite;
 }
 
 .following-skeleton-info {
@@ -827,8 +872,8 @@ body.sidebar-open .following-stats {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
-  animation: shimmer 1.5s infinite;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
+  animation: shimmer 1.2s ease-in-out infinite;
 }
 
 .following-skeleton-line.short {
@@ -934,7 +979,15 @@ body.sidebar-open .following-stats {
   border: none;
   cursor: pointer;
   color: rgba(255, 255, 255, 0.85);
-  transition: background var(--dy-transition);
+  transition: background var(--dy-transition), transform 0.15s ease;
+}
+
+.icon-btn:hover {
+  transform: scale(1.1);
+}
+
+.icon-btn:active {
+  transform: scale(0.92);
 }
 
 .icon-btn svg {
@@ -955,7 +1008,7 @@ body.sidebar-open .following-stats {
   color: var(--dy-text);
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--dy-transition), border-color var(--dy-transition), color var(--dy-transition);
+  transition: background var(--dy-transition), border-color var(--dy-transition), color var(--dy-transition), transform 0.15s ease;
   user-select: none;
   font-weight: 500;
 }
@@ -963,6 +1016,7 @@ body.sidebar-open .following-stats {
 .dy-btn:hover {
   background: var(--dy-surface-hover);
   border-color: var(--dy-border-light);
+  transform: scale(1.03);
 }
 
 .dy-btn:active {
@@ -985,14 +1039,16 @@ body.sidebar-open .following-stats {
 .dy-btn-primary:hover {
   background: rgba(255, 255, 255, 0.06);
   border-color: var(--dy-border-light);
+  transform: scale(1.03);
 }
 
 .dy-btn-ghost {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .dy-btn-ghost:hover {
   background: rgba(255, 255, 255, 0.06);
+  transform: scale(1.03);
 }
 
 .dy-btn-danger {
@@ -1001,6 +1057,7 @@ body.sidebar-open .following-stats {
 
 .dy-btn-danger:hover {
   background: rgba(254, 44, 85, 0.12);
+  transform: scale(1.03);
 }
 
 .dy-btn-sm {
@@ -1026,7 +1083,6 @@ body.sidebar-open .following-stats {
   background: #000;
   z-index: 200;
   color: #fff;
-  animation: fadeIn 0.3s ease;
   --bg-url:none;
 }
 
@@ -1040,14 +1096,27 @@ body.sidebar-open .following-stats {
   background-image: var(--bg-url);
   background-size: cover;
   background-position: center;
-  filter: blur(40px) brightness(0.3);
+  filter: blur(60px) brightness(0.4);
   z-index: 0;
   contain: strict;
+}
+
+#detailOverlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
+  z-index: 0;
+  pointer-events: none;
 }
 
 #detailOverlay>* {
   position: relative;
   z-index: 1;
+}
+
+#detailBottomBar {
+  animation: fadeIn 0.3s 0.15s ease both;
 }
 
 #detailOverlay.hidden {
@@ -1061,6 +1130,18 @@ body.sidebar-open .following-stats {
   justify-content: center;
   overflow: hidden;
   touch-action: pan-y;
+  position: relative;
+}
+
+.detail-body.detail-transitioning #detailVideoContainer,
+.detail-body.detail-transitioning #detailImageContainer {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.detail-body:not(.detail-transitioning) #detailVideoContainer,
+.detail-body:not(.detail-transitioning) #detailImageContainer {
+  transition: opacity 0.35s ease;
 }
 
 .detail-body video {
@@ -1258,7 +1339,6 @@ body.sidebar-open .following-stats {
   max-width: 650px;
   max-height: 80vh;
   box-shadow: var(--dy-shadow-lg);
-  animation: dialogIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid var(--dy-border);
 }
 
@@ -1346,8 +1426,10 @@ body.sidebar-open .following-stats {
   position: fixed;
   top: 60px;
   left: 50%;
-  transform: translateX(-50%) translateY(-20px);
+  transform: translateX(-50%) translateY(-16px);
   background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   color: #fff;
   padding: 10px 24px;
   border-radius: 8px;
@@ -1355,8 +1437,16 @@ body.sidebar-open .following-stats {
   z-index: 999999;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.3s, transform 0.3s;
   white-space: nowrap;
+  animation: none;
+}
+
+.toast.show {
+  animation: toastIn 0.3s var(--dy-ease-out) both;
+}
+
+.toast.hide {
+  animation: toastOut 0.35s ease both;
 }
 
 /* ===== 空状态 ===== */
