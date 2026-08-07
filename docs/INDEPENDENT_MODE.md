@@ -10,15 +10,15 @@
 
 ## 两种模式对比
 
-| | 依赖标签页模式 | 独立模式 |
-|---|---|---|
-| API 执行者 | inject.js（主世界） | background.js（Service Worker） |
-| 签名来源 | Fetch Hook 从页面请求捕获 | crypto.js 本地算法生成 |
-| 抖音标签页 | **必需** | **不必要** |
-| Cookie | 浏览器自动携带（同源请求） | 浏览器 cookie jar（`credentials: "include"`） |
-| 消息链路 | `options → bg → sendToTab → inject` | `options → bg → direct fetch` |
-| a_bogus | 从 URL 捕获 | 本地生成（SM3 + RC4） |
-| 浏览器特征 | 从真实浏览器环境获取 | 从 `chrome.storage.local` 读取 |
+|            | 依赖标签页模式                      | 独立模式                                      |
+|------------|-------------------------------------|-----------------------------------------------|
+| API 执行者 | inject.js（主世界）                 | background.js（Service Worker）               |
+| 签名来源   | Fetch Hook 从页面请求捕获           | crypto.js 本地算法生成                        |
+| 抖音标签页 | **必需**                            | **不必要**                                    |
+| Cookie     | 浏览器自动携带（同源请求）          | 浏览器 cookie jar（`credentials: "include"`） |
+| 消息链路   | `options → bg → sendToTab → inject` | `options → bg → direct fetch`                 |
+| a_bogus    | 从 URL 捕获                         | 本地生成（SM3 + RC4）                         |
+| 浏览器特征 | 从真实浏览器环境获取                | 从 `chrome.storage.local` 读取                |
 
 **两模式隔离**，不共享算法代码、不共用缓存变量。
 
@@ -51,15 +51,15 @@ chrome.runtime.onMessage
 
 ## 各处理器端点
 
-| 操作 | 端点 | 方法 | 分页参数 |
-|------|------|------|---------|
-| FETCH_FOLLOWING | `/aweme/v1/web/user/following/list` | GET | `offset`, `count` |
-| FETCH_FAVORITES | `/aweme/v1/web/aweme/favorite/` | GET | `max_cursor`, `count` |
-| FETCH_COLLECTION | `/aweme/v1/web/aweme/listcollection/` | POST | `cursor`, `count` |
-| 取消点赞 | `/aweme/v1/web/commit/item/digg/` | POST | body: `aweme_id, item_type=0, type=0` |
-| 取消收藏 | `/aweme/v1/web/aweme/collect/` | POST | body: `action=0, aweme_id, aweme_type=0` |
-| SYNC_WORKS | `/aweme/v1/web/aweme/detail/` | GET | `aweme_id` |
-| FETCH_WORKS_PAGE | `/aweme/v1/web/aweme/post/` | GET | `sec_user_id, max_cursor, count` |
+| 操作             | 端点                                  | 方法 | 分页参数                                 |
+|------------------|---------------------------------------|------|------------------------------------------|
+| FETCH_FOLLOWING  | `/aweme/v1/web/user/following/list`   | GET  | `offset`, `count`                        |
+| FETCH_FAVORITES  | `/aweme/v1/web/aweme/favorite/`       | GET  | `max_cursor`, `count`                    |
+| FETCH_COLLECTION | `/aweme/v1/web/aweme/listcollection/` | POST | `cursor`, `count`                        |
+| 取消点赞         | `/aweme/v1/web/commit/item/digg/`     | POST | body: `aweme_id, item_type=0, type=0`    |
+| 取消收藏         | `/aweme/v1/web/aweme/collect/`        | POST | body: `action=0, aweme_id, aweme_type=0` |
+| SYNC_WORKS       | `/aweme/v1/web/aweme/detail/`         | GET  | `aweme_id`                               |
+| FETCH_WORKS_PAGE | `/aweme/v1/web/aweme/post/`           | GET  | `sec_user_id, max_cursor, count`         |
 
 DNR rule 3 为独立模式所有 API 请求注入泛用 `Referer: https://www.douyin.com/`；rules 5/6 为取消端点注入精确 Referer（带 `?showTab=like` / `?showTab=favorite_collection`）。
 
@@ -84,18 +84,18 @@ DNR rule 3 为独立模式所有 API 请求注入泛用 `Referer: https://www.do
 
 ### Cookie 差异
 
-| | 依赖标签页模式 | 独立模式 |
-|---|---|---|
-| 来源 | 浏览器自动携带（同源） | `chrome.cookies.getAll` 采集 |
+|          | 依赖标签页模式           | 独立模式                                                           |
+|----------|--------------------------|--------------------------------------------------------------------|
+| 来源     | 浏览器自动携带（同源）   | `chrome.cookies.getAll` 采集                                       |
 | 请求方式 | `credentials: 'include'` | `credentials: 'include'`（Cookie 头为 Chrome SW forbidden header） |
-| 采集方式 | 自动 | 面板「刷新」或自动采集，存为 `savedCookie` 字符串 |
+| 采集方式 | 自动                     | 面板「刷新」或自动采集，存为 `savedCookie` 字符串                  |
 
 ### 消息协议
 
-| 消息类型 | 行为 |
-|---------|------|
-| `GET_COOKIE_INFO` | 返回 `{ pairs[], rawCookie, hasSessionid, count, time }` |
-| `REFRESH_COOKIE` | 清空 `savedCookie`，重采 `chrome.cookies.getAll({domain:"douyin.com"})` |
+| 消息类型          | 行为                                                                    |
+|-------------------|-------------------------------------------------------------------------|
+| `GET_COOKIE_INFO` | 返回 `{ pairs[], rawCookie, hasSessionid, count, time }`                |
+| `REFRESH_COOKIE`  | 清空 `savedCookie`，重采 `chrome.cookies.getAll({domain:"douyin.com"})` |
 
 ### 存储
 
@@ -117,10 +117,10 @@ chrome.storage.local: { savedCookie: string, savedCookieTime: number }
 
 ### 消息协议
 
-| 消息类型 | 行为 |
-|---------|------|
-| `CAPTURE_BROWSER_FEATURES` | inject → content → bg，保存浏览器特征 |
-| `GET_BROWSER_FEATURES` | 返回存储的浏览器特征 |
+| 消息类型                   | 行为                                                                                      |
+|----------------------------|-------------------------------------------------------------------------------------------|
+| `CAPTURE_BROWSER_FEATURES` | inject → content → bg，保存浏览器特征                                                     |
+| `GET_BROWSER_FEATURES`     | 返回存储的浏览器特征                                                                      |
 | `REFRESH_BROWSER_FEATURES` | 清空缓存，通过 `sendToTabAsync("REQUEST_CAPTURE_BROWSER_FEATURES")` 请求抖音 tab 重新采集 |
 
 ### ABogus 构造
@@ -149,27 +149,27 @@ chrome.storage.local: {
 
 所有缓存均无过期逻辑，需通过设置面板显式刷新。
 
-| Key | 类型 | 写入者 | 读取者 |
-|-----|------|--------|--------|
-| `savedMsToken` + `savedMsTokenTime` | string + number | `getMsToken()` | `getMsToken()` |
-| `savedWebId` + `savedWebIdTime` | string + number | `getWebId()` | `getWebId()` |
-| `savedCookie` + `savedCookieTime` | string + number | 采集/刷新 | `independentRequest`, `buildBaseParams` 等 |
-| `browserFeatures` + `browserFeaturesTime` | object + number | 自动采集/刷新 | `ensureABogus`, `buildBaseParams` |
-| `independentMode` | boolean | 开关切换 | options.js |
-| `secUid` | string | 输入框 debounce 500ms | options.js |
+| Key                                       | 类型            | 写入者                | 读取者                                     |
+|-------------------------------------------|-----------------|-----------------------|--------------------------------------------|
+| `savedMsToken` + `savedMsTokenTime`       | string + number | `getMsToken()`        | `getMsToken()`                             |
+| `savedWebId` + `savedWebIdTime`           | string + number | `getWebId()`          | `getWebId()`                               |
+| `savedCookie` + `savedCookieTime`         | string + number | 采集/刷新             | `independentRequest`, `buildBaseParams` 等 |
+| `browserFeatures` + `browserFeaturesTime` | object + number | 自动采集/刷新         | `ensureABogus`, `buildBaseParams`          |
+| `independentMode`                         | boolean         | 开关切换              | options.js                                 |
+| `secUid`                                  | string          | 输入框 debounce 500ms | options.js                                 |
 
 ---
 
 ## 模式切换注意事项
 
-| 场景 | 行为 |
-|------|------|
-| 依赖→独立 | 发送 `CANCEL_ACTIVE_TASK` 中止 inject 中的循环 |
-| 独立→依赖 | 下次走 `sendToTab`；无 tab 时弹 `showNoSignatureDialog` |
-| `savedCookie` 为空 | `independentRequest` 抛 `NO_COOKIE` |
-| Cookie 过期 | 401/403 → `AUTH_FAILED` |
-| msToken 刷新失败 | fallback 到随机假 token |
-| 取消信号 | 独立模式下由 `AbortController` 内部消化 |
+| 场景               | 行为                                                    |
+|--------------------|---------------------------------------------------------|
+| 依赖→独立          | 发送 `CANCEL_ACTIVE_TASK` 中止 inject 中的循环          |
+| 独立→依赖          | 下次走 `sendToTab`；无 tab 时弹 `showNoSignatureDialog` |
+| `savedCookie` 为空 | `independentRequest` 抛 `NO_COOKIE`                     |
+| Cookie 过期        | 401/403 → `AUTH_FAILED`                                 |
+| msToken 刷新失败   | fallback 到随机假 token                                 |
+| 取消信号           | 独立模式下由 `AbortController` 内部消化                 |
 
 ---
 

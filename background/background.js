@@ -124,8 +124,12 @@ const CONFIG = {
     SECURITY_STATUS: 5000,
   },
   DELAY: {
-    MIN: 500,
-    MAX: 1000,
+    syncWorks: { MIN: 500, MAX: 1000 },
+    syncFollowings: { MIN: 500, MAX: 1000 },
+    syncFavorites: { MIN: 500, MAX: 1000 },
+    syncCollection: { MIN: 500, MAX: 1000 },
+    cancelLike: { MIN: 500, MAX: 1000 },
+    cancelCollection: { MIN: 500, MAX: 1000 },
   },
   SYNC: {
     BATCH_SIZE: 40,
@@ -154,12 +158,6 @@ const CONFIG = {
     POST: "/aweme/v1/web/aweme/post/",
   },
   CANCEL: {
-    like: {
-      url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
-      body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
-      type: "application/x-www-form-urlencoded; charset=UTF-8",
-      referrer: "https://www.douyin.com/user/self?showTab=like",
-    },
     collection: {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
       body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
@@ -178,6 +176,72 @@ const CONFIG = {
     "CANCELLED",
   ]),
 };
+
+// ---------- 运行时配置（存储在 chrome.storage.local） ----------
+const RUNTIME_CONFIG_KEY = "runtimeConfig";
+const RUNTIME_CONFIG_DEFAULTS = {
+  timeoutRequest: 30000,
+  timeoutSecurityStatus: 5000,
+  syncWorksDelayMin: 500,
+  syncWorksDelayMax: 1000,
+  syncFollowingsDelayMin: 500,
+  syncFollowingsDelayMax: 1000,
+  syncFavoritesDelayMin: 500,
+  syncFavoritesDelayMax: 1000,
+  syncCollectionDelayMin: 500,
+  syncCollectionDelayMax: 1000,
+  cancelLikeDelayMin: 500,
+  cancelLikeDelayMax: 1000,
+  cancelCollectionDelayMin: 500,
+  cancelCollectionDelayMax: 1000,
+  syncBatchSize: 40,
+  syncBatchPauseMin: 10000,
+  syncBatchPauseMax: 20000,
+  syncKeepaliveInterval: 2000,
+  syncRetryMax: 2,
+};
+
+function getDelayRange(type) {
+  const d = CONFIG.DELAY[type];
+  if (d) return d;
+  // fallback to syncWorks if type not found
+  return CONFIG.DELAY.syncWorks || { MIN: 500, MAX: 1000 };
+}
+
+async function reloadRuntimeConfig() {
+  const stored = await chrome.storage.local.get(RUNTIME_CONFIG_KEY);
+  const cfg = stored[RUNTIME_CONFIG_KEY];
+  if (!cfg) {
+    await chrome.storage.local.set({ [RUNTIME_CONFIG_KEY]: { ...RUNTIME_CONFIG_DEFAULTS } });
+    CONFIG.TIMEOUT.REQUEST = RUNTIME_CONFIG_DEFAULTS.timeoutRequest;
+    CONFIG.TIMEOUT.SECURITY_STATUS = RUNTIME_CONFIG_DEFAULTS.timeoutSecurityStatus;
+    CONFIG.DELAY.syncWorks = { MIN: RUNTIME_CONFIG_DEFAULTS.syncWorksDelayMin, MAX: RUNTIME_CONFIG_DEFAULTS.syncWorksDelayMax };
+    CONFIG.DELAY.syncFollowings = { MIN: RUNTIME_CONFIG_DEFAULTS.syncFollowingsDelayMin, MAX: RUNTIME_CONFIG_DEFAULTS.syncFollowingsDelayMax };
+    CONFIG.DELAY.syncFavorites = { MIN: RUNTIME_CONFIG_DEFAULTS.syncFavoritesDelayMin, MAX: RUNTIME_CONFIG_DEFAULTS.syncFavoritesDelayMax };
+    CONFIG.DELAY.syncCollection = { MIN: RUNTIME_CONFIG_DEFAULTS.syncCollectionDelayMin, MAX: RUNTIME_CONFIG_DEFAULTS.syncCollectionDelayMax };
+    CONFIG.DELAY.cancelLike = { MIN: RUNTIME_CONFIG_DEFAULTS.cancelLikeDelayMin, MAX: RUNTIME_CONFIG_DEFAULTS.cancelLikeDelayMax };
+    CONFIG.DELAY.cancelCollection = { MIN: RUNTIME_CONFIG_DEFAULTS.cancelCollectionDelayMin, MAX: RUNTIME_CONFIG_DEFAULTS.cancelCollectionDelayMax };
+    CONFIG.SYNC.BATCH_SIZE = RUNTIME_CONFIG_DEFAULTS.syncBatchSize;
+    CONFIG.SYNC.BATCH_PAUSE_MIN = RUNTIME_CONFIG_DEFAULTS.syncBatchPauseMin;
+    CONFIG.SYNC.BATCH_PAUSE_MAX = RUNTIME_CONFIG_DEFAULTS.syncBatchPauseMax;
+    CONFIG.SYNC.KEEPALIVE_INTERVAL = RUNTIME_CONFIG_DEFAULTS.syncKeepaliveInterval;
+    CONFIG.SYNC.RETRY_MAX = RUNTIME_CONFIG_DEFAULTS.syncRetryMax;
+    return;
+  }
+  CONFIG.TIMEOUT.REQUEST = cfg.timeoutRequest ?? CONFIG.TIMEOUT.REQUEST;
+  CONFIG.TIMEOUT.SECURITY_STATUS = cfg.timeoutSecurityStatus ?? CONFIG.TIMEOUT.SECURITY_STATUS;
+  CONFIG.DELAY.syncWorks = { MIN: cfg.syncWorksDelayMin ?? CONFIG.DELAY.syncWorks.MIN, MAX: cfg.syncWorksDelayMax ?? CONFIG.DELAY.syncWorks.MAX };
+  CONFIG.DELAY.syncFollowings = { MIN: cfg.syncFollowingsDelayMin ?? CONFIG.DELAY.syncFollowings.MIN, MAX: cfg.syncFollowingsDelayMax ?? CONFIG.DELAY.syncFollowings.MAX };
+  CONFIG.DELAY.syncFavorites = { MIN: cfg.syncFavoritesDelayMin ?? CONFIG.DELAY.syncFavorites.MIN, MAX: cfg.syncFavoritesDelayMax ?? CONFIG.DELAY.syncFavorites.MAX };
+  CONFIG.DELAY.syncCollection = { MIN: cfg.syncCollectionDelayMin ?? CONFIG.DELAY.syncCollection.MIN, MAX: cfg.syncCollectionDelayMax ?? CONFIG.DELAY.syncCollection.MAX };
+  CONFIG.DELAY.cancelLike = { MIN: cfg.cancelLikeDelayMin ?? CONFIG.DELAY.cancelLike.MIN, MAX: cfg.cancelLikeDelayMax ?? CONFIG.DELAY.cancelLike.MAX };
+  CONFIG.DELAY.cancelCollection = { MIN: cfg.cancelCollectionDelayMin ?? CONFIG.DELAY.cancelCollection.MIN, MAX: cfg.cancelCollectionDelayMax ?? CONFIG.DELAY.cancelCollection.MAX };
+  CONFIG.SYNC.BATCH_SIZE = cfg.syncBatchSize ?? CONFIG.SYNC.BATCH_SIZE;
+  CONFIG.SYNC.BATCH_PAUSE_MIN = cfg.syncBatchPauseMin ?? CONFIG.SYNC.BATCH_PAUSE_MIN;
+  CONFIG.SYNC.BATCH_PAUSE_MAX = cfg.syncBatchPauseMax ?? CONFIG.SYNC.BATCH_PAUSE_MAX;
+  CONFIG.SYNC.KEEPALIVE_INTERVAL = cfg.syncKeepaliveInterval ?? CONFIG.SYNC.KEEPALIVE_INTERVAL;
+  CONFIG.SYNC.RETRY_MAX = cfg.syncRetryMax ?? CONFIG.SYNC.RETRY_MAX;
+}
 
 // ---------- 模块级常量 ----------
 let abOgus = null;
@@ -438,24 +502,65 @@ async function independentRequest(apiPath, params, options = {}) {
   }
 }
 
+function parseExpire(value) {
+  const n = Number(value);
+  if (!isFinite(n) || n <= 0) return null;
+  if (n > 1e11) return n > 1e13 ? null : n; // 毫秒时间戳
+  if (n > 1e9) return n * 1000; // 秒时间戳
+  if (n <= 86400 * 30) return Date.now() + n * 1000; // 剩余秒数
+  return null;
+}
+
+function urlExpireAt(url) {
+  try {
+    const abs = url.startsWith("//") ? "https:" + url : url;
+    const sp = new URL(abs).searchParams;
+    // 键名含 expire（大小写不敏感）的参数优先，兼容 expire/x-expires/expires 等变体
+    for (const key of sp.keys()) {
+      if (/expire/i.test(key)) {
+        const at = parseExpire(sp.get(key));
+        if (at != null) return at;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function formatWork(aw) {
   if (!aw || !aw.aweme_id) return null;
   const author = aw.author || aw.author_info || {};
   const video = aw.video || {};
   const bitRate = Array.isArray(video.bit_rate) ? video.bit_rate : [];
-  let videoUrl = "";
-  let bestH = 0;
+  // 候选集：各码率 play_addr.url_list 全部项；无码率候选时兜底 video.play_addr.url_list
+  const cands = [];
   for (const br of bitRate) {
     if (br.is_h265) continue;
     const addr = br.play_addr || {};
-    const url = Array.isArray(addr.url_list) ? addr.url_list[0] : "";
     const h = addr.height || 0;
-    if (url && h > bestH) {
-      videoUrl = url;
-      bestH = h;
+    for (const u of Array.isArray(addr.url_list) ? addr.url_list : []) {
+      if (u) cands.push({ url: u, height: h, expireAt: urlExpireAt(u) });
     }
   }
-  if (!videoUrl) videoUrl = ((video.play_addr && video.play_addr.url_list) || [])[0] || "";
+  if (cands.length === 0) {
+    for (const u of (video.play_addr && video.play_addr.url_list) || []) {
+      if (u) cands.push({ url: u, height: 0, expireAt: urlExpireAt(u) });
+    }
+  }
+  let videoUrl = "";
+  let videoExpireAt = 0;
+  if (cands.length > 0) {
+    // 先取最高清档，档内比较 expireAt 取最长者；全解析失败则取档内第一项（与原逻辑一致）
+    const maxH = Math.max(...cands.map((c) => c.height));
+    const top = cands.filter((c) => c.height === maxH);
+    let best = top[0];
+    for (const c of top) {
+      if (c.expireAt != null && (best.expireAt == null || c.expireAt > best.expireAt)) best = c;
+    }
+    videoUrl = best.url;
+    videoExpireAt = best.expireAt || 0;
+  }
   videoUrl = videoUrl.replace(/^http:/, "");
   const authorFollowed =
     "follow_status" in author
@@ -472,6 +577,7 @@ function formatWork(aw) {
     authorHomeUrl: author.sec_uid ? CONFIG.URL_BASE + "/user/" + author.sec_uid : "",
     cover: ((video.cover && video.cover.url_list) || [])[0] ? video.cover.url_list[0].replace(/^http:/, "") : "",
     video: videoUrl,
+    videoExpireAt,
     images: (aw.images || [])
       .map((i) => ((i.url_list || i.urlList || [])[0] || "").replace(/^http:/, ""))
       .filter(Boolean),
@@ -550,7 +656,7 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
         .catch(() => {});
       if (hasMore && !cancelled)
         await new Promise((r) =>
-          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+          setTimeout(r, getDelayRange("syncFollowings").MIN + Math.random() * (getDelayRange("syncFollowings").MAX - getDelayRange("syncFollowings").MIN)),
         );
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
@@ -597,7 +703,7 @@ async function handleIndependentFetchCollection(sendResponse) {
         .catch(() => {});
       if (hasMore && !cancelled)
         await new Promise((r) =>
-          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+          setTimeout(r, getDelayRange("syncFollowings").MIN + Math.random() * (getDelayRange("syncFollowings").MAX - getDelayRange("syncFollowings").MIN)),
         );
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
@@ -629,7 +735,10 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
           data = await independentRequest(CONFIG.API.DETAIL, params);
           w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
           if (w) break;
-          if (attempt === 0) await new Promise((r) => setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)));
+          if (attempt === 0) {
+            const d = getDelayRange("syncWorks");
+            await new Promise((r) => setTimeout(r, d.MIN + Math.random() * (d.MAX - d.MIN)));
+          }
         }
         if (w) allWorks.push(w);
         else { errors.push({ awemeId: awemeIds[i], error: "DELETED" }); currentOk = false; }
@@ -656,8 +765,9 @@ async function handleIndependentSyncWorks(awemeIds, sendResponse) {
             await chrome.storage.local.get("keepalive");
           }
         } else {
+          const d = getDelayRange("syncWorks");
           await new Promise((r) =>
-            setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+            setTimeout(r, d.MIN + Math.random() * (d.MAX - d.MIN)),
           );
         }
       }
@@ -748,17 +858,22 @@ async function setupDeclarativeNetRequest() {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await setupDeclarativeNetRequest();
-  await loadIndependentMode();
+  try {
+    await setupDeclarativeNetRequest();
+    await loadIndependentMode();
+    await reloadRuntimeConfig();
 
-  const worksGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS);
-  if (!worksGroups.length) {
-    await storage.putGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS, CONFIG.DEFAULT_WORKS_GROUPS);
-  }
+    const worksGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS);
+    if (!worksGroups.length) {
+      await storage.putGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS, CONFIG.DEFAULT_WORKS_GROUPS);
+    }
 
-  const followingsGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS);
-  if (!followingsGroups.length) {
-    await storage.putGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS, CONFIG.DEFAULT_FOLLOWINGS_GROUPS);
+    const followingsGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS);
+    if (!followingsGroups.length) {
+      await storage.putGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS, CONFIG.DEFAULT_FOLLOWINGS_GROUPS);
+    }
+  } catch (e) {
+    console.warn("[DY] onInstalled partial failure:", e.message);
   }
 });
 
@@ -1103,10 +1218,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           time: savedCookieTime || null,
         });
       }, sendResponse);
-    case "GET_MSTOKEN":
-      return asyncHandler(async () => {
-        sendResponse({ ok: true, msToken: await getMsToken() });
-      }, sendResponse);
     case "GET_BROWSER_FEATURES":
       return asyncHandler(async () => {
         const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures;
@@ -1200,6 +1311,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .catch(() => sendResponse({ ok: false }));
       return true;
 
+    case "RELOAD_CONFIG":
+      return asyncHandler(async () => {
+        await reloadRuntimeConfig();
+        sendResponse({ ok: true });
+      }, sendResponse);
+
     default:
       sendResponse({ error: `Unknown message type: ${message.type}` });
   }
@@ -1246,7 +1363,8 @@ async function handleFetchFollowing(secUid, sendResponse) {
         })
         .catch(() => {});
       if (hasMore && !cancelled) {
-        const delay = CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN);
+        const d = getDelayRange("syncFollowings");
+        const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -1298,7 +1416,8 @@ async function handleFetchFavorites(secUid, sendResponse) {
         })
         .catch(() => {});
       if (hasMore && !cancelled) {
-        const delay = CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN);
+        const d = getDelayRange("syncFavorites");
+        const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -1349,7 +1468,8 @@ async function handleFetchCollection(sendResponse) {
         })
         .catch(() => {});
       if (hasMore && !cancelled) {
-        const delay = CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN);
+        const d = getDelayRange("syncCollection");
+        const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
@@ -1397,7 +1517,9 @@ async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
       .catch(() => {});
 
     if (!cancelled && i < awemeIds.length - 1) {
-      const delay = CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN);
+      const delayKind = tabType === "CANCEL_ONE_COLLECTION" ? "cancelCollection" : "cancelLike";
+      const d = getDelayRange(delayKind);
+      const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
@@ -1460,10 +1582,13 @@ async function handleIndependentCancel(awemeIds, kind, sendResponse) {
           awemeId: awemeIds[i],
         })
         .catch(() => {});
-      if (!cancelled && i < awemeIds.length - 1)
+      if (!cancelled && i < awemeIds.length - 1) {
+        const delayKind = kind === "collection" ? "cancelCollection" : "cancelLike";
+        const d = getDelayRange(delayKind);
         await new Promise((r) =>
-          setTimeout(r, CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN)),
+          setTimeout(r, d.MIN + Math.random() * (d.MAX - d.MIN)),
         );
+      }
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
     chrome.runtime
@@ -1729,7 +1854,8 @@ async function handleSyncWorks(awemeIds, sendResponse) {
           await chrome.storage.local.get("keepalive");
         }
       } else {
-        const delay = CONFIG.DELAY.MIN + Math.random() * (CONFIG.DELAY.MAX - CONFIG.DELAY.MIN);
+        const d = getDelayRange("syncWorks");
+        const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
         await new Promise((r) => setTimeout(r, delay));
       }
     }

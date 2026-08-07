@@ -7,7 +7,7 @@ const config = {
 
   // 超时
   FETCH_RETRY_DELAY: 1000,
-  SYNC_TIMEOUT: 30000,
+  SYNC_TIMEOUT: 30000,  // fallback; primary = runtimeConfig._cache?.timeoutRequest
   VIDEO_FALLBACK_TIMEOUT: 5000,
 
   // UI 延迟
@@ -60,7 +60,6 @@ const config = {
 const dom = {
   domainSwitch: document.querySelector(".domain-switch"),
   dsSlider: document.querySelector(".ds-slider"),
-  groupTabSlider: document.querySelector(".group-tabs-slider"),
   groupTabs: document.querySelector("#groupTabs"),
   mainContainer: document.querySelector("#mainContainer"),
   emptyState: document.querySelector("#emptyState"),
@@ -127,7 +126,6 @@ const state = {
   batchMode: false,
   selectedIds: new Set(),
   activeDialog: null,
-  currentFollowingUid: null,
   currentFollowingSecUid: null,
   sidebarCursor: null,
   sidebarLoading: false,
@@ -164,24 +162,6 @@ const store = {
     const old = state[key];
     state[key] = val;
     if (old !== val) this.notify(key, val, old);
-  },
-
-  // 批量更新：在一个 rAF 批次内完成多个 state 变更
-  batch(fn) {
-    const oldValues = new Map();
-    const track = (key, val) => {
-      if (!oldValues.has(key)) oldValues.set(key, state[key]);
-      state[key] = val;
-    };
-    fn(track);
-    requestAnimationFrame(() => {
-      for (const [key, old] of oldValues) {
-        if (state[key] !== old) {
-          const fns = this._listeners.get(key);
-          if (fns) fns.forEach((fn) => fn(state[key], old));
-        }
-      }
-    });
   },
 
   // 触发 groups 数据重新加载（总是从 background 获取最新分组数据）
@@ -250,6 +230,52 @@ const utils = {
     const min = String(d.getMinutes()).padStart(2, "0");
     if (d.toDateString() === new Date(now).toDateString()) return hour + ":" + min;
     return month + "/" + day + " " + hour + ":" + min;
+  },
+};
+
+// ---------- runtimeConfig ----------
+const runtimeConfig = {
+  KEY: "runtimeConfig",
+  DEFAULTS: {
+    timeoutRequest: 30000,
+    timeoutSecurityStatus: 5000,
+    syncWorksDelayMin: 500,
+    syncWorksDelayMax: 1000,
+    syncFollowingsDelayMin: 500,
+    syncFollowingsDelayMax: 1000,
+    syncFavoritesDelayMin: 500,
+    syncFavoritesDelayMax: 1000,
+    syncCollectionDelayMin: 500,
+    syncCollectionDelayMax: 1000,
+    cancelLikeDelayMin: 500,
+    cancelLikeDelayMax: 1000,
+    cancelCollectionDelayMin: 500,
+    cancelCollectionDelayMax: 1000,
+    syncBatchSize: 40,
+    syncBatchPauseMin: 10000,
+    syncBatchPauseMax: 20000,
+    syncKeepaliveInterval: 2000,
+    syncRetryMax: 2,
+  },
+  _cache: null,
+  async load() {
+    if (this._cache) return this._cache;
+    const stored = await chrome.storage.local.get(this.KEY);
+    const cfg = stored[this.KEY];
+    if (!cfg) {
+      await chrome.storage.local.set({ [this.KEY]: { ...this.DEFAULTS } });
+      this._cache = { ...this.DEFAULTS };
+    } else {
+      this._cache = { ...this.DEFAULTS, ...cfg };
+    }
+    return this._cache;
+  },
+  async save(values) {
+    this._cache = { ...this.DEFAULTS, ...values };
+    await chrome.storage.local.set({ [this.KEY]: this._cache });
+    try {
+      await services.bgMsg({ type: "RELOAD_CONFIG" });
+    } catch (_) {}
   },
 };
 
@@ -369,7 +395,7 @@ const services = {
       setTimeout(() => {
         chrome.runtime.onMessage.removeListener(handler);
         resolve(null);
-      }, config.SYNC_TIMEOUT);
+      }, runtimeConfig._cache?.timeoutRequest || config.SYNC_TIMEOUT);
     });
     if (!done || !done.ok) throw new Error("SYNC_FAILED");
     const workRes = await this.bgMsg({ type: "GET_WORK", awemeId });
@@ -423,6 +449,15 @@ class VirtualGrid {
     dom.emptyState.classList.add("hidden");
     dom.errorState.classList.add("hidden");
 
+    // 先完全重置实例状态（含空列表分支），避免残留 observer/队列影响后续渲染
+    if (this.#observer) {
+      this.#observer.disconnect();
+      this.#observer = null;
+    }
+    this.#itemMap = new Map(items.map((item) => [item[this.#itemKey], item]));
+    this.#fillQueue = [];
+    this.#filling = 0;
+
     if (items.length === 0) {
       dom.emptyState.classList.remove("hidden");
       dom.emptyState.querySelector("p").textContent = emptyMsg;
@@ -433,15 +468,6 @@ class VirtualGrid {
 
     dom.emptyState.classList.add("hidden");
     this.#container.classList.remove("hidden");
-
-    if (this.#observer) {
-      this.#observer.disconnect();
-      this.#observer = null;
-    }
-
-    this.#itemMap = new Map(items.map((item) => [item[this.#itemKey], item]));
-    this.#fillQueue = [];
-    this.#filling = 0;
 
     const skelTmpl = document.getElementById(
       this.#skeletonClass.replace(/-([a-z])/g, (_, c) => c.toUpperCase()) + "Template",
@@ -489,6 +515,19 @@ class VirtualGrid {
       dom.emptyState.querySelector("p").textContent = this.#emptyMsg;
       dom.emptyState.querySelector(".empty-hint").textContent = this.#emptyHint;
     }
+  }
+
+  // 中止未完成的分块渲染（域切换时调用，防止旧域骨架卡/observer 残留到共享容器）
+  abortRender() {
+    cancelAnimationFrame(this.#chunkRaf);
+    this.#chunkRaf = 0;
+    if (this.#observer) {
+      this.#observer.disconnect();
+      this.#observer = null;
+    }
+    this.#itemMap = new Map();
+    this.#fillQueue = [];
+    this.#filling = 0;
   }
 
   #observeNewSkeletons() {
@@ -756,7 +795,6 @@ class Groups {
       dom.groupTabs.appendChild(tab);
     }
     this.updateTabMask();
-    updateGroupTabSlider(state.currentGroupId);
   }
 
   updateTabMask() {
@@ -1282,7 +1320,6 @@ class Sidebar {
     const card = dom.mainContainer.querySelector(`[data-uid="${following.uid}"]`);
     if (card) card.classList.add("sidebar-active");
 
-    state.currentFollowingUid = following.uid;
     state.currentFollowingSecUid = utils.secUidFromUrl(following.profileUrl);
     state.sidebarCursor = null;
     state.sidebarLoading = false;
@@ -1937,6 +1974,41 @@ class Settings {
     this._renderCacheList(ci, ct);
     // ponytail: status readout — independent sub-fetch failure should not block the rest
     this._renderStatus(secRes);
+    // 运行参数
+    this._renderConfigSection();
+  }
+
+  _renderConfigSection() {
+    const cfg = runtimeConfig._cache || runtimeConfig.DEFAULTS;
+    const map = {
+      timeoutRequest: "timeoutRequest",
+      timeoutSecurityStatus: "timeoutSecurityStatus",
+      syncWorksDelayMin: "syncWorksDelayMin",
+      syncWorksDelayMax: "syncWorksDelayMax",
+      syncFollowingsDelayMin: "syncFollowingsDelayMin",
+      syncFollowingsDelayMax: "syncFollowingsDelayMax",
+      syncFavoritesDelayMin: "syncFavoritesDelayMin",
+      syncFavoritesDelayMax: "syncFavoritesDelayMax",
+      syncCollectionDelayMin: "syncCollectionDelayMin",
+      syncCollectionDelayMax: "syncCollectionDelayMax",
+      cancelLikeDelayMin: "cancelLikeDelayMin",
+      cancelLikeDelayMax: "cancelLikeDelayMax",
+      cancelCollectionDelayMin: "cancelCollectionDelayMin",
+      cancelCollectionDelayMax: "cancelCollectionDelayMax",
+      syncBatchSize: "syncBatchSize",
+      syncBatchPauseMin: "syncBatchPauseMin",
+      syncBatchPauseMax: "syncBatchPauseMax",
+      syncKeepaliveInterval: "syncKeepaliveInterval",
+      syncRetryMax: "syncRetryMax",
+    };
+    const section = this._dialogBody.querySelector("#settingsConfigSection");
+    if (!section) return;
+    const hint = section.querySelector(".config-hint");
+    for (const [key, inputKey] of Object.entries(map)) {
+      const input = section.querySelector(`.config-input[data-key="${inputKey}"]`);
+      if (input) input.value = cfg[key] ?? "";
+    }
+    if (hint) hint.textContent = "";
   }
 
   _renderCacheList(ci, ct) {
@@ -2128,6 +2200,62 @@ class Settings {
         }
       });
     }
+    this._bindConfigSave();
+  }
+
+  _bindConfigSave() {
+    const saveBtn = this._dialogBody.querySelector("#btnSaveConfig");
+    if (!saveBtn) return;
+    const section = this._dialogBody.querySelector("#settingsConfigSection");
+    const hint = section?.querySelector(".config-hint");
+    const FIELDS = [
+      "timeoutRequest", "timeoutSecurityStatus",
+      "syncWorksDelayMin", "syncWorksDelayMax",
+      "syncFollowingsDelayMin", "syncFollowingsDelayMax",
+      "syncFavoritesDelayMin", "syncFavoritesDelayMax",
+      "syncCollectionDelayMin", "syncCollectionDelayMax",
+      "cancelLikeDelayMin", "cancelLikeDelayMax",
+      "cancelCollectionDelayMin", "cancelCollectionDelayMax",
+      "syncBatchSize", "syncBatchPauseMin", "syncBatchPauseMax",
+      "syncKeepaliveInterval", "syncRetryMax",
+    ];
+    const DELAY_PAIRS = [
+      ["syncWorksDelayMin", "syncWorksDelayMax", "同步作品"],
+      ["syncFollowingsDelayMin", "syncFollowingsDelayMax", "同步关注"],
+      ["syncFavoritesDelayMin", "syncFavoritesDelayMax", "扫描点赞"],
+      ["syncCollectionDelayMin", "syncCollectionDelayMax", "扫描收藏"],
+      ["cancelLikeDelayMin", "cancelLikeDelayMax", "取消点赞"],
+      ["cancelCollectionDelayMin", "cancelCollectionDelayMax", "取消收藏"],
+    ];
+    saveBtn.addEventListener("click", async () => {
+      const values = {};
+      for (const key of FIELDS) {
+        const input = section.querySelector(`.config-input[data-key="${key}"]`);
+        const raw = input?.value.trim();
+        const num = Number(raw);
+        if (!raw || !Number.isFinite(num) || num <= 0) {
+          if (hint) { hint.textContent = `"${key}" 请输入有效的正数`; hint.className = "config-hint config-hint-err"; }
+          return;
+        }
+        values[key] = num;
+      }
+      for (const [minKey, maxKey, label] of DELAY_PAIRS) {
+        if (values[minKey] > values[maxKey]) {
+          if (hint) { hint.textContent = `${label}延迟最小值不能大于最大值`; hint.className = "config-hint config-hint-err"; }
+          return;
+        }
+      }
+      if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
+        if (hint) { hint.textContent = "批次暂停最小值不能大于最大值"; hint.className = "config-hint config-hint-err"; }
+        return;
+      }
+      try {
+        await runtimeConfig.save(values);
+        if (hint) { hint.textContent = "已保存"; hint.className = "config-hint config-hint-ok"; }
+      } catch {
+        if (hint) { hint.textContent = "保存失败"; hint.className = "config-hint config-hint-err"; }
+      }
+    });
   }
 
   _bindCookieResize(table) {
@@ -3366,24 +3494,12 @@ function updateDomainSlider(domain) {
   dom.dsSlider.style.width = `${width}px`;
 }
 
-function updateGroupTabSlider(groupId) {
-  if (!dom.groupTabSlider) return;
-  const btn = dom.groupTabs.querySelector(`.group-tab[data-group-id="${groupId}"]`);
-  if (!btn) {
-    dom.groupTabSlider.style.width = "0";
-    return;
-  }
-  const tabsRect = dom.groupTabs.getBoundingClientRect();
-  const btnRect = btn.getBoundingClientRect();
-  const left = btnRect.left - tabsRect.left + dom.groupTabs.scrollLeft;
-  const width = btnRect.width;
-  dom.groupTabSlider.style.transform = `translateX(${left}px)`;
-  dom.groupTabSlider.style.width = `${width}px`;
-}
-
 function switchDomain(domain) {
   if (domain === state.domain) return;
 
+  // 先中止两个网格未完成的分块渲染，防止旧域骨架卡在下一帧追加进共享容器
+  worksGrid.abortRender();
+  followingsGrid.abortRender();
   dom.mainContainer.innerHTML = "";
 
   state.selectedIds.clear();
@@ -3398,7 +3514,6 @@ function switchDomain(domain) {
     }
   }
   sidebar.clearSidebarActive();
-  state.currentFollowingUid = null;
   state.currentFollowingSecUid = null;
 
   document.body.classList.remove("domain-works", "domain-followings");
@@ -3546,6 +3661,8 @@ dom.btnSync.addEventListener("click", async () => {
   document.body.classList.remove("batch-mode");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
+  // 预加载运行时配置
+  await runtimeConfig.load();
   for (const name of ["pause", "play", "mute", "unmute", "loopSingle", "loopGroup", "noLoop", "check"]) {
     config.icons[name] = document.getElementById("icon-" + name).innerHTML;
   }
@@ -3556,7 +3673,6 @@ dom.btnSync.addEventListener("click", async () => {
     "scroll",
     () => {
       groups.updateTabMask();
-      updateGroupTabSlider(state.currentGroupId);
     },
     { passive: true },
   );
@@ -3565,7 +3681,6 @@ dom.btnSync.addEventListener("click", async () => {
     "resize",
     () => {
       updateDomainSlider(state.domain);
-      updateGroupTabSlider(state.currentGroupId);
     },
     { passive: true },
   );

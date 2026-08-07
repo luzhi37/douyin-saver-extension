@@ -11,3 +11,9 @@ docs/superpowers/
 docs/openspec/
 tests/
 .traces/
+.idea/
+.zcode/
+.claude/
+.cursor/
+.windsurf/
+.zed/
