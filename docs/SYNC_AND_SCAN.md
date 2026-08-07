@@ -11,12 +11,14 @@
 - 每完成 40 条后暂停 10–20s（`CONFIG.SYNC.BATCH_SIZE`），暂停期间每 2s 调用 `chrome.storage.local.get` 保活 SW
 - 检查 `cancelled` 标志，循环结束调用 `mergeAndSaveWorks(allWorks)` 写入存储
 
+**视频直链时效**：`formatWork` 解析各候选 URL 的 `expire` 参数（`parseExpire`，兼容秒/毫秒时间戳与剩余秒数），在最高清档内选中 `videoExpireAt` 最大者；work 新增 `videoExpireAt` 字段（0 = 未知，旧数据/图文自然为 0）。
+
 **错误分类**：
 
-| 类别 | 错误 | 处理 |
-|------|------|------|
-| 致命 | `NO_DOUYIN_TAB`, `TAB_QUERY_FAILED`, `NO_LISTENER`, `EMPTY_RESPONSE`, `RATE_LIMITED`, `CANCELLED`, HTTP 401/429 | 终止整个批次 |
-| 非致命 | `TIMEOUT`, HTTP 403/5xx, `status_code`, 网络异常 | 跳过该作品继续 |
+| 类别   | 错误                                                                                                            | 处理           |
+|--------|-----------------------------------------------------------------------------------------------------------------|----------------|
+| 致命   | `NO_DOUYIN_TAB`, `TAB_QUERY_FAILED`, `NO_LISTENER`, `EMPTY_RESPONSE`, `RATE_LIMITED`, `CANCELLED`, HTTP 401/429 | 终止整个批次   |
+| 非致命 | `TIMEOUT`, HTTP 403/5xx, `status_code`, 网络异常                                                                | 跳过该作品继续 |
 
 ## 2. 同步关注
 
@@ -28,16 +30,16 @@
 
 共用 `Favorites.openScanDialog(cfg)`，通过 cfg 参数驱动差异：
 
-| 项 | 点赞 | 收藏 |
-|----|------|------|
-| background handler | `handleFetchFavorites` | `handleFetchCollection` |
-| 转发消息 | `FETCH_FAVORITES_PAGE` | `FETCH_COLLECTION_PAGE` |
-| 进度消息 | `FAVORITES_PROGRESS` | `COLLECTION_PROGRESS` |
-| 端点 | `/aweme/favorite/` GET | `/aweme/listcollection/` POST |
-| 分页 | `max_cursor`, `count` | `cursor`, `count` |
-| 签名来源 | `__capturedFavoriteQuery` | `__capturedCollectionQuery` |
-| 超时 | 15s | 15s |
-| 独立模式 | 不支持（Turing 验证） | ✅ 支持 |
+| 项                 | 点赞                      | 收藏                          |
+|--------------------|---------------------------|-------------------------------|
+| background handler | `handleFetchFavorites`    | `handleFetchCollection`       |
+| 转发消息           | `FETCH_FAVORITES_PAGE`    | `FETCH_COLLECTION_PAGE`       |
+| 进度消息           | `FAVORITES_PROGRESS`      | `COLLECTION_PROGRESS`         |
+| 端点               | `/aweme/favorite/` GET    | `/aweme/listcollection/` POST |
+| 分页               | `max_cursor`, `count`     | `cursor`, `count`             |
+| 签名来源           | `__capturedFavoriteQuery` | `__capturedCollectionQuery`   |
+| 超时               | 15s                       | 15s                           |
+| 独立模式           | 不支持（Turing 验证）     | ✅ 支持                       |
 
 **openScanDialog 流程**：`services.findSecUid()` → `services.bgMsg(fetchArgs)` → 收到结果存入 `state[cfg.stateKey]` → `#renderGrid()` 渲染未关注作品网格 → 添加取消按钮。
 
@@ -47,12 +49,12 @@
 
 逐条 `sendToTabAsync('CANCEL_ONE_LIKE' / 'CANCEL_ONE_COLLECTION')` → inject.js `cancelOne()` 使用 XHR（抖音 a_bogus 签名绑定 XHR 原型链）。单条超时 30s。
 
-| 项 | 取消点赞 | 取消收藏 |
-|----|---------|---------|
-| URL | `/commit/item/digg/?aid=6383` | `/aweme/collect/?aid=6383` |
-| Body | `aweme_id=${id}&item_type=0&type=0` | `action=0&aweme_id=${id}&aweme_type=0` |
-| Referer | `/user/self?showTab=like` | `/user/self?showTab=favorite_collection` |
-| 密钥头 | `bd-ticket-guard-ree-public-key: getSecurityKey()` | 同左 |
+| 项      | 取消点赞                                           | 取消收藏                                 |
+|---------|----------------------------------------------------|------------------------------------------|
+| URL     | `/commit/item/digg/?aid=6383`                      | `/aweme/collect/?aid=6383`               |
+| Body    | `aweme_id=${id}&item_type=0&type=0`                | `action=0&aweme_id=${id}&aweme_type=0`   |
+| Referer | `/user/self?showTab=like`                          | `/user/self?showTab=favorite_collection` |
+| 密钥头  | `bd-ticket-guard-ree-public-key: getSecurityKey()` | 同左                                     |
 
 XHR 失败不中断，记入 `failedAwemeIds`。`CANCEL_PROGRESS` 每条完成后发送，`CANCEL_DONE` 批次完成发送。
 
@@ -60,12 +62,12 @@ XHR 失败不中断，记入 `failedAwemeIds`。`CANCEL_PROGRESS` 每条完成�
 
 `handleIndependentCancel()` 在 background 内直接循环 POST。差异：
 
-| 维度 | Tab 模式 (XHR) | 独立模式 (fetch) |
-|------|---------------|-----------------|
-| 网络引擎 | `XMLHttpRequest` | `fetch()` |
-| Referer | JS 可直接设置 | forbidden header，靠 DNR rules 5/6 注入 |
-| 密钥 | `getSecurityKey()` 从 localStorage | `browserFeatures.securityKey`（需事先捕获） |
-| 取消信号 | 经 content→inject | 直接在 background 取消循环 |
+| 维度     | Tab 模式 (XHR)                     | 独立模式 (fetch)                            |
+|----------|------------------------------------|---------------------------------------------|
+| 网络引擎 | `XMLHttpRequest`                   | `fetch()`                                   |
+| Referer  | JS 可直接设置                      | forbidden header，靠 DNR rules 5/6 注入     |
+| 密钥     | `getSecurityKey()` 从 localStorage | `browserFeatures.securityKey`（需事先捕获） |
+| 取消信号 | 经 content→inject                  | 直接在 background 取消循环                  |
 
 ## 5. 作者主页作品分页
 
