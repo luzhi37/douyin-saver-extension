@@ -17,7 +17,6 @@
       <button class="ds-btn" data-domain="followings">关注</button>
     </div>
     <div class="group-selector">
-      <div class="group-tabs-slider"></div>
       <div class="group-tabs" id="groupTabs"></div>
     </div>
     <div class="topbar-right flex-row">
@@ -318,6 +317,33 @@
   <!-- ====== 设置面板模板 ====== -->
   <template id="settingsDialogTemplate">
     <div class="settings-panel">
+      <section class="settings-section">
+        <h3 class="settings-section-title">
+          <span class="section-title-text">运行参数</span>
+          <button class="config-save-btn" id="btnSaveConfig" title="保存配置">保存</button>
+          <span class="section-chevron"></span>
+        </h3>
+        <div class="section-body">
+          <div class="section-body-inner" id="settingsConfigSection">
+            <div class="kv-row"><label class="bf-label">请求超时 (ms)</label><input class="bf-input config-input" data-key="timeoutRequest" type="number" /></div>
+            <div class="kv-row"><label class="bf-label">安全状态超时 (ms)</label><input class="bf-input config-input" data-key="timeoutSecurityStatus" type="number" /></div>
+            <div class="cache-divider"></div>
+            <div class="kv-row"><label class="bf-label">同步作品 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncWorksDelayMax" type="number" style="width:80px" /></div>
+            <div class="kv-row"><label class="bf-label">同步关注 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFollowingsDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFollowingsDelayMax" type="number" style="width:80px" /></div>
+            <div class="kv-row"><label class="bf-label">扫描点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFavoritesDelayMax" type="number" style="width:80px" /></div>
+            <div class="kv-row"><label class="bf-label">扫描收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncCollectionDelayMax" type="number" style="width:80px" /></div>
+            <div class="kv-row"><label class="bf-label">取消点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelLikeDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelLikeDelayMax" type="number" style="width:80px" /></div>
+            <div class="kv-row"><label class="bf-label">取消收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelCollectionDelayMax" type="number" style="width:80px" /></div>
+            <div class="cache-divider"></div>
+            <div class="kv-row"><label class="bf-label">同步批次大小</label><input class="bf-input config-input" data-key="syncBatchSize" type="number" /></div>
+            <div class="kv-row"><label class="bf-label">批次暂停最小值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMin" type="number" /></div>
+            <div class="kv-row"><label class="bf-label">批次暂停最大值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMax" type="number" /></div>
+            <div class="kv-row"><label class="bf-label">保活间隔 (ms)</label><input class="bf-input config-input" data-key="syncKeepaliveInterval" type="number" /></div>
+            <div class="kv-row"><label class="bf-label">最大重试次数</label><input class="bf-input config-input" data-key="syncRetryMax" type="number" /></div>
+            <p class="config-hint" id="configHint"></p>
+          </div>
+        </div>
+      </section>
       <section class="settings-section">
         <h3 class="settings-section-title">
           <span class="section-title-text">独立模式</span>

@@ -16,14 +16,14 @@ fetch(url, { credentials: "include", _dyInternal: true })
 
 ## 六类 API 请求
 
-| 函数 | 端点 | 合并的缓存 | 保护方式 |
-|------|------|-----------|---------|
-| `fetchOneDetail` | `/aweme/detail/` | `__lastCapturedDetailQuery` | `_dyInternal: true` |
-| `fetchOneFavoritesPage` | `/aweme/favorite/` | `__capturedFavoriteQuery` | `_dyInternal: true` |
+| 函数                     | 端点                     | 合并的缓存                  | 保护方式            |
+|--------------------------|--------------------------|-----------------------------|---------------------|
+| `fetchOneDetail`         | `/aweme/detail/`         | `__lastCapturedDetailQuery` | `_dyInternal: true` |
+| `fetchOneFavoritesPage`  | `/aweme/favorite/`       | `__capturedFavoriteQuery`   | `_dyInternal: true` |
 | `fetchOneCollectionPage` | `/aweme/listcollection/` | `__capturedCollectionQuery` | `_dyInternal: true` |
-| `fetchAuthorWorks` | `/aweme/post/` | `__capturedPostQuery` | `_dyInternal: true` |
-| `fetchFollowingPage` | `/user/following/list` | `__capturedFollowingQuery` | `_dyInternal: true` |
-| `cancelOne` | 收藏/点赞取消 | 无（XHR） | 不适用 |
+| `fetchAuthorWorks`       | `/aweme/post/`           | `__capturedPostQuery`       | `_dyInternal: true` |
+| `fetchFollowingPage`     | `/user/following/list`   | `__capturedFollowingQuery`  | `_dyInternal: true` |
+| `cancelOne`              | 收藏/点赞取消            | 无（XHR）                   | 不适用              |
 
 `fetchFollowingPage` 有后备逻辑：当 `__capturedFollowingQuery` 为空时按优先级尝试其他缓存的签名。
 

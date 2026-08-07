@@ -10,15 +10,7 @@ Chrome Manifest V3 extension for managing Douyin (抖音) user data — works (v
 
 ```powershell
 # Syntax check all JS files
-node --check background/background.js content/content.js content/inject.js options/options.js
-
-# Run integration tests (Node scripts that simulate API calls; require environment setup)
-node tests/test-fetch-works.mjs
-node tests/test-fetch-following.mjs
-node tests/test-fetch-favorites.mjs
-node tests/test-fetch-collection.mjs
-node tests/test-cancel-like.mjs
-node tests/test-cancel-collection.mjs
+node --check background/background.js background/crypto.js content/content.js content/inject.js options/options.js
 ```
 
 ## 4-Layer Architecture
@@ -67,7 +59,7 @@ All messages are dispatched via `chrome.runtime.sendMessage`. The manifest versi
 - Scan: `FETCH_FOLLOWING`, `FETCH_FAVORITES`, `FETCH_COLLECTION`
 - Cancel: `CANCEL_LIKE`, `CANCEL_COLLECTION`, `CANCEL_ACTIVE_TASK`
 - Tools: `IMPORT_DATA`, `EXPORT_DATA`, `RESET_DOMAIN`, `GET_STATS`, `GET_SECURITY_STATUS`
-- Config: `SET_MODE`, `CAPTURE_BROWSER_FEATURES`, `GET_COOKIE_INFO`, `GET_MSTOKEN`, `GET_BROWSER_FEATURES`, `GET_CACHE_TIMES`
+- Config: `SET_MODE`, `CAPTURE_BROWSER_FEATURES`, `GET_COOKIE_INFO`, `GET_BROWSER_FEATURES`, `GET_CACHE_TIMES`
 - Refresh: `REFRESH_MSTOKEN`, `REFRESH_WEBID`, `REFRESH_BROWSER_FEATURES`, `REFRESH_COOKIE`
 
 ## Signing & Anti-Bot Landscape
@@ -111,30 +103,30 @@ startup logic                     IIFE / DOMContentLoaded at the very bottom
 
 ## Options UI Classes (defined in options.js)
 
-| Class | Responsibility |
-|---|---|
-| `VirtualGrid` | Base class: virtual scrolling, IntersectionObserver, chunked rendering, event delegation, item fill |
-| `Dialog` | Modal dialog management with body rendering and footer buttons |
-| `FollowingsGrid` | Following card grid rendering |
-| `Groups` | Group tab bar + rename/delete/reorder |
-| `Batch` | Batch selection, select-all, move, delete |
-| `ImportExport` | JSON import/export with group reconciliation |
-| `Sidebar` | Author works paginated sidebar |
-| `Sync` | Sync state machine for works and followings |
-| `Favorites` | Like/collection scan and cancel operations |
-| `WorksGrid` | Work card grid with video thumbnails and overlays |
-| `Detail` | Video/note detail player with navigation, download, loop |
+| Class            | Responsibility                                                                                      |
+|------------------|-----------------------------------------------------------------------------------------------------|
+| `VirtualGrid`    | Base class: virtual scrolling, IntersectionObserver, chunked rendering, event delegation, item fill |
+| `Dialog`         | Modal dialog management with body rendering and footer buttons                                      |
+| `FollowingsGrid` | Following card grid rendering                                                                       |
+| `Groups`         | Group tab bar + rename/delete/reorder                                                               |
+| `Batch`          | Batch selection, select-all, move, delete                                                           |
+| `ImportExport`   | JSON import/export with group reconciliation                                                        |
+| `Sidebar`        | Author works paginated sidebar                                                                      |
+| `Sync`           | Sync state machine for works and followings                                                         |
+| `Favorites`      | Like/collection scan and cancel operations                                                          |
+| `WorksGrid`      | Work card grid with video thumbnails and overlays                                                   |
+| `Detail`         | Video/note detail player with navigation, download, loop                                            |
 
 ## Cached Credentials (chrome.storage.local keys)
 
-| Key | Source | Purpose |
-|---|---|---|
-| `savedCookie` | Chrome cookies API | Raw cookie string for independent mode requests |
-| `savedMsToken` | Cookie jar or random | Anti-bot token |
-| `savedWebId` | zijieapi.com | Device identifier |
-| `browserFeatures` | inject.js | UA, screen, CPU, GPU, security key |
-| `independentMode` | options.js toggle | If true, background makes direct HTTP requests |
+| Key               | Source               | Purpose                                         |
+|-------------------|----------------------|-------------------------------------------------|
+| `savedCookie`     | Chrome cookies API   | Raw cookie string for independent mode requests |
+| `savedMsToken`    | Cookie jar or random | Anti-bot token                                  |
+| `savedWebId`      | zijieapi.com         | Device identifier                               |
+| `browserFeatures` | inject.js            | UA, screen, CPU, GPU, security key              |
+| `independentMode` | options.js toggle    | If true, background makes direct HTTP requests  |
 
 ## Test Files
 
-Tests in `tests/` are self-contained Node.js .mjs scripts that directly import crypto.js modules and exercise specific Douyin API endpoints. They use real cookies/credentials from the environment and are meant for manual/periodic verification rather than CI.
+Tests in `tests/` were self-contained Node.js .mjs scripts that directly imported crypto.js modules and exercised specific Douyin API endpoints. **Removed 2026-08-04** along with the unused TikTok signing code (X-Bogus / X-Gnarly / device_id / verify_fp) they were the only consumers of.

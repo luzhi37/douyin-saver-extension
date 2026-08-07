@@ -41,25 +41,25 @@ options.js (管理 UI)        — 响应式 store、虚拟网格、播放器
 
 ## 存储
 
-| 域 | IndexedDB 表 | 主键 | 说明 |
-|---|---|---|---|
-| 作品 | `works` | `awemeId` | 视频/图文笔记 |
-| 作品分组 | `works_groups` | `id` | 分组定义 |
-| 关注 | `followings` | `uid` | 关注用户 |
-| 关注分组 | `followings_groups` | `id` | 分组定义 |
+| 域       | IndexedDB 表        | 主键      | 说明          |
+|----------|---------------------|-----------|---------------|
+| 作品     | `works`             | `awemeId` | 视频/图文笔记 |
+| 作品分组 | `works_groups`      | `id`      | 分组定义      |
+| 关注     | `followings`        | `uid`     | 关注用户      |
+| 关注分组 | `followings_groups` | `id`      | 分组定义      |
 
 ## 文档
 
-| 文档 | 阅读场景 |
-|---|---|---|
-| [docs/SYNC_AND_SCAN.md](./docs/SYNC_AND_SCAN.md) | 同步/扫描/取消的完整链路与时序 |
-| [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md) | fetch 与 origFetch 的抉择、缓存机制 |
-| [docs/STORAGE_AND_MERGE.md](./docs/STORAGE_AND_MERGE.md) | IndexedDB 结构、合并策略、导入还原 |
-| [docs/INJECT_INTERNALS.md](./docs/INJECT_INTERNALS.md) | inject.js 数据提取、签名捕获 |
-| [docs/SECURITY_AND_DNR.md](./docs/SECURITY_AND_DNR.md) | declarativeNetRequest 规则与安全 |
-| [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md) | 独立模式架构与凭据缓存 |
-| [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md) | TikTokDownloader 参考 + API 端点总表 |
-| [AGENTS.md](./AGENTS.md) | AI Agent 技术参考（架构、协议、设计陷阱） |
+| 文档                                                     | 阅读场景                                  |
+|----------------------------------------------------------|-------------------------------------------|
+| [docs/SYNC_AND_SCAN.md](./docs/SYNC_AND_SCAN.md)         | 同步/扫描/取消的完整链路与时序            |
+| [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)     | fetch 与 origFetch 的抉择、缓存机制       |
+| [docs/STORAGE_AND_MERGE.md](./docs/STORAGE_AND_MERGE.md) | IndexedDB 结构、合并策略、导入还原        |
+| [docs/INJECT_INTERNALS.md](./docs/INJECT_INTERNALS.md)   | inject.js 数据提取、签名捕获              |
+| [docs/SECURITY_AND_DNR.md](./docs/SECURITY_AND_DNR.md)   | declarativeNetRequest 规则与安全          |
+| [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md)   | 独立模式架构与凭据缓存                    |
+| [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md)   | TikTokDownloader 参考 + API 端点总表      |
+| [AGENTS.md](./AGENTS.md)                                 | AI Agent 技术参考（架构、协议、设计陷阱） |
 
 ## 验证
 

@@ -88,6 +88,7 @@
   let __capturedFavoriteQuery = null;
 
   const PAGE_KEYS = new Set(["offset", "count"]);
+  const STRIP_SIG_KEYS = new Set(["a_bogus", "x-secsdk-web-signature", "timestamp"]);
   const origFetch = window.fetch;
   let activeTask = null;
   let observerTimer = null;
@@ -141,7 +142,10 @@
     if (!captured) return null;
     const out = new Map();
     for (const [k, v] of captured) {
-      if (!PAGE_KEYS.has(k) && !k.startsWith("cursor") && !k.startsWith("max_") && !k.startsWith("min_")) out.set(k, v);
+      if (PAGE_KEYS.has(k)) continue;
+      if (k.startsWith("cursor") || k.startsWith("max_") || k.startsWith("min_")) continue;
+      if (STRIP_SIG_KEYS.has(k)) continue;
+      out.set(k, v);
     }
     return out;
   }
@@ -634,7 +638,7 @@
         count: String(count),
       }),
     );
-    const merged = mergeParams(url, __capturedFollowingQuery);
+    const merged = mergeParams(url, stripPageKeys(__capturedFollowingQuery));
     const controller = new AbortController();
     // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
     if (externalSignal) {
@@ -677,7 +681,7 @@
           count: String(count),
         }),
       );
-      const merged = mergeParams(url, __capturedPostQuery);
+      const merged = mergeParams(url, stripPageKeys(__capturedPostQuery));
       const resp = await window.fetch(merged.toString(), {
         credentials: "include",
         headers: { Referer: window.location.origin + "/" },
