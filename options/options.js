@@ -417,7 +417,7 @@ const services = {
 class VirtualGrid {
   #observer = null;
   #fillQueue = [];
-  #filling = 0;
+  #drainRafId = 0;
   #itemMap = new Map();
   #chunkRaf = 0;
   #boundClickHandler = null;
@@ -455,8 +455,9 @@ class VirtualGrid {
       this.#observer = null;
     }
     this.#itemMap = new Map(items.map((item) => [item[this.#itemKey], item]));
+    cancelAnimationFrame(this.#drainRafId);
+    this.#drainRafId = 0;
     this.#fillQueue = [];
-    this.#filling = 0;
 
     if (items.length === 0) {
       dom.emptyState.classList.remove("hidden");
@@ -477,18 +478,19 @@ class VirtualGrid {
     const renderChunk = () => {
       const fragment = document.createDocumentFragment();
       const end = Math.min(index + config.RENDER_CHUNK_SIZE, items.length);
+      const chunkNodes = [];
 
       for (let i = index; i < end; i++) {
         const card = skelTmpl.content.cloneNode(true).firstElementChild;
         card.dataset[this.#itemKey] = items[i][this.#itemKey];
-        card.dataset.cardIndex = i;
+        chunkNodes.push(card);
         fragment.appendChild(card);
       }
 
       this.#container.appendChild(fragment);
       index = end;
 
-      this.#observeNewSkeletons();
+      this.#observeNewSkeletons(chunkNodes);
 
       if (index < items.length) {
         this.#chunkRaf = requestAnimationFrame(renderChunk);
@@ -526,11 +528,12 @@ class VirtualGrid {
       this.#observer = null;
     }
     this.#itemMap = new Map();
+    cancelAnimationFrame(this.#drainRafId);
+    this.#drainRafId = 0;
     this.#fillQueue = [];
-    this.#filling = 0;
   }
 
-  #observeNewSkeletons() {
+  #observeNewSkeletons(nodes) {
     if (!this.#observer) {
       this.#observer = new IntersectionObserver(
         (entries) => {
@@ -544,10 +547,10 @@ class VirtualGrid {
         { rootMargin: config.OBSERVER_ROOT_MARGIN },
       );
     }
-    this.#container.querySelectorAll("." + this.#skeletonClass + ":not([data-observed])").forEach((c) => {
+    for (const c of nodes) {
       c.dataset.observed = "1";
       this.#observer.observe(c);
-    });
+    }
   }
 
   #finishRender() {
@@ -563,12 +566,21 @@ class VirtualGrid {
   }
 
   #enqueueFill(card) {
-    if (this.#filling < config.CARD_FILL_MAX_CONCURRENT) {
-      this.#filling++;
-      this.#doFill(card);
-    } else {
-      this.#fillQueue.push(card);
-    }
+    this.#fillQueue.push(card);
+    this.#scheduleDrain();
+  }
+
+  #scheduleDrain() {
+    if (this.#drainRafId) return;
+    this.#drainRafId = requestAnimationFrame(() => {
+      this.#drainRafId = 0;
+      let n = 0;
+      while (this.#fillQueue.length && n < config.CARD_FILL_MAX_CONCURRENT) {
+        this.#doFill(this.#fillQueue.shift());
+        n++;
+      }
+      if (this.#fillQueue.length) this.#scheduleDrain();
+    });
   }
 
   #doFill(card) {
@@ -577,9 +589,6 @@ class VirtualGrid {
     if (item && card.classList.contains(this.#skeletonClass)) {
       this.populateItem(card, item);
     }
-    this.#filling--;
-    const next = this.#fillQueue.shift();
-    if (next) this.#doFill(next);
   }
 
   populateItem(skeleton, item) {
@@ -708,6 +717,9 @@ class Dialog {
     let hint = msg;
     if (msg.includes("NO_DOUYIN_TAB")) hint = "未找到抖音页面，请确保已打开抖音";
     else if (msg.includes("TIMEOUT")) hint = "获取超时，可能是网络问题或内容过多";
+    else if (msg.includes("HTTP_403")) {
+      hint = "签名被拒，请到设置面板刷新「webid」「msToken」「浏览器特征」缓存后重试";
+    }
     dom.dialogBody.innerHTML = `<p>${hint}</p>`;
     this.showOkDialog();
   }
@@ -717,6 +729,7 @@ const dialog = new Dialog();
 
 // ---------- FollowingsGrid ----------
 class FollowingsGrid extends VirtualGrid {
+  #followingCardTmpl = document.getElementById("followingCardTemplate");
   constructor() {
     super({
       container: dom.mainContainer,
@@ -733,7 +746,7 @@ class FollowingsGrid extends VirtualGrid {
   }
 
   createItem(following) {
-    const card = document.getElementById("followingCardTemplate").content.cloneNode(true).firstElementChild;
+    const card = this.#followingCardTmpl.content.cloneNode(true).firstElementChild;
     card.dataset.uid = following.uid;
 
     const checkbox = card.querySelector(".following-checkbox");
@@ -1733,6 +1746,11 @@ class Settings {
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
     this._dialogBody = dom.dialogBody;
+    dom.dialogFooter.innerHTML = `
+      <div class="config-footer-row">
+        <span class="config-hint" id="configHint"></span>
+        <button class="dy-btn flex-inline-center dy-btn-primary" id="btnSaveConfig">保存</button>
+      </div>`;
     this._bind();
     this._bindStatus();
     state.preventDialogClose = true;
@@ -2003,7 +2021,7 @@ class Settings {
     };
     const section = this._dialogBody.querySelector("#settingsConfigSection");
     if (!section) return;
-    const hint = section.querySelector(".config-hint");
+    const hint = dom.dialogFooter.querySelector("#configHint");
     for (const [key, inputKey] of Object.entries(map)) {
       const input = section.querySelector(`.config-input[data-key="${inputKey}"]`);
       if (input) input.value = cfg[key] ?? "";
@@ -2131,16 +2149,6 @@ class Settings {
         await this._refresh();
       });
     }
-    const secUidInput = $("settingsSecUid");
-    if (secUidInput) {
-      let tid;
-      secUidInput.addEventListener("input", () => {
-        clearTimeout(tid);
-        tid = setTimeout(async () => {
-          await chrome.storage.local.set({ secUid: secUidInput.value.trim() });
-        }, 500);
-      });
-    }
     // 缓存刷新按钮
     const cacheList = $("settingsCacheList");
     if (cacheList) {
@@ -2204,10 +2212,10 @@ class Settings {
   }
 
   _bindConfigSave() {
-    const saveBtn = this._dialogBody.querySelector("#btnSaveConfig");
+    const saveBtn = dom.dialogFooter.querySelector("#btnSaveConfig");
     if (!saveBtn) return;
     const section = this._dialogBody.querySelector("#settingsConfigSection");
-    const hint = section?.querySelector(".config-hint");
+    const hint = dom.dialogFooter.querySelector("#configHint");
     const FIELDS = [
       "timeoutRequest", "timeoutSecurityStatus",
       "syncWorksDelayMin", "syncWorksDelayMax",
@@ -2251,6 +2259,8 @@ class Settings {
       }
       try {
         await runtimeConfig.save(values);
+        const secUidInput = this._dialogBody.querySelector("#settingsSecUid");
+        await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
         if (hint) { hint.textContent = "已保存"; hint.className = "config-hint config-hint-ok"; }
       } catch {
         if (hint) { hint.textContent = "保存失败"; hint.className = "config-hint config-hint-err"; }
@@ -2496,6 +2506,7 @@ const favorites = new Favorites();
 // ---------- WorksGrid ----------
 class WorksGrid extends VirtualGrid {
   #sliderRaf = 0;
+  #workCardTmpl = document.getElementById("workCardTemplate");
   constructor() {
     super({
       container: dom.mainContainer,
@@ -2512,8 +2523,7 @@ class WorksGrid extends VirtualGrid {
   }
 
   createItem(work) {
-    // 保留原有的 createItem 逻辑
-    const card = document.getElementById("workCardTemplate").content.cloneNode(true).firstElementChild;
+    const card = this.#workCardTmpl.content.cloneNode(true).firstElementChild;
     card.dataset.awemeId = work.awemeId;
 
     const media = card.querySelector(".work-media");

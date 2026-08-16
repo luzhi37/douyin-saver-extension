@@ -28,6 +28,12 @@
 
 `mergeParams(url, captured)` 将缓存的签名参数合并到新 URL，已有参数不覆盖。`stripPageKeys(captured)` 剥离分页参数（`cursor`, `max_cursor` 等），只保留签名参数用于点赞/收藏扫描。
 
+### 请求签名（点赞/收藏扫描）
+
+**抖音页面覆盖 `window.fetch` 自动注入签名参数**：扩展请求无需（也不能）自行携带 `a_bogus` 等签名——构造与页面一致的"未签名" URL，直接走 `window.fetch`（抖音 fetch 包装器在扩展 Hook 外层，先注入 `a_bogus`/`msToken`/`timestamp`/`x-secsdk-web-signature`/`verifyFp`/`fp`/`uifid` 再发出）。实测：console 中 `fetch(favorite URL)` 返回 200，最终 `response.url` 已被包装器附加完整签名。
+
+`stripSdkKeys(captured)`（`SDK_INJECT_KEYS`）从捕获参数中**剥离全部签名注入项**，防止预塞旧签名组合（如复用旧 `a_bogus`）导致 wrapper 不再处理、argus 校验失败（`web_id_sign_invalid` 403）。`fetchOneFavoritesPage` / `fetchOneCollectionPage` 通过 `mergeParams(url, stripPageKeys(stripSdkKeys(__capturedXXXQuery)))` 复用非签名业务参数（`webid`/`sec_user_id` 等）后直接 `window.fetch` 发出。
+
 ### `_dyInternal` 保护
 
 6 个 API 请求函数均使用 `window.fetch`（经 Fetch Hook），在 fetch options 中添加 `_dyInternal: true` 标志。Hook 检测到该标志后跳过 `captureFromUrl` 和 `dispatchWorks`，避免自污染。相比旧 save/restore 模式的优势：

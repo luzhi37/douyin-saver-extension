@@ -386,9 +386,7 @@ async function getMsToken() {
   return msToken;
 }
 
-async function getWebId() {
-  const { savedWebId } = await chrome.storage.local.get("savedWebId");
-  if (savedWebId) return savedWebId;
+async function fetchWebIdFromApi() {
   try {
     const ua = abOgus ? abOgus.userAgent : navigator.userAgent;
     const resp = await fetch(CONFIG.WEBID_API + "?" + CONFIG.WEBID_QUERY, {
@@ -409,21 +407,72 @@ async function getWebId() {
     });
     if (!resp.ok) return "";
     const data = await resp.json();
-    const webid = String(data.web_id || "");
-    if (webid) await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
-    return webid;
+    return String(data.web_id || "");
   } catch {
     return "";
   }
 }
 
+async function syncWebIdCookie(webid) {
+  if (!webid) return;
+  try {
+    await chrome.cookies.set({
+      url: "https://www.douyin.com/",
+      name: "webid",
+      value: webid,
+      domain: "douyin.com",
+      path: "/",
+      secure: true,
+      sameSite: "no_restriction",
+      expirationDate: Math.floor(Date.now() / 1000) + 365 * 86400,
+    });
+  } catch (e) {
+    console.warn("[DY] sync webid cookie failed:", e.message);
+  }
+}
+
+async function getWebId() {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: "douyin.com", name: "webid" });
+    const cookieWebId = cookies[0]?.value || "";
+    if (cookieWebId) {
+      const { savedWebId } = await chrome.storage.local.get("savedWebId");
+      if (savedWebId !== cookieWebId) {
+        await chrome.storage.local.set({ savedWebId: cookieWebId, savedWebIdTime: Date.now() });
+      }
+      return cookieWebId;
+    }
+  } catch {}
+  const { savedWebId } = await chrome.storage.local.get("savedWebId");
+  if (savedWebId) return savedWebId;
+  const webid = await fetchWebIdFromApi();
+  if (webid) {
+    await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
+    await syncWebIdCookie(webid);
+  }
+  return webid;
+}
+
+async function refreshWebIdChain() {
+  await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+  const webid = await fetchWebIdFromApi();
+  if (webid) {
+    await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
+    await syncWebIdCookie(webid);
+  }
+  return webid;
+}
+
 async function buildBaseParams(extra = {}) {
   const bf = (await chrome.storage.local.get("browserFeatures")).browserFeatures || {};
   const [webid, { savedCookie }] = await Promise.all([getWebId(), chrome.storage.local.get("savedCookie")]);
-  let uifid = "";
+  let uifid = "",
+    odin_tt = "";
   if (savedCookie) {
-    const m = savedCookie.match(/\bUIFID=([^;]+)/);
-    if (m) uifid = m[1];
+    const mu = savedCookie.match(/\bUIFID=([^;]+)/);
+    if (mu) uifid = mu[1];
+    const mo = savedCookie.match(/\bodin_tt=([^;]+)/);
+    if (mo) odin_tt = mo[1];
   }
   return {
     device_platform: "webapp",
@@ -459,6 +508,7 @@ async function buildBaseParams(extra = {}) {
     support_dash: "1",
     webid,
     uifid,
+    ...(odin_tt ? { odin_tt } : {}),
     ...extra,
   };
 }
@@ -489,7 +539,19 @@ async function independentRequest(apiPath, params, options = {}) {
       signal: controller.signal,
     });
     clearTimeout(tid);
-    if (!resp.ok) throw new Error("HTTP_" + resp.status);
+    const argusCode = resp.headers.get("argus_security_code") || "";
+    if (!resp.ok) {
+      let bodyText = "";
+      try { bodyText = (await resp.text()).trim().slice(0, 160); } catch {}
+      const signInvalid = argusCode === "web_id_sign_invalid" || (resp.status === 403 && /sign invalid/i.test(bodyText));
+      if (signInvalid && !options._webIdRetried) {
+        console.warn("[DY] a_bogus rejected (web_id_sign_invalid), refreshing webid and retrying", apiPath);
+        const freshWebId = await refreshWebIdChain();
+        if (freshWebId) params.webid = freshWebId;
+        return independentRequest(apiPath, params, { ...options, _webIdRetried: true });
+      }
+      throw new Error(bodyText ? `HTTP_${resp.status}: ${bodyText}` : `HTTP_${resp.status}`);
+    }
     const data = await resp.json();
     if (data.status_code !== undefined && data.status_code !== 0) {
       console.warn("[DY] API_ERROR status_code=%s url=%s", data.status_code, apiPath);
@@ -669,6 +731,10 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
 async function handleIndependentFetchCollection(sendResponse) {
   try {
     await ensureABogus();
+    let secUid = "";
+    const { secUid: stored } = await chrome.storage.local.get("secUid");
+    if (stored && stored !== "self") secUid = stored;
+    else secUid = await resolveSelfSecUid();
     const requestId = crypto.randomUUID();
     let cancelled = false,
       hasMore = true,
@@ -679,10 +745,15 @@ async function handleIndependentFetchCollection(sendResponse) {
     };
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
+      const params = { count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) };
+      if (secUid) params.sec_user_id = secUid;
       const data = await independentRequest(
         CONFIG.API.COLLECTION,
-        await buildBaseParams({ sec_user_id: "self", count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }),
-        { method: "POST" },
+        await buildBaseParams(params),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        },
       );
       if (data.status_code === 0 && Array.isArray(data.aweme_list)) {
         if (data.aweme_list.length === 0) break;
@@ -1338,6 +1409,7 @@ async function handleFetchFollowing(secUid, sendResponse) {
     const all = [];
     let offset = 0;
     let hasMore = true;
+    let lastError = "";
 
     while (hasMore && !cancelled) {
       const resp = await sendToTabAsync("FETCH_FOLLOWING_PAGE", {
@@ -1351,6 +1423,7 @@ async function handleFetchFollowing(secUid, sendResponse) {
         hasMore = resp.hasMore === true;
         offset = resp.cursor;
       } else {
+        lastError = resp?.error || "FETCH_FAILED";
         break;
       }
       chrome.runtime
@@ -1369,6 +1442,10 @@ async function handleFetchFollowing(secUid, sendResponse) {
       }
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
+    if (!cancelled && all.length === 0 && lastError) {
+      sendResponse({ ok: false, error: lastError, requestId });
+      return;
+    }
     sendResponse({ ok: true, requestId, followings: all, total: all.length });
   } catch (err) {
     sendResponse({ ok: false, error: err.message });
@@ -1389,6 +1466,7 @@ async function handleFetchFavorites(secUid, sendResponse) {
     const all = [];
     let cursor = 0;
     let hasMore = true;
+    let lastError = "";
 
     while (hasMore && !cancelled) {
       const resp = await sendToTabAsync("FETCH_FAVORITES_PAGE", {
@@ -1402,6 +1480,7 @@ async function handleFetchFavorites(secUid, sendResponse) {
         hasMore = resp.hasMore === true;
         cursor = resp.cursor || cursor;
       } else {
+        lastError = resp?.error || "FETCH_FAILED";
         break;
       }
       const unfollowedCount = all.filter((w) => w.authorFollowed === false).length;
@@ -1422,6 +1501,10 @@ async function handleFetchFavorites(secUid, sendResponse) {
       }
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
+    if (!cancelled && all.length === 0 && lastError) {
+      sendResponse({ ok: false, error: lastError, requestId });
+      return;
+    }
     sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
   } catch (err) {
     sendResponse({ ok: false, error: err.message });
@@ -1442,6 +1525,7 @@ async function handleFetchCollection(sendResponse) {
     const all = [];
     let cursor = 0;
     let hasMore = true;
+    let lastError = "";
 
     while (hasMore && !cancelled) {
       const resp = await sendToTabAsync("FETCH_COLLECTION_PAGE", {
@@ -1454,6 +1538,7 @@ async function handleFetchCollection(sendResponse) {
         hasMore = resp.hasMore === true;
         cursor = resp.cursor || cursor;
       } else {
+        lastError = resp?.error || "FETCH_FAILED";
         break;
       }
       const unfollowedCount = all.filter((w) => w.authorFollowed === false).length;
@@ -1474,6 +1559,10 @@ async function handleFetchCollection(sendResponse) {
       }
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
+    if (!cancelled && all.length === 0 && lastError) {
+      sendResponse({ ok: false, error: lastError, requestId });
+      return;
+    }
     sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
   } catch (err) {
     sendResponse({ ok: false, error: err.message });

@@ -43,6 +43,8 @@
 
 **openScanDialog 流程**：`services.findSecUid()` → `services.bgMsg(fetchArgs)` → 收到结果存入 `state[cfg.stateKey]` → `#renderGrid()` 渲染未关注作品网格 → 添加取消按钮。
 
+**失败处理**：tab 模式下当 `secUid === "self"`（用户在 `/user/self` 页面）时，inject.js 通过 `resolveSelfSecUidFromCaptures()` 从捕获的签名参数（`sec_user_id`）解析真实 sec_uid——与签名同源，签名缓存存在则必然可解析；签名缓存缺失时 inject.js 直接返回 `NO_SIGNATURE`（options 弹引导对话框）；首页请求失败时 background 返回 `{ ok: false, error }` 而非假成功（0 结果），避免弹窗显示"已扫描 0 个"误导结论。
+
 ## 4. 取消点赞/收藏
 
 ### Tab 模式（inject.js XHR）

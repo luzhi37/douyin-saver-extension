@@ -28,8 +28,8 @@
       aid: "6383",
       channel: "channel_pc_web",
       pc_client_type: "1",
-      version_code: "190500",
-      version_name: "19.5.0",
+      version_code: "170400",
+      version_name: "17.4.0",
       cookie_enabled: "true",
       platform: "PC",
       publish_video_strategy_type: "2",
@@ -88,7 +88,15 @@
   let __capturedFavoriteQuery = null;
 
   const PAGE_KEYS = new Set(["offset", "count"]);
-  const STRIP_SIG_KEYS = new Set(["a_bogus", "x-secsdk-web-signature", "timestamp"]);
+  const SDK_INJECT_KEYS = new Set([
+    "a_bogus",
+    "timestamp",
+    "x-secsdk-web-signature",
+    "msToken",
+    "verifyFp",
+    "fp",
+    "uifid",
+  ]);
   const origFetch = window.fetch;
   let activeTask = null;
   let observerTimer = null;
@@ -144,13 +152,34 @@
     for (const [k, v] of captured) {
       if (PAGE_KEYS.has(k)) continue;
       if (k.startsWith("cursor") || k.startsWith("max_") || k.startsWith("min_")) continue;
-      if (STRIP_SIG_KEYS.has(k)) continue;
+      out.set(k, v);
+    }
+    return out;
+  }
+
+  // ===== 请求签名（交由抖音页面 fetch 包装器注入）=====
+
+  function stripSdkKeys(captured) {
+    if (!captured) return null;
+    const out = new Map();
+    for (const [k, v] of captured) {
+      if (SDK_INJECT_KEYS.has(k)) continue;
       out.set(k, v);
     }
     return out;
   }
 
   // ===== 共享工具函数 =====
+
+  function resolveSelfSecUidFromCaptures() {
+    const candidates = [__capturedFavoriteQuery, __capturedPostQuery, __capturedFollowingQuery, __capturedCollectionQuery];
+    for (const q of candidates) {
+      if (!q) continue;
+      const secUid = q.get("sec_user_id");
+      if (secUid && secUid !== "self") return secUid;
+    }
+    return "";
+  }
 
   function transformAwemeItem(aw, { includeAuthorFollowed = false } = {}) {
     const work = normalizeWork(aw, "api");
@@ -170,7 +199,7 @@
         max_cursor: String(cursor),
       }),
     );
-    const merged = mergeParams(url, stripPageKeys(__capturedFavoriteQuery));
+    const merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedFavoriteQuery)));
     const controller = new AbortController();
     if (signal) {
       if (signal.aborted) controller.abort();
@@ -216,7 +245,7 @@
         cursor: String(cursor),
       }),
     );
-    const merged = mergeParams(url, stripPageKeys(__capturedCollectionQuery));
+    const merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedCollectionQuery)));
     const controller = new AbortController();
     if (signal) {
       if (signal.aborted) controller.abort();
@@ -847,10 +876,19 @@
       );
       return;
     }
+    const realSecUid = secUid === "self" ? resolveSelfSecUidFromCaptures() : secUid;
+    if (!realSecUid) {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_FOLLOWING_PAGE_RESULT, {
+          detail: { requestId, ok: false, error: "NO_SIGNATURE" },
+        }),
+      );
+      return;
+    }
     const controller = new AbortController();
     setActiveTask(() => controller.abort());
     try {
-      const data = await fetchFollowingPage(secUid, offset || 0, count, controller.signal);
+      const data = await fetchFollowingPage(realSecUid, offset || 0, count, controller.signal);
       if (data.status_code !== undefined && data.status_code !== 0)
         throw new Error("API_ERROR: status_code=" + data.status_code);
       const items = (data.followings || []).map((item) => ({
@@ -887,10 +925,27 @@
   document.addEventListener(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_REQUEST, async (event) => {
     const { requestId, secUid, cursor, count } = event.detail || {};
     if (!requestId || !secUid) return;
+    if (!__capturedFavoriteQuery) {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_RESULT, {
+          detail: { requestId, ok: false, error: "NO_SIGNATURE" },
+        }),
+      );
+      return;
+    }
+    const realSecUid = secUid === "self" ? resolveSelfSecUidFromCaptures() : secUid;
+    if (!realSecUid) {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_RESULT, {
+          detail: { requestId, ok: false, error: "NO_SIGNATURE" },
+        }),
+      );
+      return;
+    }
     const controller = new AbortController();
     setActiveTask(() => controller.abort());
     try {
-      const result = await fetchOneFavoritesPage(secUid, cursor || 0, count, controller.signal);
+      const result = await fetchOneFavoritesPage(realSecUid, cursor || 0, count, controller.signal);
       document.dispatchEvent(
         new CustomEvent(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_RESULT, {
           detail: { requestId, ...result },
@@ -910,6 +965,14 @@
   document.addEventListener(CONFIG.EVENTS.FETCH_COLLECTION_PAGE_REQUEST, async (event) => {
     const { requestId, cursor, count } = event.detail || {};
     if (!requestId) return;
+    if (!__capturedCollectionQuery) {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_COLLECTION_PAGE_RESULT, {
+          detail: { requestId, ok: false, error: "NO_SIGNATURE" },
+        }),
+      );
+      return;
+    }
     const controller = new AbortController();
     setActiveTask(() => controller.abort());
     try {
