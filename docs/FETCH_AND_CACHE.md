@@ -19,13 +19,17 @@ fetch(url, { credentials: "include", _dyInternal: true })
 | 函数                     | 端点                     | 合并的缓存                  | 保护方式            |
 |--------------------------|--------------------------|-----------------------------|---------------------|
 | `fetchOneDetail`         | `/aweme/detail/`         | `__lastCapturedDetailQuery` | `_dyInternal: true` |
-| `fetchOneFavoritesPage`  | `/aweme/favorite/`       | `__capturedFavoriteQuery`   | `_dyInternal: true` |
+| `fetchOneFavoritesPage`  | `/aweme/favorite/`      | `__capturedFavoriteQuery`   | `_dyInternal: true` |
 | `fetchOneCollectionPage` | `/aweme/listcollection/` | `__capturedCollectionQuery` | `_dyInternal: true` |
 | `fetchAuthorWorks`       | `/aweme/post/`           | `__capturedPostQuery`       | `_dyInternal: true` |
 | `fetchFollowingPage`     | `/user/following/list`   | `__capturedFollowingQuery`  | `_dyInternal: true` |
 | `cancelOne`              | 收藏/点赞取消            | 无（XHR）                   | 不适用              |
 
 `fetchFollowingPage` 有后备逻辑：当 `__capturedFollowingQuery` 为空时按优先级尝试其他缓存的签名。
+
+`stripPageKeys` 仅剥离分页参数（`offset`/`count`/`cursor*`/`max_*`/`min_*`）。签名使用分三种方式：
+- **复用捕获签名**：`fetchOneDetail` / `fetchAuthorWorks` / `fetchFollowingPage` 直接复用页面捕获的新鲜签名（作品同步 detail API 即此模式且工作正常）
+- **页面 fetch 包装器注入**：`fetchOneFavoritesPage` / `fetchOneCollectionPage` 通过 `stripSdkKeys`（`SDK_INJECT_KEYS` = `a_bogus`/`timestamp`/`x-secsdk-web-signature`/`msToken`/`verifyFp`/`fp`/`uifid`）剥离签名注入项后，`mergeParams` 复用非签名业务参数（webid/sec_user_id），**直接 `window.fetch` 发出**——抖音页面覆盖 `window.fetch` 的包装器会对"未签名" URL 自动注入与最终参数集匹配的新鲜签名（实测 200 OK）。预塞旧签名会阻止包装器处理，导致 argus `web_id_sign_invalid`（403）。页面 `byted_acrawler` SDK 无 `sign` 函数（2026 版仅剩 `frontierSign`/`init` 等），不可调用
 
 ## 自污染根源
 

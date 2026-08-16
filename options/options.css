@@ -429,7 +429,8 @@ body.domain-works #sidebarResizeHandle {
     box-shadow 0.25s ease,
     border-color 0.25s ease;
   animation: cardFadeIn 0.35s ease both;
-  animation-delay: calc(var(--card-index, 0) * 30ms);
+  content-visibility: auto;
+  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 35px);
   border: 2px solid rgba(255, 255, 255, 0.03);
   z-index: 1;
 }
@@ -1803,30 +1804,6 @@ body.sidebar-open .following-stats {
   gap: 8px;
 }
 
-.config-save-btn {
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--dy-border-light);
-  background: var(--dy-surface);
-  color: var(--dy-text-muted);
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: all var(--dy-transition);
-  letter-spacing: normal;
-  text-transform: none;
-}
-.config-save-btn:hover {
-  color: var(--dy-text);
-  border-color: var(--dy-border);
-  background: var(--dy-surface-elevated);
-}
-.config-save-btn:active {
-  transform: scale(0.97);
-}
-
 .cookie-copy-all-btn {
   font-size: 11px;
   font-weight: 400;
@@ -1893,6 +1870,20 @@ body.sidebar-open .following-stats {
 }
 .config-hint-err { color: #f87171; }
 .config-hint-ok { color: #4ade80; }
+
+.config-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1;
+}
+
+.config-footer-row .config-hint {
+  flex: 1;
+  margin: 0;
+  text-align: left;
+}
 
 /* Cookie 状态 */
 .cookie-status {
