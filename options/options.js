@@ -1,4 +1,4 @@
-﻿// ---------- config ----------
+// ---------- config ----------
 const config = {
   // 视频重试
   VIDEO_RETRY_DELAYS: [200, 400, 600],
@@ -1410,16 +1410,22 @@ class Sidebar {
   #createWorkItem(work) {
     const item = $sidebarTmpl.content.cloneNode(true).firstElementChild;
     const link = item.children[0];
-    const type = work.type === "note" ? "note" : "video";
+    const isNote = work.type === "note";
+    const type = isNote ? "note" : "video";
     link.href = `${config.URL_BASE}/${type}/${work.awemeId}`;
+
+    const badge = link.querySelector(".work-type-badge");
+    if (badge) badge.classList.toggle("hidden", !isNote);
 
     const img = link.children[0];
     const placeholder = link.children[1];
-    if (work.cover) {
-      img.src = work.cover;
+    const cover = isNote ? work.images?.[0] || work.cover : work.cover;
+    if (cover) {
+      img.src = cover;
       placeholder.style.display = "none";
     } else {
       img.style.display = "none";
+      if (isNote) placeholder.textContent = "📰";
     }
 
     const plays = work.statistics && work.statistics.play_count ? utils.formatCount(work.statistics.play_count) : "";
