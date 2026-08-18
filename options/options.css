@@ -55,7 +55,7 @@ optgroup {
   --dy-card-size: 261px;
   --topbar-height: 56px;
   --dy-danger: #f5222d;
-  --dy-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --dy-transition: 0.1s cubic-bezier(0.4, 0, 0.2, 1);
   --dy-font-size-sm: 13px;
   --dy-radius-pill: 20px;
   --dy-avatar-size: 28px;
@@ -334,6 +334,7 @@ optgroup {
   font-size: var(--dy-font-size-sm);
   border-radius: var(--dy-radius);
   white-space: nowrap;
+  transition: background var(--dy-transition), color var(--dy-transition);
 }
 
 .menu-item:hover {
