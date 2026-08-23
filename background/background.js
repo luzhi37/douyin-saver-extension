@@ -1,5 +1,6 @@
 import { storage } from "./storage.js";
-import { ABogus, parseCookieToPairs, generateRandomMsToken } from "./crypto.js";
+import { ABogus, parseCookieToPairs, generateRandomMsToken, md5Hex } from "./crypto.js";
+import { MSSDK_STR_DATA } from "./mssdk_strdata.js";
 
 // ===== 抖音数据管理 - Background Service Worker =====
 
@@ -84,16 +85,27 @@ const CONFIG = {
       },
     },
     {
-      id: 5,
-      priority: 1,
+      // 收藏扫描（listcollection）是独立模式唯一的 POST 端点。POST 端点比 GET 更严格地
+      // 校验「同源 fetch 元数据」：服务端要求 Sec-Fetch-Site: same-origin 等头，否则 403。
+      // 关键点：真实同源请求【不会】携带 Origin 头（Origin 仅跨域请求才有），因此这里只补
+      // Sec-Fetch-*，绝不可 set Origin —— same-origin + Origin 的非法组合会被抖音 WAF 拦截。
+      // 标签页模式在 douyin.com 页面内发起请求天然携带这些头；SW 跨界请求被 rule 3 剥离，
+      // 此规则（优先级更高）仅对 listcollection 补回 Sec-Fetch-*，与页面内/GET 行为一致。
+      // Referer 同步对齐真实页面（收藏 tab）：请求由收藏页发起（参考项目同款 referer）。
+      id: 4,
+      priority: 2,
       condition: {
-        urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
-        resourceTypes: ["xmlhttprequest"],
+        urlFilter: "||douyin.com/aweme/v1/web/aweme/listcollection/",
+        resourceTypes: ["xmlhttprequest", "other"],
         excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
       },
       action: {
         type: "modifyHeaders",
         requestHeaders: [
+          { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
+          { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
+          { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
+          { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
           {
             header: "Referer",
             operation: "set",
@@ -103,8 +115,37 @@ const CONFIG = {
       },
     },
     {
+      // 取消收藏 POST：与 rule 4 同理，独立模式 SW 跨界请求被 rule 3 剥离同源 fetch 元数据，
+      // POST 端点会 403。提升到 priority 2 以覆盖 rule 3 的 remove，补回 Sec-Fetch-* + Accept-Language；
+      // 同源请求不带 Origin，故不设 Origin。同时让精确 Referer（showTab=favorite_collection）真正生效
+      // （原先与 rule 3 同优先级、低 id 被覆盖，实际一直用的是 rule 3 的 https://www.douyin.com/）。
+      id: 5,
+      priority: 2,
+      condition: {
+        urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
+        resourceTypes: ["xmlhttprequest"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
+          { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
+          { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
+          { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
+          {
+            header: "Referer",
+            operation: "set",
+            value: "https://www.douyin.com/user/self?showTab=favorite_collection",
+          },
+        ],
+      },
+    },
+    {
+      // 取消点赞 POST：与 rule 5 同理，提升到 priority 2 覆盖 rule 3，补回 Sec-Fetch-* + Accept-Language（同源请求不带 Origin）；
+      // 并使精确 Referer（showTab=like）真正生效。
       id: 6,
-      priority: 1,
+      priority: 2,
       condition: {
         urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
         resourceTypes: ["xmlhttprequest"],
@@ -113,7 +154,31 @@ const CONFIG = {
       action: {
         type: "modifyHeaders",
         requestHeaders: [
+          { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
+          { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
+          { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
+          { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
           { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
+        ],
+      },
+    },
+    {
+      // mssdk 兑换 msToken：SW 发起时 Origin 是 chrome-extension://...；且 fetch 的 headers
+      // 里设 Referer 属 forbidden header，会被浏览器静默忽略。服务端校验这两头 → 拒签
+      // （表现为 mintMsToken 拿不到 Set-Cookie，静默走随机兜底）。DNR 层直接改写为抖音
+      // 页面同款值；排除 douyin 页面自身发起的兑换请求（页面 SDK 原生行为不动）。
+      id: 7,
+      priority: 1,
+      condition: {
+        urlFilter: "||mssdk.bytedance.com/",
+        resourceTypes: ["xmlhttprequest", "other"],
+        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+      },
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Origin", operation: "set", value: "https://www.douyin.com" },
+          { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
         ],
       },
     },
@@ -150,6 +215,10 @@ const CONFIG = {
   },
   WEBID_API: "https://mcs.zijieapi.com/webid",
   WEBID_QUERY: "aid=6383&sdk_version=5.1.18_zip&device_platform=web",
+  MSSDK: {
+    API: "https://mssdk.bytedance.com/web/common",
+    STR_DATA: MSSDK_STR_DATA,
+  },
   AWEME_TYPE_NOTE: 68,
   API: {
     FOLLOWING: "/aweme/v1/web/user/following/list",
@@ -157,6 +226,9 @@ const CONFIG = {
     DETAIL: "/aweme/v1/web/aweme/detail/",
     POST: "/aweme/v1/web/aweme/post/",
   },
+  // Argus webSign 策略盐（页面 secsdk 动态策略常量，实测跨会话稳定；若服务端
+  // 更新策略版本导致换盐，独立模式收藏扫描将重新出现 Signature Not Found）
+  WEB_SIGN_SALT: "A96D855A08C0A9707F8BEF0D9A527E4E",
   CANCEL: {
     collection: {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
@@ -363,13 +435,6 @@ async function fetchMsToken() {
   } catch {}
 
   try {
-    const browserCookies = await chrome.cookies.getAll({ domain: "bytedance.com", name: "msToken" });
-    if (browserCookies.length > 0 && browserCookies[0].value) {
-      return browserCookies[0].value;
-    }
-  } catch {}
-
-  try {
     const { savedCookie } = await chrome.storage.local.get("savedCookie");
     const msToken = extractMsTokenFromCookie(savedCookie);
     if (msToken) return msToken;
@@ -378,10 +443,61 @@ async function fetchMsToken() {
   return "";
 }
 
+// 通过 mssdk 静态载荷兑换真 msToken（参考 TikTokDownloader src/encrypt/msToken.py）。
+// 抖音页面 SDK 现走同一机制：签发的 cookie 落在 bytedance.com 域，douyin.com jar 里
+// 本来就没有 msToken；而随机兜底 token 服务端不认，严格端点（listcollection POST）会 403。
+// SW 的 fetch 读不到 Set-Cookie：先删 jar 旧值，POST 后从 bytedance.com jar 读回新签发的值。
+async function mintMsToken() {
+  try {
+    const stale = await chrome.cookies.getAll({ domain: "bytedance.com", name: "msToken" });
+    if (stale.length > 0) {
+      await chrome.cookies.remove({ url: "https://mssdk.bytedance.com/", name: "msToken" });
+    }
+    const resp = await fetch(CONFIG.MSSDK.API, {
+      method: "POST",
+      credentials: "include",
+      // Referer 不能放 headers（forbidden header，静默忽略）：用 referrer 选项 + rule 7
+      // DNR set 双保险。Origin 由 rule 7 改写为 douyin 同款。
+      referrer: "https://www.douyin.com/",
+      referrerPolicy: "unsafe-url",
+      headers: {
+        Accept: "*/*",
+        "Content-Type": "text/plain;charset=UTF-8",
+      },
+      body: JSON.stringify({
+        magic: 538969122,
+        version: 1,
+        dataType: 8,
+        strData: CONFIG.MSSDK.STR_DATA,
+        tspFromClient: Date.now(),
+        ulr: 0,
+      }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      console.warn("[DY] mint msToken: HTTP", resp.status, text.trim().slice(0, 120));
+      return "";
+    }
+    const fresh = await chrome.cookies.getAll({ domain: "bytedance.com", name: "msToken" });
+    return fresh[0]?.value || "";
+  } catch (e) {
+    console.warn("[DY] mint msToken failed:", e?.message);
+    return "";
+  }
+}
+
 async function getMsToken() {
   const { savedMsToken } = await chrome.storage.local.get("savedMsToken");
   if (savedMsToken) return savedMsToken;
-  const msToken = (await fetchMsToken()) || generateRandomMsToken();
+  let msToken = await fetchMsToken();
+  if (!msToken) {
+    msToken = await mintMsToken();
+    console.info("[DY] msToken: mssdk 兑换" + (msToken ? "成功" : "失败"));
+  }
+  if (!msToken) {
+    console.warn("[DY] msToken: 使用随机兜底（严格端点可能 403）");
+    msToken = generateRandomMsToken();
+  }
   await chrome.storage.local.set({ savedMsToken: msToken, savedMsTokenTime: Date.now() });
   return msToken;
 }
@@ -468,9 +584,21 @@ async function buildBaseParams(extra = {}) {
   const [webid, { savedCookie }] = await Promise.all([getWebId(), chrome.storage.local.get("savedCookie")]);
   let uifid = "",
     odin_tt = "";
-  if (savedCookie) {
+  // odin_tt / uifid 必须来自「当前登录会话」的 Cookie，否则签名虽正确但与服务端
+  // 校验用的会话参数不一致 → 403 sign invalid。优先读实时浏览器 Cookie，避免
+  // savedCookie 缓存滞后（用户刷新过浏览器登录但扩展缓存仍是旧 odin_tt）。
+  try {
+    const liveCookies = await chrome.cookies.getAll({ domain: "douyin.com" });
+    const cmap = {};
+    for (const c of liveCookies) cmap[c.name] = c.value;
+    if (cmap["UIFID"]) uifid = cmap["UIFID"];
+    if (cmap["odin_tt"]) odin_tt = cmap["odin_tt"];
+  } catch {}
+  if (!uifid && savedCookie) {
     const mu = savedCookie.match(/\bUIFID=([^;]+)/);
     if (mu) uifid = mu[1];
+  }
+  if (!odin_tt && savedCookie) {
     const mo = savedCookie.match(/\bodin_tt=([^;]+)/);
     if (mo) odin_tt = mo[1];
   }
@@ -513,25 +641,49 @@ async function buildBaseParams(extra = {}) {
   };
 }
 
+// 抖音服务端验证 a_bogus 时仅剥离 a_bogus 自身、对“完整查询串”做哈希，
+// 因此签名必须基于与最终 URL 完全一致（仅缺 a_bogus）的查询串，键顺序也需一致。
+// 注意：msToken / uifid / odin_tt 等 SDK 注入键也参与签名（实测真实 a_bogus
+// 的 pa 段与“含这些键的完整查询串”逐字节吻合），绝不能剔除。
 async function independentRequest(apiPath, params, options = {}) {
   const { savedCookie } = await chrome.storage.local.get("savedCookie");
   if (!savedCookie) throw new Error("NO_COOKIE");
   params.msToken = await getMsToken();
   const method = options.method || "GET";
+  // qs 即实际发送的查询串（含 msToken/uifid/odin_tt，不含 a_bogus），顺序与 URL 一致
   const qs = new URLSearchParams(params).toString();
   const a_bogus = abOgus.getValue(qs, method, await getClockSkew());
-  const url = CONFIG.URL_BASE + apiPath + "?" + qs + "&a_bogus=" + a_bogus;
+  // Argus webSign（与页面 window.use("webSignUrl") 同款算法）：
+  // sig = md5(uifid + "_" + ts + "_" + SALT + "_" + 待签查询串)，其中待签查询串 =
+  // 最终发送的完整 query 去掉 x-secsdk-web-signature 自身（含 a_bogus 与 timestamp）；
+  // 同时随请求携带 uifid / x-secsdk-web-signature / x-secsdk-web-expire 头。
+  let urlQuery = qs + "&a_bogus=" + a_bogus;
+  const webSignHeaders = {};
+  if (options.webSign) {
+    const uifid = String(params.uifid || "");
+    if (uifid) {
+      const tsSec = Math.floor((Date.now() + (await getClockSkew())) / 1000);
+      urlQuery += "&timestamp=" + tsSec;
+      const sig = md5Hex(uifid + "_" + tsSec + "_" + CONFIG.WEB_SIGN_SALT + "_" + urlQuery);
+      urlQuery += "&x-secsdk-web-signature=" + sig;
+      webSignHeaders.uifid = uifid;
+      webSignHeaders["x-secsdk-web-signature"] = sig;
+      webSignHeaders["x-secsdk-web-expire"] = String(tsSec);
+    }
+  }
+  const url = CONFIG.URL_BASE + apiPath + "?" + urlQuery;
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
   try {
     const resp = await fetch(url, {
       credentials: "include",
-      referrer: "https://www.douyin.com/",
+      referrer: options.referrer || "https://www.douyin.com/",
       referrerPolicy: "unsafe-url",
       headers: {
         Accept: "application/json, text/plain, */*",
         "User-Agent": abOgus ? abOgus.userAgent : navigator.userAgent,
         ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...webSignHeaders,
         ...options.headers,
       },
       method,
@@ -590,6 +742,13 @@ function urlExpireAt(url) {
   }
 }
 
+// 长效 ID 型播放链接（与推荐页手动"添加"按钮存的同款）：无 expire 参数，
+// 访问时由服务端 302 到即时签名的 douyinvod 地址。注意部分 douyinvod 短效直链
+// 的过期时间藏在路径段里（/<sig>/<8位hex过期秒>），query 里查不到。
+function isLongLivedVideoUrl(u) {
+  return typeof u === "string" && /\/\/www\.douyin\.com\/aweme\/v1\/play\/\?/.test(u);
+}
+
 function formatWork(aw) {
   if (!aw || !aw.aweme_id) return null;
   const author = aw.author || aw.author_info || {};
@@ -610,9 +769,46 @@ function formatWork(aw) {
       if (u) cands.push({ url: u, height: 0, expireAt: urlExpireAt(u) });
     }
   }
+  // 长效候选优先：bit_rate[].playApi（手动"添加"按钮同款），缺失时用最高清档
+  // play_addr.uri 合成裸 video_id 形态（实测服务端认、访问即 302 到新签直链）。
+  // CDN url_list 直链仅作兜底——预签名短效，几小时即过期。
+  const rates = bitRate.filter((br) => !br.is_h265);
+  const longs = [];
+  for (const br of rates) {
+    const api = String(br.playApi || "");
+    if (!api) continue;
+    longs.push({
+      url: /^https?:\/\//i.test(api) ? api : CONFIG.URL_BASE + (api.startsWith("/") ? "" : "/") + api,
+      height: (br.play_addr && br.play_addr.height) || 0,
+    });
+  }
+  if (longs.length === 0) {
+    const bestBr = rates.reduce(
+      (a, b) => (((b.play_addr || {}).height || 0) > (((a || {}).play_addr || {}).height || 0) ? b : a),
+      null,
+    );
+    const uri =
+      ((bestBr || {}).play_addr || {}).uri ||
+      (video.play_addr && video.play_addr.uri) ||
+      "";
+    if (uri) {
+      longs.push({
+        url:
+          CONFIG.URL_BASE +
+          "/aweme/v1/play/?video_id=" +
+          encodeURIComponent(uri) +
+          "&aid=6383&is_play_url=1&line=0",
+        height: ((bestBr || {}).play_addr || {}).height || 0,
+      });
+    }
+  }
   let videoUrl = "";
   let videoExpireAt = 0;
-  if (cands.length > 0) {
+  if (longs.length > 0) {
+    // ID 型链接无时效参数，videoExpireAt 保持 0（长效/未知）
+    const maxH = Math.max(...longs.map((c) => c.height));
+    videoUrl = (longs.find((c) => c.height === maxH) || longs[0]).url;
+  } else if (cands.length > 0) {
     // 先取最高清档，档内比较 expireAt 取最长者；全解析失败则取档内第一项（与原逻辑一致）
     const maxH = Math.max(...cands.map((c) => c.height));
     const top = cands.filter((c) => c.height === maxH);
@@ -731,10 +927,6 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
 async function handleIndependentFetchCollection(sendResponse) {
   try {
     await ensureABogus();
-    let secUid = "";
-    const { secUid: stored } = await chrome.storage.local.get("secUid");
-    if (stored && stored !== "self") secUid = stored;
-    else secUid = await resolveSelfSecUid();
     const requestId = crypto.randomUUID();
     let cancelled = false,
       hasMore = true,
@@ -745,14 +937,18 @@ async function handleIndependentFetchCollection(sendResponse) {
     };
     chrome.runtime.onMessage.addListener(cancelHandler);
     while (hasMore && !cancelled) {
-      const params = { count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) };
-      if (secUid) params.sec_user_id = secUid;
+      // 参考项目 TikTokDownloader 同端点形态：环境参数走 query，count/cursor 走 urlencoded
+      // body —— 空 body 的 POST 会被服务端 Argus 以 Signature Not Found 拒绝；身份由
+      // Cookie 决定，query/body 均不带 sec_user_id（参考项目同样不传）。
       const data = await independentRequest(
         CONFIG.API.COLLECTION,
-        await buildBaseParams(params),
+        await buildBaseParams({}),
         {
           method: "POST",
+          webSign: true,
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }).toString(),
+          referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
         },
       );
       if (data.status_code === 0 && Array.isArray(data.aweme_list)) {
@@ -1000,6 +1196,7 @@ function domainStorage(domain) {
     putBatch: (items) => storage.putBatch(cfg.storeName, items),
     deleteBatch: (keys) => storage.deleteBatch(cfg.storeName, keys),
     count: () => storage.count(cfg.storeName),
+    countByGroup: (groupId) => storage.countByIndex(cfg.storeName, "groupId", groupId),
     getByGroup: (groupId) => storage.getByIndex(cfg.storeName, "groupId", groupId),
     clear: () => storage.clear(cfg.storeName),
     getGroups: () => storage.getGroups(cfg.groupsName),
@@ -1075,11 +1272,18 @@ function extractImportItems(data, domain) {
 }
 
 function mergeWork(w, old) {
-  return {
+  const merged = {
     ...w,
     groupId: old?.groupId || w.groupId || CONFIG.GROUPS.DEFAULT_ID,
     savedAt: old?.savedAt || w.savedAt || Date.now(),
   };
+  // 旧记录已存长效 v1/play 链接而新结果是短效 CDN 直链 → 保留旧链接，
+  // 避免手动添加的作品被同步以短效直链覆盖降级
+  if (old && isLongLivedVideoUrl(old.video) && !isLongLivedVideoUrl(w.video)) {
+    merged.video = old.video;
+    merged.videoExpireAt = old.videoExpireAt || 0;
+  }
+  return merged;
 }
 
 async function mergeAndSaveWorks(works) {
@@ -2061,11 +2265,11 @@ async function handleResetDomain(domain, sendResponse) {
 
 async function handleGetStats(sendResponse) {
   try {
+    // 分组 tab 每次切换/刷新都会走到这里：只做索引计数，不 getAll 反序列化整表，
+    // 避免大数据量下每次统计都产生整表读取 + 大对象分配
     const dsWorks = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
     const dsFollowings = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
-    const [works, followings, works_groups, followings_groups, est] = await Promise.all([
-      dsWorks.getAll(),
-      dsFollowings.getAll(),
+    const [works_groups, followings_groups, est] = await Promise.all([
       dsWorks.getGroups(),
       dsFollowings.getGroups(),
       storage.estimate(),
@@ -2073,27 +2277,26 @@ async function handleGetStats(sendResponse) {
 
     const bytes = est ? est.usage : 0;
 
-    function buildDomainStats(items, groups) {
-      const list = Object.values(items || {});
-      const total = list.length;
+    async function buildDomainStats(ds, groups) {
+      const total = await ds.count();
       const groupCounts = { all: total };
-      for (const g of groups || []) {
-        if (g.id !== "all") groupCounts[g.id] = 0;
-      }
-      for (const item of list) {
-        const gid = item.groupId;
-        if (gid && gid in groupCounts) groupCounts[gid]++;
-      }
+      await Promise.all(
+        (groups || []).map(async (g) => {
+          if (g.id === "all") return;
+          groupCounts[g.id] = await ds.countByGroup(g.id);
+        }),
+      );
       return { total, groupCounts };
     }
 
+    const [works, followings] = await Promise.all([
+      buildDomainStats(dsWorks, works_groups),
+      buildDomainStats(dsFollowings, followings_groups),
+    ]);
+
     sendResponse({
       ok: true,
-      stats: {
-        works: buildDomainStats(works, works_groups),
-        followings: buildDomainStats(followings, followings_groups),
-        bytes,
-      },
+      stats: { works, followings, bytes },
     });
   } catch (err) {
     sendResponse({ error: err.message });

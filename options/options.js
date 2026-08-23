@@ -5,6 +5,11 @@ const config = {
   VIDEO_RETRY_MAX: 3,
   VIDEO_RETRY_FALLBACK_DELAY: 1000,
 
+  // 媒体熔断：窗口内失败密集超阈值时暂停媒体重试（网络异常降级）
+  MEDIA_FAIL_WINDOW: 5000,
+  MEDIA_FAIL_MAX: 10,
+  MEDIA_BREAK_COOLDOWN: 15000,
+
   // 超时
   FETCH_RETRY_DELAY: 1000,
   SYNC_TIMEOUT: 30000,  // fallback; primary = runtimeConfig._cache?.timeoutRequest
@@ -20,6 +25,7 @@ const config = {
   SIDEBAR_SCROLL_THRESHOLD: 100,
   SIDEBAR_MIN_WIDTH: 80,
   SIDEBAR_FILL_THRESHOLD: 50,
+  SIDEBAR_IMG_PER_FRAME: 6,
 
   // 卡片
   CARD_SIZE_FALLBACK: 261,
@@ -33,8 +39,9 @@ const config = {
 
   // 分块渲染
   RENDER_CHUNK_SIZE: 50,
-  OBSERVER_ROOT_MARGIN: "400px",
-  CARD_FILL_MAX_CONCURRENT: 12,
+  OBSERVER_ROOT_MARGIN: "200px",
+  FILL_FRAME_BUDGET_MS: 8,
+  UNLOAD_ROOT_MARGIN: "1200px",
 
   // 分组/存储
   TAB_SCROLL_THRESHOLD: 2,
@@ -329,33 +336,18 @@ const services = {
   },
 
   async loadWorks(groupId) {
+    // IDB 主键读取天然无重复；主键已统一为 string 存储，仅在遇到历史 number 主键时才拷贝归一化
     const res = await this.bgMsg({ type: "GET_WORKS", groupId });
-    const works = res.works || [];
-    const seen = new Set();
-    const deduped = [];
-    for (const w of works) {
-      if (!w || !w.awemeId) continue;
-      const id = String(w.awemeId);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      deduped.push({ ...w, awemeId: id });
-    }
-    return deduped;
+    return (res.works || [])
+      .filter((w) => w && w.awemeId)
+      .map((w) => (typeof w.awemeId === "string" ? w : { ...w, awemeId: String(w.awemeId) }));
   },
 
   async loadFollowings(groupId) {
     const res = await this.bgMsg({ type: "GET_FOLLOWINGS", groupId: groupId || state.currentGroupId });
-    const list = res.followings || [];
-    const seen = new Set();
-    const deduped = [];
-    for (const f of list) {
-      if (!f || !f.uid) continue;
-      const uid = String(f.uid);
-      if (seen.has(uid)) continue;
-      seen.add(uid);
-      deduped.push({ ...f, uid });
-    }
-    return deduped;
+    return (res.followings || [])
+      .filter((f) => f && f.uid)
+      .map((f) => (typeof f.uid === "string" ? f : { ...f, uid: String(f.uid) }));
   },
 
   async loadGroups(domain) {
@@ -416,6 +408,7 @@ const services = {
 // ---------- VirtualGrid ----------
 class VirtualGrid {
   #observer = null;
+  #unloadObserver = null;
   #fillQueue = [];
   #drainRafId = 0;
   #itemMap = new Map();
@@ -454,6 +447,10 @@ class VirtualGrid {
       this.#observer.disconnect();
       this.#observer = null;
     }
+    if (this.#unloadObserver) {
+      this.#unloadObserver.disconnect();
+      this.#unloadObserver = null;
+    }
     this.#itemMap = new Map(items.map((item) => [item[this.#itemKey], item]));
     cancelAnimationFrame(this.#drainRafId);
     this.#drainRafId = 0;
@@ -470,9 +467,7 @@ class VirtualGrid {
     dom.emptyState.classList.add("hidden");
     this.#container.classList.remove("hidden");
 
-    const skelTmpl = document.getElementById(
-      this.#skeletonClass.replace(/-([a-z])/g, (_, c) => c.toUpperCase()) + "Template",
-    );
+    const skelTmpl = this.#getSkeletonTemplate();
     let index = 0;
 
     const renderChunk = () => {
@@ -508,6 +503,7 @@ class VirtualGrid {
       const card = this.#container.querySelector(`[data-${this.#dataAttr}="${id}"]`);
       if (card) {
         if (this.#observer) this.#observer.unobserve(card);
+        if (this.#unloadObserver) this.#unloadObserver.unobserve(card);
         card.remove();
       }
     }
@@ -527,10 +523,50 @@ class VirtualGrid {
       this.#observer.disconnect();
       this.#observer = null;
     }
+    if (this.#unloadObserver) {
+      this.#unloadObserver.disconnect();
+      this.#unloadObserver = null;
+    }
     this.#itemMap = new Map();
     cancelAnimationFrame(this.#drainRafId);
     this.#drainRafId = 0;
     this.#fillQueue = [];
+  }
+
+  #getSkeletonTemplate() {
+    return document.getElementById(
+      this.#skeletonClass.replace(/-([a-z])/g, (_, c) => c.toUpperCase()) + "Template",
+    );
+  }
+
+  // 双向虚拟化：完整卡滚出 UNLOAD_ROOT_MARGIN 外时降级回骨架（DOM/video/监听器随节点释放），
+  // 重新滚近时经既有 fill 流程重填。卸载圈远大于填充圈形成滞回，避免边界抖动。
+  #ensureUnloadObserver() {
+    if (this.#unloadObserver) return;
+    this.#unloadObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) this.#demote(entry.target);
+        }
+      },
+      { rootMargin: config.UNLOAD_ROOT_MARGIN },
+    );
+  }
+
+  #demote(card) {
+    if (!card.isConnected || card.classList.contains(this.#skeletonClass)) return;
+    const key = card.dataset[this.#itemKey];
+    if (!key || !this.#itemMap.has(key)) return;
+
+    const skel = this.#getSkeletonTemplate().content.cloneNode(true).firstElementChild;
+    skel.dataset[this.#itemKey] = key;
+    if (state.batchMode) {
+      const cb = skel.querySelector(".work-checkbox, .following-checkbox");
+      if (cb) cb.style.display = "";
+    }
+    card.replaceWith(skel);
+    this.#unloadObserver.unobserve(card);
+    this.#observer.observe(skel);
   }
 
   #observeNewSkeletons(nodes) {
@@ -574,10 +610,11 @@ class VirtualGrid {
     if (this.#drainRafId) return;
     this.#drainRafId = requestAnimationFrame(() => {
       this.#drainRafId = 0;
-      let n = 0;
-      while (this.#fillQueue.length && n < config.CARD_FILL_MAX_CONCURRENT) {
+      // 时间预算制：每帧最多花 FILL_FRAME_BUDGET_MS 填卡即让出主线程，
+      // 避免首屏集中填充时单帧超预算（固定张数在低端机上仍会卡）
+      const deadline = performance.now() + config.FILL_FRAME_BUDGET_MS;
+      while (this.#fillQueue.length && performance.now() < deadline) {
         this.#doFill(this.#fillQueue.shift());
-        n++;
       }
       if (this.#fillQueue.length) this.#scheduleDrain();
     });
@@ -595,6 +632,8 @@ class VirtualGrid {
     if (!skeleton.parentNode) return;
     const fullCard = this.createItem(item);
     skeleton.parentNode.replaceChild(fullCard, skeleton);
+    this.#ensureUnloadObserver();
+    this.#unloadObserver.observe(fullCard);
   }
 
   #onClick(event) {
@@ -718,7 +757,10 @@ class Dialog {
     if (msg.includes("NO_DOUYIN_TAB")) hint = "未找到抖音页面，请确保已打开抖音";
     else if (msg.includes("TIMEOUT")) hint = "获取超时，可能是网络问题或内容过多";
     else if (msg.includes("HTTP_403")) {
-      hint = "签名被拒，请到设置面板刷新「webid」「msToken」「浏览器特征」缓存后重试";
+      // 注意：任何 403 都会走到这里，服务端未必真的返回「sign invalid」——同源 fetch
+      // 元数据（Sec-Fetch-Site/Origin）被 DNR 剥离、会话过期等同样会触发 403。不要再把
+      // 所有 403 一律归因为签名被拒，以免误导用户反复刷新无关缓存。
+      hint = "抖音返回 403 拒绝了该请求。若已刷新 Cookie/webid/msToken/浏览器特征仍失败，多为请求头被服务端拦截（独立模式 POST 端点尤甚），可改用标签页模式扫描，或重新刷新缓存后重试";
     }
     dom.dialogBody.innerHTML = `<p>${hint}</p>`;
     this.showOkDialog();
@@ -1264,6 +1306,8 @@ class Sidebar {
   #dragStartX = 0;
   #dragStartW = 0;
   #scrollRafPending = false;
+  #imgQueue = [];
+  #imgDrainRafId = 0;
   #onResizeDown = (e) => {
     this.#dragStartX = e.clientX;
     this.#dragStartW = dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width;
@@ -1344,6 +1388,7 @@ class Sidebar {
       this.saveSidebarWidth(target);
     }
 
+    this.#clearImgQueue();
     dom.sidebarWorksGrid.innerHTML = "";
     this.loadSidebarWorks(state.currentFollowingSecUid, null, true);
   }
@@ -1363,10 +1408,11 @@ class Sidebar {
       if (reset) dom.sidebarWorksGrid.innerHTML = "";
 
       if (res.ok && res.works) {
+        const fragment = document.createDocumentFragment();
         for (const w of res.works) {
-          const item = this.#createWorkItem(w);
-          dom.sidebarWorksGrid.appendChild(item);
+          fragment.appendChild(this.#createWorkItem(w));
         }
+        dom.sidebarWorksGrid.appendChild(fragment);
         state.sidebarCursor = res.hasMore ? res.maxCursor || "" : null;
       }
       dom.sidebarLoader.classList.add("hidden");
@@ -1407,6 +1453,35 @@ class Sidebar {
     this.loadSidebarWorks(state.currentFollowingSecUid, state.sidebarCursor, false);
   }
 
+  // 封面分帧赋 src：每帧最多 SIDEBAR_IMG_PER_FRAME 张，避免整页图片集中解码造成卡顿
+  #enqueueCover(img, url) {
+    this.#imgQueue.push({ img, url });
+    this.#scheduleImgDrain();
+  }
+
+  #scheduleImgDrain() {
+    if (this.#imgDrainRafId) return;
+    this.#imgDrainRafId = requestAnimationFrame(() => {
+      this.#imgDrainRafId = 0;
+      let n = 0;
+      while (this.#imgQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
+        const { img, url } = this.#imgQueue.shift();
+        if (!img.isConnected) continue; // 已随网格重建被移除的节点直接丢弃
+        img.src = url;
+        n++;
+      }
+      if (this.#imgQueue.length) this.#scheduleImgDrain();
+    });
+  }
+
+  #clearImgQueue() {
+    if (this.#imgDrainRafId) {
+      cancelAnimationFrame(this.#imgDrainRafId);
+      this.#imgDrainRafId = 0;
+    }
+    this.#imgQueue = [];
+  }
+
   #createWorkItem(work) {
     const item = $sidebarTmpl.content.cloneNode(true).firstElementChild;
     const link = item.children[0];
@@ -1421,8 +1496,11 @@ class Sidebar {
     const placeholder = link.children[1];
     const cover = isNote ? work.images?.[0] || work.cover : work.cover;
     if (cover) {
-      img.src = cover;
-      placeholder.style.display = "none";
+      img.decoding = "async";
+      img.addEventListener("load", () => {
+        placeholder.style.display = "none";
+      }, { once: true });
+      this.#enqueueCover(img, utils.pickHttpsUrl(cover));
     } else {
       img.style.display = "none";
       if (isNote) placeholder.textContent = "📰";
@@ -2552,10 +2630,12 @@ class WorksGrid extends VirtualGrid {
     if (work.type === "video" && utils.getVideoUrl(work)) {
       const videoSrc = utils.getVideoUrl(work);
       const coverUrl = work.cover || "";
+      thumb.decoding = "async";
       thumb.src = utils.pickHttpsUrl(coverUrl);
       thumb.alt = work.desc || "";
       thumb.onerror = function () {
-        if (!this.dataset.retry) {
+        detail.markMediaFail();
+        if (!this.dataset.retry && !detail.mediaRetryBlocked()) {
           this.dataset.retry = "1";
           this.src = utils.pickHttpsUrl(coverUrl);
           return;
@@ -2572,6 +2652,8 @@ class WorksGrid extends VirtualGrid {
       media.addEventListener("mouseenter", () => {
         if (state.batchMode) return;
         if (!dom.dialogOverlay.classList.contains("hidden")) return;
+        // 熔断冷却期内跳过悬停预览，避免坏网下反复发起必败的视频加载
+        if (detail.mediaRetryBlocked()) return;
         if (hoverTimer) clearTimeout(hoverTimer);
         hoverTimer = setTimeout(() => {
           delete video.dataset.retries;
@@ -2583,6 +2665,7 @@ class WorksGrid extends VirtualGrid {
           video.load();
           const onCanPlay = () => {
             if (!video.dataset.hovered) return;
+            detail.markMediaOk();
             video.classList.add("video-ready");
             controls.classList.add("video-ready");
             thumb.classList.add("video-hidden");
@@ -2648,10 +2731,12 @@ class WorksGrid extends VirtualGrid {
       });
     } else if (work.type === "note") {
       const imgUrl = work.images?.[0] || work.cover || "";
+      thumb.decoding = "async";
       thumb.src = imgUrl;
       thumb.alt = work.desc || "";
       thumb.onerror = function () {
-        if (!this.dataset.retry) {
+        detail.markMediaFail();
+        if (!this.dataset.retry && !detail.mediaRetryBlocked()) {
           this.dataset.retry = "1";
           this.src = imgUrl;
           return;
@@ -2750,6 +2835,9 @@ class Detail {
   #noteAutoPlayTimer = null;
   #detailSliderRaf = 0;
   #noteIsPlaying = false;
+  #mediaFailCount = 0;
+  #mediaLastFailAt = 0;
+  #mediaBreakUntil = 0;
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
@@ -2760,13 +2848,17 @@ class Detail {
         || utils.pickHttpsUrl(this.#noteWork.cover)
         || "";
       // 新图片加载完成后淡入
-      const onLoad = () => {
+      const done = () => {
         img.style.opacity = '1';
-        img.removeEventListener('load', onLoad);
-        img.removeEventListener('error', onLoad);
+        img.removeEventListener('load', done);
+        img.removeEventListener('error', onError);
       };
-      img.addEventListener('load', onLoad, { once: true });
-      img.addEventListener('error', onLoad, { once: true });
+      const onError = () => {
+        this.markMediaFail();
+        done();
+      };
+      img.addEventListener('load', done, { once: true });
+      img.addEventListener('error', onError, { once: true });
     });
     dom.detailImgCounter.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
     dom.detailTime.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
@@ -3068,8 +3160,13 @@ class Detail {
       readyFired = true;
       readyFn();
     };
-    video.addEventListener("canplay", fireReady, { once: true });
-    video.addEventListener("loadedmetadata", fireReady, { once: true });
+    // 仅在真实加载成功时复位熔断；error 路径也会调 fireReady，不能顺带 markMediaOk
+    const fireLoaded = () => {
+      this.markMediaOk();
+      fireReady();
+    };
+    video.addEventListener("canplay", fireLoaded, { once: true });
+    video.addEventListener("loadedmetadata", fireLoaded, { once: true });
 
     video.play().catch((err) => {
       if (err.name === "NotAllowedError") {
@@ -3121,7 +3218,10 @@ class Detail {
       readyFn();
     };
     img.addEventListener("load", fireReady, { once: true });
-    img.addEventListener("error", fireReady, { once: true });
+    img.addEventListener("error", () => {
+      this.markMediaFail();
+      fireReady();
+    }, { once: true });
     img.alt = work.desc || "";
 
     dom.detailImgCounter.textContent = `1 / ${work.images.length}`;
@@ -3382,10 +3482,33 @@ class Detail {
     }
   }
 
+  // 媒体熔断：滑动窗口内失败计数，密集失败（网络异常）时进入冷却期，
+  // 期间视频/封面跳过重试直接降级；任何媒体成功加载即复位。
+  markMediaFail() {
+    const now = Date.now();
+    this.#mediaFailCount =
+      now - this.#mediaLastFailAt > config.MEDIA_FAIL_WINDOW ? 1 : this.#mediaFailCount + 1;
+    this.#mediaLastFailAt = now;
+    if (this.#mediaFailCount >= config.MEDIA_FAIL_MAX) {
+      this.#mediaBreakUntil = now + config.MEDIA_BREAK_COOLDOWN;
+      this.#mediaFailCount = 0;
+    }
+  }
+
+  markMediaOk() {
+    this.#mediaFailCount = 0;
+    this.#mediaBreakUntil = 0;
+  }
+
+  mediaRetryBlocked() {
+    return Date.now() < this.#mediaBreakUntil;
+  }
+
   handleVideoError(video, ui) {
     if (!video.src) return;
+    this.markMediaFail();
     const retries = parseInt(video.dataset.retries || "0");
-    if (retries >= config.VIDEO_RETRY_MAX) {
+    if (retries >= config.VIDEO_RETRY_MAX || this.mediaRetryBlocked()) {
       ui.onMax(retries);
       return;
     }

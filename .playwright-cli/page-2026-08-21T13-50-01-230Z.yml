@@ -1,0 +1,92 @@
+- generic [active] [ref=f7e1]:
+  - button "开启读屏标签" [ref=f7e2]
+  - generic: 读屏标签已关闭
+  - generic [ref=f7e4]:
+    - generic [ref=f7e6]:
+      - link [ref=f7e7] [cursor=pointer]:
+        - /url: //www.douyin.com/jingxuan
+      - generic [ref=f7e15]:
+        - link "精选" [ref=f7e19] [cursor=pointer]:
+          - /url: https://www.douyin.com/jingxuan?from_nav=1
+        - link "推荐" [ref=f7e27] [cursor=pointer]:
+          - /url: https://www.douyin.com/?recommend=1&from_nav=1
+        - link "AI抖音" [ref=f7e35] [cursor=pointer]:
+          - /url: https://www.douyin.com/aisearch?from_nav=1
+        - link "关注" [ref=f7e45] [cursor=pointer]:
+          - /url: https://www.douyin.com/follow?from_nav=1
+        - link "朋友" [ref=f7e53] [cursor=pointer]:
+          - /url: https://www.douyin.com/friend?from_nav=1
+        - link "我的" [ref=f7e61] [cursor=pointer]:
+          - /url: https://www.douyin.com/user/self?from_nav=1
+        - link "直播" [ref=f7e70] [cursor=pointer]:
+          - /url: https://live.douyin.com/?from_nav=1
+        - link "放映厅" [ref=f7e78] [cursor=pointer]:
+          - /url: https://www.douyin.com/vs?from_nav=1
+        - link "短剧" [ref=f7e86] [cursor=pointer]:
+          - /url: https://www.douyin.com/series?from_nav=1
+        - link "小游戏" [ref=f7e94] [cursor=pointer]:
+          - /url: https://www.douyin.com/microgame?from_nav=1
+    - generic [ref=f7e114]:
+      - banner [ref=f7e117]:
+        - generic [ref=f7e119]:
+          - generic [ref=f7e123]:
+            - textbox "搜索你感兴趣的内容" [ref=f7e125]
+            - button "搜索" [ref=f7e127] [cursor=pointer]
+          - generic [ref=f7e134]:
+            - paragraph [ref=f7e141] [cursor=pointer]: 充钻石
+            - link [ref=f7e146] [cursor=pointer]:
+              - /url: ""
+              - paragraph [ref=f7e154]: 客户端
+            - paragraph [ref=f7e161] [cursor=pointer]: 壁纸
+            - list [ref=f7e162]:
+              - paragraph [ref=f7e171] [cursor=pointer]: 通知
+            - paragraph [ref=f7e180] [cursor=pointer]: 投稿
+            - link [ref=f7e183] [cursor=pointer]:
+              - /url: //www.douyin.com/user/self
+              - listitem [ref=f7e184]
+      - generic [ref=f7e190]:
+        - generic [ref=f7e195]:
+          - generic [ref=f7e196]:
+            - listitem [ref=f7e198] [cursor=pointer]
+            - generic [ref=f7e200]:
+              - heading "橙子同学" [level=1] [ref=f7e202]
+              - generic [ref=f7e209]:
+                - generic [ref=f7e210] [cursor=pointer]: 关注
+                - generic [ref=f7e212] [cursor=pointer]: 粉丝
+                - generic [ref=f7e214]: 获赞
+              - paragraph [ref=f7e216]:
+                - generic [ref=f7e217]: 抖音号：23622160001
+          - generic [ref=f7e220]:
+            - generic [ref=f7e223]:
+              - generic [ref=f7e224]:
+                - tablist [ref=f7e225]:
+                  - tab [ref=f7e226] [cursor=pointer]:
+                    - heading "作品 0" [level=2] [ref=f7e228]:
+                      - generic [ref=f7e229]: 作品
+                      - generic [ref=f7e230]: "0"
+                  - tab "推荐" [ref=f7e231] [cursor=pointer]
+                  - tab "喜欢" [ref=f7e234] [cursor=pointer]
+                  - tab "收藏" [selected] [ref=f7e240]
+                  - tab "观看历史" [ref=f7e246] [cursor=pointer]
+                  - tab "稍后再看" [ref=f7e252] [cursor=pointer]
+                  - tab "我的预约" [ref=f7e258] [cursor=pointer]
+                - generic:
+                  - tabpanel "收藏"
+              - generic [ref=f7e264]: 批量管理
+            - generic [ref=f7e267]:
+              - generic [ref=f7e270]:
+                - generic [ref=f7e271]:
+                  - tablist [ref=f7e272]:
+                    - tab "收藏夹" [ref=f7e273] [cursor=pointer]
+                    - tab "视频" [selected] [ref=f7e274]
+                    - tab "音乐" [ref=f7e275] [cursor=pointer]
+                    - tab "合集" [ref=f7e276] [cursor=pointer]
+                    - tab "短剧" [ref=f7e277] [cursor=pointer]
+                  - generic:
+                    - tabpanel "视频"
+                - generic [ref=f7e279]:
+                  - generic [ref=f7e280]: 搜索你收藏的作品
+                  - textbox "搜索你收藏的作品" [ref=f7e283]
+              - generic [ref=f7e286]:
+                - list
+        - contentinfo [ref=f7e290]
