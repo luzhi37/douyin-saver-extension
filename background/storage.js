@@ -121,6 +121,16 @@ export const storage = {
     });
   },
 
+  async countByIndex(storeName, indexName, value) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).index(indexName).count(value);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  },
+
   // groups 专用：返回数组
   async getGroups(storeName) {
     const db = await openDB();

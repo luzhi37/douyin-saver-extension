@@ -38,7 +38,7 @@ ChaCha20 + MD5 + 自定义 Base64（无 padding）。**本扩展已移除**（20
 |-----|------------------------------|---------------------------|
 | 1   | ABogus                        | ✅ `crypto.js` 实现        |
 | 2–3 | XBogus/XGnarly                | ❌ 已移除（2026-08-04）     |
-| 4–7 | msToken/ttwid/verifyFp/webID  | ✅ msToken/ttwid/webID 于 `background.js`；verifyFp ❌ 已移除（2026-08-04） |
+| 4–7 | msToken/ttwid/verifyFp/webID  | ✅ msToken（含 mssdk 兑换）/ttwid/webID 于 `background.js`；verifyFp ❌ 已移除（2026-08-04） |
 | 8   | device_id                    | ❌ 未实现（本扩展不需要） |
 
 ## 四、Douyin API 端点

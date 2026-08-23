@@ -48,7 +48,7 @@ DOMAIN_CONFIG = {
 }
 ```
 
-- `works` — `{ [awemeId]: Work }`（每条含 `video` 视频直链与 `videoExpireAt` 过期时间戳；`videoExpireAt` 0=未知，独立模式同步时由 `formatWork` 解析 URL 的 `expire` 参数写入）
+- `works` — `{ [awemeId]: Work }`（每条含 `video` 视频直链与 `videoExpireAt` 过期时间戳。`formatWork` 三级取链：`bit_rate[].playApi` → `uri` 合成的 `/aweme/v1/play/?video_id=…` 长效链接（同手动"添加"按钮，`videoExpireAt`=0）→ CDN `url_list` 短效直链兜底（解析 `expire` 参数写入）；`mergeWork` 防止短效直链覆盖旧长效链接）
 - `works_groups` — `[{ id, name, fixed, order? }]`
 - `followings` — `{ [uid]: Following }`（仅保留 5 个稳定字段）
 - `followings_groups` — `[{ id, name, fixed, order? }]`
@@ -93,7 +93,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
-| `VirtualGrid`    | 网格渲染基类（骨架 + IntersectionObserver + 分块渲染 + 事件委托） |
+| `VirtualGrid`    | 网格渲染基类（骨架 + 双向虚拟化：填充/卸载双 observer + 分时间预算填充 + 事件委托） |
 | `Dialog`         | 弹窗管理                                                          |
 | `FollowingsGrid` | 关注卡片网格                                                      |
 | `Groups`         | 分组 tab + 管理                                                   |
@@ -119,22 +119,27 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 - **签名展开/收起 selector 必须兼容两种状态** — 用 `row.querySelector('.sec-truncate, .sec-expanded')`。
 - **安全面板值截断依赖 CSS** — JS 不截断文本，靠 `.sec-truncate` 做视觉截断。
 - **取消点赞/收藏用 XHR 而非 fetch** — 抖音的 a_bogus 签名与 XHR 原型链深度绑定。注意：独立模式下取消由 background 直接用 `fetch()` POST，不经过 XHR（因为无页面上下文），但需 DNR rules 5/6（取消收藏/取消点赞）注入 Referer。
+- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名返回 403 `Blocked by ArgusSecurityPlugin Signature Not Found`。`independentRequest` 的 `options.webSign` 分支复刻页面 `window.use("webSignUrl")` 算法（query 追加 `timestamp` 与 md5 签名，并带 uifid/expire 头）。盐变更会复发，算法与风险详见 [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md)。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；长操作 X 按钮始终可点以发送 `CANCEL_ACTIVE_TASK`。为避免短操作误发，`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
 - **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject.js 的 6 个 API 请求函数全部使用 `window.fetch`（经 Fetch Hook），通过 `_dyInternal: true` 避免被 Hook 再次捕获，而非 `origFetch.call(window, ...)`（绕 Hook）。因为 Douyin 可能通过覆盖 `window.fetch` 注入签名参数，走 `origFetch` 会错过注入。详见 [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)。
+- **媒体加载有全局熔断** — `Detail.markMediaFail / markMediaOk / mediaRetryBlocked` 维护滑动窗口失败计数：视频/封面失败密集超阈值（`MEDIA_FAIL_*`）即进入冷却期，期间跳过重试直接降级；任何媒体成功加载即复位。新增媒体重试逻辑必须接入该机制，不要自行计数。
+- **侧边栏封面必须走分帧队列** — Sidebar 的封面 src 经 `#enqueueCover` 按 rAF 分帧赋值（每帧 `SIDEBAR_IMG_PER_FRAME` 张），不要在 `#createWorkItem` 里同步赋 src；整页 DOM 用单个 fragment 追加。
+- **网格卡片是双向虚拟化的** — VirtualGrid 有两个 IntersectionObserver：填充 observer（`OBSERVER_ROOT_MARGIN`，骨架进入视口即经 `#enqueueFill` 重填）与卸载 observer（`UNLOAD_ROOT_MARGIN`，完整卡滚出后由 `#demote` 降级回骨架）。卡片填充分时间预算制（每帧最多 `FILL_FRAME_BUDGET_MS`），不要改回固定张数/帧。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardDOM` 已兼容骨架态。卸载圈远大于填充圈形成滞回，勿把两者调近。
 
 ## config 分组速查
 
-`options/options.js` 顶层 `config` 常量（29 个键。`background.js` 另有 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `TOKEN_TTL` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` 等）：
+`options/options.js` 顶层 `config` 常量（34 个键。`background.js` 另有 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `TOKEN_TTL` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` 等）：
 
 | 分组       | 键                                                                                                                            |
 |------------|-------------------------------------------------------------------------------------------------------------------------------|
 | 视频重试   | `VIDEO_RETRY_DELAYS` `[200,400,600]` / `VIDEO_RETRY_MAX` `3` / `VIDEO_RETRY_FALLBACK_DELAY` `1000`                            |
+| 媒体熔断   | `MEDIA_FAIL_WINDOW` `5000` / `MEDIA_FAIL_MAX` `10` / `MEDIA_BREAK_COOLDOWN` `15000`                                           |
 | 超时       | `FETCH_RETRY_DELAY` `1000` / `SYNC_TIMEOUT` `30000` / `VIDEO_FALLBACK_TIMEOUT` `5000`                                         |
 | 详情页     | `DETAIL_TITLE_MAX_LEN` `40` / `TOAST_DURATION` `2000` / `DOWNLOAD_MAX_RETRY` `1`                                              |
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000`                                  |
-| 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_MIN_WIDTH` `80` / `SIDEBAR_FILL_THRESHOLD` `50` |
+| 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_MIN_WIDTH` `80` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` |
 | 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `9` / `CARD_HEIGHT_OFFSET` `35`                                                       |
-| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `OBSERVER_ROOT_MARGIN` `'400px'` / `CARD_FILL_MAX_CONCURRENT` `12`                                 |
+| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `OBSERVER_ROOT_MARGIN` `'200px'` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'1200px'`    |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                    |
 | 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_LIKE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                    |
@@ -151,3 +156,4 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | [docs/SECURITY_AND_DNR.md](./docs/SECURITY_AND_DNR.md)   | declarativeNetRequest 规则、安全状态查询链路、安全风险                         |
 | [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md)   | 独立模式架构 + msToken/webId/Cookie/浏览器特征缓存模型与存储键表               |
 | [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md)   | 参考项目 TikTokDownloader 算法/凭据模块 + Douyin API 端点总表                  |
+| [docs/COLLECTION_SCAN_REVERSE.md](./docs/COLLECTION_SCAN_REVERSE.md) | 独立模式扫描收藏全链路实录：请求要素、线格式、webSign 逆向过程与盐变更处置 |

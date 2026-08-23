@@ -63,18 +63,39 @@ chrome.runtime.onMessage
 
 DNR rule 3 为独立模式所有 API 请求注入泛用 `Referer: https://www.douyin.com/`；rules 5/6 为取消端点注入精确 Referer（带 `?showTab=like` / `?showTab=favorite_collection`）。
 
+### Argus webSign 签名（listcollection）
+
+`listcollection` POST 被服务端 ArgusSecurityPlugin 额外校验：缺签名时返回 403 `Blocked by ArgusSecurityPlugin Signature Not Found`。页面端由 secsdk 的 `window.use("webSignUrl")` 在 XHR 上附加 `x-secsdk-web-signature`；独立模式在 `independentRequest` 内以 `options.webSign: true` 复刻同一算法：
+
+```text
+ts  = floor(now/1000)                       // 与 a_bogus 共用时钟偏移校正
+qs' = qs + "&a_bogus=" + a_bogus + "&timestamp=" + ts
+sig = md5( uifid + "_" + ts + "_" + SALT + "_" + qs' )
+最终 query = qs' + "&x-secsdk-web-signature=" + sig
+```
+
+- 待签串为**最终完整 query 去掉 sig 自身**（含 `a_bogus` 与 `timestamp`，改任意参数即 `Sign Invalid`）；`uifid` 不参与待签串但服务端另行校验其归属（不匹配返回 `Validate Error`）
+- 必带请求头：`uifid` / `x-secsdk-web-signature` / `x-secsdk-web-expire`（= ts）
+- 盐 `SALT = A96D855A08C0A9707F8BEF0D9A527E4E`（`CONFIG.WEB_SIGN_SALT`，secsdk 动态策略常量，2026-08 实测跨会话稳定；**抖音换策略版本则盐变更，该端点将重现 Signature Not Found**，需重新逆向抓盐）
+- 当前仅 `handleIndependentFetchCollection` 启用；若其他端点日后被拦，同款方案平移即可
+
+> 完整链路（请求要素、线格式、定位手法、绑定域实验、盐变更复发处置）见 [COLLECTION_SCAN_REVERSE.md](./COLLECTION_SCAN_REVERSE.md)。
+
 ---
 
 ## msToken 缓存模型
 
-`getMsToken()` 从 3 个来源依次获取：
+`getMsToken()` 从以下来源依次获取：
 
 1. 缓存：`chrome.storage.local` 中 `savedMsToken`（**无过期逻辑**，写入即终身）
-2. 浏览器 Cookie jar：`chrome.cookies.getAll({ domain: 'douyin.com' })` 或 `bytedance.com`
-3. `savedCookie` 字符串中正则提取 `msToken=...`
-4. 兜底：生成 156 位随机字符（服务端可能拒绝）
+2. 浏览器 Cookie jar：`chrome.cookies.getAll({ domain: 'douyin.com' })`
+3. mssdk 兑换：POST 静态载荷（`background/mssdk_strdata.js`）到 `mssdk.bytedance.com/web/common`，从响应 Set-Cookie 经 cookie jar 读回新签发的真 msToken（参考 TikTokDownloader `src/encrypt/msToken.py`；2026-08 实测有效）
+4. `savedCookie` 字符串中正则提取 `msToken=...`
+5. 兜底：生成 156 位随机字符（服务端不认，严格端点如 listcollection POST 会 403；SW 控制台会告警）
 
-刷新：面板点击「刷新」→ background 删 `savedMsToken` → 重走 `getMsToken()`。
+> 抖音页面 SDK 现同样走 mssdk 兑换机制，签发的 cookie 落在 **bytedance.com** 域——douyin.com 的 cookie jar 里没有 msToken 属正常现象。
+
+刷新：面板点击「刷新」→ background 删 `savedMsToken` → 重走 `getMsToken()`；jar 无 douyin.com msToken 时必然触发一次 mssdk 兑换，因此每次刷新都会拿到刚签发的新值。
 
 ---
 
