@@ -11,7 +11,7 @@
 - 每完成 40 条后暂停 10–20s（`CONFIG.SYNC.BATCH_SIZE`），暂停期间每 2s 调用 `chrome.storage.local.get` 保活 SW
 - 检查 `cancelled` 标志，循环结束调用 `mergeAndSaveWorks(allWorks)` 写入存储
 
-**视频直链时效**：`formatWork` 解析各候选 URL 的 `expire` 参数（`parseExpire`，兼容秒/毫秒时间戳与剩余秒数），在最高清档内选中 `videoExpireAt` 最大者；work 新增 `videoExpireAt` 字段（0 = 未知，旧数据/图文自然为 0）。
+**视频直链时效**：`formatWork` 按三级优先取链接——① `bit_rate[].playApi`（与推荐页手动"添加"按钮同款的长效 ID 型播放链接，`/aweme/v1/play/?video_id=…`）；② 无 playApi 时用最高清档 `play_addr.uri` 合成同形态裸链接（实测服务端认可，访问即 302 到新签 douyinvod 直链，参数仅需 `video_id/aid/is_play_url/line`）；③ 前两者皆缺时回落 CDN `url_list` 预签名直链（**短效**，几小时过期；部分直链过期时间藏在路径段 `/<sig>/<8位hex过期秒>` 而非 query 的 `expire`）。前两级 `videoExpireAt = 0`（长效），第③级解析 `expire` 参数写入。另：`mergeWork` 有降级保护——旧记录已是长效 v1/play 链接而新结果为短效 CDN 直链时不覆盖。
 
 **错误分类**：
 

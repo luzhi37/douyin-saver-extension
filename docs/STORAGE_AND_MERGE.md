@@ -4,7 +4,7 @@
 
 ## IndexedDB 结构
 
-`storage.js` 定义 4 个 store：`works`（keyPath `awemeId`, 索引 `groupId`）、`works_groups`（keyPath `id`）、`followings`（keyPath `uid`, 索引 `groupId`）、`followings_groups`（keyPath `id`）。支持按 `groupId` 索引查询、`getAll` 返回 `{ [keyPath]: item }` 映射、`deleteBatch` 单事务批量删除。分组写入采用 `clear()` + 逐条 `put()` 实现"覆盖数组"语义。
+`storage.js` 定义 4 个 store：`works`（keyPath `awemeId`, 索引 `groupId`）、`works_groups`（keyPath `id`）、`followings`（keyPath `uid`, 索引 `groupId`）、`followings_groups`（keyPath `id`）。支持按 `groupId` 索引查询、`getAll` 返回 `{ [keyPath]: item }` 映射、按索引 `countByIndex` 计数（不反序列化整表）、`deleteBatch` 单事务批量删除。分组写入采用 `clear()` + 逐条 `put()` 实现"覆盖数组"语义。
 
 ## 作品合并
 

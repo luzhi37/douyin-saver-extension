@@ -19,7 +19,7 @@ function rotl(x, n) {
   return ((x << n) | (x >>> (32 - n))) >>> 0;
 }
 
-// 平台：抖音 — SM3 压缩函数（ABogus 依赖）
+// 平台：抖音 — SM3 压缩函数（ABogus 依赖，TikTokDownloader 风格的修改版 SM3，用于 abogusSum→uaCode）
 function sm3Compress(v, block) {
   const W = new Array(68);
   for (let i = 0; i < 16; i++)
@@ -46,18 +46,13 @@ function sm3Compress(v, block) {
     F = E;
     E = TT2 ^ rotl(TT2, 9) ^ rotl(TT2, 17);
   }
-  v[0] ^= A;
-  v[1] ^= B;
-  v[2] ^= C;
-  v[3] ^= D;
-  v[4] ^= E;
-  v[5] ^= F;
-  v[6] ^= G;
-  v[7] ^= H;
-  for (let i = 0; i < 8; i++) v[i] >>>= 0;
+  v[0] = (v[0] ^ A) >>> 0; v[1] = (v[1] ^ B) >>> 0;
+  v[2] = (v[2] ^ C) >>> 0; v[3] = (v[3] ^ D) >>> 0;
+  v[4] = (v[4] ^ E) >>> 0; v[5] = (v[5] ^ F) >>> 0;
+  v[6] = (v[6] ^ G) >>> 0; v[7] = (v[7] ^ H) >>> 0;
 }
 
-// 平台：抖音 — SM3 哈希（ABogus 依赖）
+// 平台：抖音 — SM3 哈希（ABogus 依赖）；标准 64 字节填充格式（用于 pa/ma 双重哈希，与 TikTokDownloader sm3_to_array→gmssl.sm3_hash 一致）
 function sm3Hash(data) {
   if (typeof data === "string") data = new TextEncoder().encode(data);
   const bits = data.length * 8;
@@ -65,7 +60,8 @@ function sm3Hash(data) {
   const padded = new Uint8Array(padLen);
   padded.set(data);
   padded[data.length] = 0x80;
-  for (let i = 0; i < 8; i++) padded[padLen - 8 + i] = (bits >>> (56 - i * 8)) & 0xff;
+  const dv = new DataView(padded.buffer, padLen - 8, 8);
+  dv.setBigUint64(0, BigInt(bits), false);
   const v = IV.slice();
   for (let off = 0; off < padLen; off += 64) sm3Compress(v, padded.subarray(off, off + 64));
   const out = new Uint8Array(32);
@@ -133,15 +129,21 @@ function rc4Encrypt(plaintext, key) {
 function customB64Encode(str, alphabet) {
   const out = [];
   for (let i = 0; i < str.length; i += 3) {
-    const n = (str.charCodeAt(i) << 16) | (str.charCodeAt(i + 1) << 8) | str.charCodeAt(i + 2);
-    out.push(alphabet[(n >>> 18) & 63], alphabet[(n >>> 12) & 63], alphabet[(n >>> 6) & 63], alphabet[n & 63]);
+    let n;
+    if (i + 2 < str.length) {
+      n = (str.charCodeAt(i) << 16) | (str.charCodeAt(i + 1) << 8) | str.charCodeAt(i + 2);
+    } else if (i + 1 < str.length) {
+      n = (str.charCodeAt(i) << 16) | (str.charCodeAt(i + 1) << 8);
+    } else {
+      n = str.charCodeAt(i) << 16;
+    }
+    for (let j = 18, k = 0xfc0000; j >= 0; j -= 6, k = k >>> 6) {
+      if (j === 6 && i + 1 >= str.length) break;
+      if (j === 0 && i + 2 >= str.length) break;
+      out.push(alphabet[(n & k) >> j]);
+    }
   }
-  const rem = str.length % 3;
-  if (rem === 1) {
-    out.splice(-2, 2, "=", "=");
-  } else if (rem === 2) {
-    out.splice(-1, 1, "=");
-  }
+  out.push("=".repeat((4 - out.length % 4) % 4));
   return out.join("");
 }
 
@@ -171,13 +173,18 @@ function genString1(rand1, rand2, rand3) {
   return String.fromCharCode(a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], c[0], c[1], c[2], c[3]);
 }
 
-// 平台：抖音 — ABogus browserInfo 构造
+// 平台：抖音 — ABogus browserInfo 构造（完整 64 字符，用于注入列表末尾）
 function genBrowserInfo(platform, features = {}) {
   const sw = features.screenWidth || 1536;
   const sh = features.screenHeight || 864;
   const iw = sw, ih = sh - 122;
   const ow = sw, oh = sh;
   return `${iw}|${ih}|${ow}|${oh}|0|0|0|0|${ow}|${oh}|${ow}|${oh}|${iw}|${ih}|24|24|${platform || "Win32"}`;
+}
+
+// 平台：抖音 — ABogus 原始浏览器信息（30 字符，用于 endCheck + RC4 输入）
+function genOriginalBrowser(platform) {
+  return `1536|742|0|0|0|0|0|0|${platform || "Win32"}`;
 }
 
 // 平台：抖音 — ABogus 校验位 endCheck
@@ -204,58 +211,35 @@ export class ABogus {
     return abogusSum(b64);
   }
 
-  // 平台：抖音
-  #genString2(params, method, startTime, endTime, clockSkew = 0) {
-    startTime = startTime || (Date.now() + clockSkew) >>> 0;
-    endTime = endTime || (startTime + 4 + Math.random() * 4) >>> 0;
+  // 平台：抖音 — TikTokDownloader list_4 布局（a=etB3, b=pa[21], c=uaCode[23], d=etB2, e=pa[22], f=uaCode[24], g=etB1, h=etB0, i=stB3, j=stB2, k=stB1, m=stB0, n=ma[21], o=ma[22], p=etH, q=stH, r=browserLen）
+  #genString2List(params, method, startTime, endTime) {
     const pa = sm3ToArray(sm3ToArray(params + END_STRING));
     const ma = sm3ToArray(sm3ToArray(method + END_STRING));
-    const list = [
-      44,
-      Math.floor(endTime / 16777216) % 256,
-      0,
-      0,
-      0,
-      0,
-      24,
-      pa[21],
-      ma[21],
-      0,
-      this.uaCode[23],
-      Math.floor(endTime / 65536) % 256,
-      0,
-      0,
-      0,
-      1,
-      0,
-      239,
-      pa[22],
-      ma[22],
-      this.uaCode[24],
-      Math.floor(endTime / 256) % 256,
-      0,
-      0,
-      0,
-      0,
-      endTime % 256,
-      0,
-      0,
-      14,
-      Math.floor(startTime / 16777216) % 256,
-      Math.floor(startTime / 65536) % 256,
-      0,
-      Math.floor(startTime / 256) % 256,
-      startTime % 256,
-      3,
-      Math.floor(endTime / 4294967296),
-      1,
-      Math.floor(startTime / 4294967296),
-      1,
-      this.browserLen,
-      0,
-      0,
-      0,
+    const etB0 = endTime % 256,
+      etB1 = Math.floor(endTime / 256) % 256,
+      etB2 = Math.floor(endTime / 65536) % 256,
+      etB3 = Math.floor(endTime / 16777216) % 256,
+      etH = Math.floor(endTime / 4294967296);
+    const stB0 = startTime % 256,
+      stB1 = Math.floor(startTime / 256) % 256,
+      stB2 = Math.floor(startTime / 65536) % 256,
+      stB3 = Math.floor(startTime / 16777216) % 256,
+      stH = Math.floor(startTime / 4294967296);
+    return [
+      44, etB3, 0, 0, 0, 0,
+      24, pa[21], ma[21], 0, this.uaCode[23], etB2, 0, 0, 0, 1,
+      0, 239, pa[22], ma[22], this.uaCode[24], etB1, 0, 0, 0, 0,
+      etB0, 0, 0, 14, stB3, stB2, 0, stB1, stB0, 3,
+      etH, 1, stH, 1,
+      this.browserLen, 0, 0, 0,
     ];
+  }
+
+  // 平台：抖音
+  #genString2(params, method, startTime, endTime, clockSkew = 0) {
+    startTime = startTime || (Date.now() + clockSkew);
+    endTime = endTime || (startTime + 4 + Math.random() * 4);
+    const list = this.#genString2List(params, method, startTime, endTime);
     const ec = endCheck(list);
     const all = [...list, ...this.browserCode, ec];
     return rc4Encrypt(String.fromCharCode(...all), "y");
@@ -271,6 +255,58 @@ export class ABogus {
     const s2 = this.#genString2(qs, method, undefined, undefined, clockSkew);
     return customB64Encode(s1 + s2, S4);
   }
+}
+
+// 平台：抖音 — 标准 MD5（UTF-8 字符串 → 32 位小写 hex；Argus x-secsdk-web-signature 依赖）
+export function md5Hex(text) {
+  const bytes = Array.from(new TextEncoder().encode(text));
+  const bitLenHi = Math.floor(bytes.length / 0x20000000);
+  const bitLenLo = (bytes.length << 3) >>> 0;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  for (let i = 0; i < 4; i++) bytes.push((bitLenLo >>> (i * 8)) & 0xff);
+  for (let i = 0; i < 4; i++) bytes.push((bitLenHi >>> (i * 8)) & 0xff);
+
+  const K = new Array(64);
+  for (let i = 0; i < 64; i++) K[i] = (Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
+  const S = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+  ];
+
+  const add = (x, y) => (x + y) | 0;
+  const rotl = (x, n) => (x << n) | (x >>> (32 - n));
+  let a0 = 1732584193, b0 = -271733879, c0 = -1732584194, d0 = 271733878;
+
+  for (let off = 0; off < bytes.length; off += 64) {
+    const M = new Array(16);
+    for (let j = 0; j < 16; j++)
+      M[j] =
+        bytes[off + j * 4] |
+        (bytes[off + j * 4 + 1] << 8) |
+        (bytes[off + j * 4 + 2] << 16) |
+        (bytes[off + j * 4 + 3] << 24);
+    let A = a0, B = b0, C = c0, D = d0;
+    for (let i = 0; i < 64; i++) {
+      let F, g;
+      if (i < 16) { F = (B & C) | (~B & D); g = i; }
+      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) & 15; }
+      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) & 15; }
+      else { F = C ^ (B | ~D); g = (7 * i) & 15; }
+      F = add(add(F, A), add(K[i], M[g]));
+      A = D; D = C; C = B;
+      B = add(B, rotl(F, S[i]));
+    }
+    a0 = add(a0, A); b0 = add(b0, B); c0 = add(c0, C); d0 = add(d0, D);
+  }
+  const hex = (x) => {
+    let s = "";
+    for (let i = 0; i < 4; i++) s += ((x >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
+    return s;
+  };
+  return hex(a0) + hex(b0) + hex(c0) + hex(d0);
 }
 
 // 平台：通用 — Cookie 字符串解析工具
