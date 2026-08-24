@@ -54,6 +54,7 @@ chrome.runtime.onMessage
 | 操作             | 端点                                  | 方法 | 分页参数                                 |
 |------------------|---------------------------------------|------|------------------------------------------|
 | FETCH_FOLLOWING  | `/aweme/v1/web/user/following/list`   | GET  | `offset`, `count`                        |
+| FETCH_FOLLOWING 校准 | `/aweme/v1/web/user/profile/other/`   | GET  | `sec_user_id`（逐用户，无分页）          |
 | FETCH_FAVORITES  | `/aweme/v1/web/aweme/favorite/`       | GET  | `max_cursor`, `count`                    |
 | FETCH_COLLECTION | `/aweme/v1/web/aweme/listcollection/` | POST | `cursor`, `count`                        |
 | 取消点赞         | `/aweme/v1/web/commit/item/digg/`     | POST | body: `aweme_id, item_type=0, type=0`    |

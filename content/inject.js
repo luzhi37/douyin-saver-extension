@@ -2,6 +2,7 @@
   "use strict";
 
   const CONFIG = {
+    URL_BASE: "https://www.douyin.com",
     API_PATTERNS: [
       "/aweme/v1/web/tab/feed",
       "/aweme/v1/web/aweme/post/",
@@ -14,10 +15,12 @@
       "/aweme/v1/web/aweme/related/",
       "/aweme/v1/web/mix/aweme/",
       "/aweme/v1/web/user/following/list",
+      "/aweme/v1/web/user/profile/other/",
       "/aweme/v1/web/aweme/listcollection/",
     ],
     API: {
       FOLLOWING: "/aweme/v1/web/user/following/list",
+      PROFILE_OTHER: "/aweme/v1/web/user/profile/other/",
       POST: "/aweme/v1/web/aweme/post/",
       FAVORITE: "/aweme/v1/web/aweme/favorite/",
       COLLECTION: "/aweme/v1/web/aweme/listcollection/",
@@ -66,6 +69,8 @@
       FETCH_SINGLE_WORK_RESULT: "DY_FETCH_SINGLE_WORK_RESULT",
       FETCH_FOLLOWING_PAGE_REQUEST: "DY_FETCH_FOLLOWING_PAGE_REQUEST",
       FETCH_FOLLOWING_PAGE_RESULT: "DY_FETCH_FOLLOWING_PAGE_RESULT",
+      FETCH_PROFILE_OTHER_REQUEST: "DY_FETCH_PROFILE_OTHER_REQUEST",
+      FETCH_PROFILE_OTHER_RESULT: "DY_FETCH_PROFILE_OTHER_RESULT",
       FETCH_FAVORITES_PAGE_REQUEST: "DY_FETCH_FAVORITES_PAGE_REQUEST",
       FETCH_FAVORITES_PAGE_RESULT: "DY_FETCH_FAVORITES_PAGE_RESULT",
       FETCH_COLLECTION_PAGE_REQUEST: "DY_FETCH_COLLECTION_PAGE_REQUEST",
@@ -82,6 +87,7 @@
   };
 
   let __lastCapturedDetailQuery = null;
+  let __capturedProfileQuery = null;
   let __capturedFollowingQuery = null;
   let __capturedPostQuery = null;
   let __capturedCollectionQuery = null;
@@ -112,6 +118,9 @@
       params.__dyCaptureTime = Date.now();
       if (u.pathname.includes(CONFIG.API.FOLLOWING)) {
         __capturedFollowingQuery = params;
+      }
+      if (u.pathname.includes(CONFIG.API.PROFILE_OTHER)) {
+        __capturedProfileQuery = params;
       }
       if (u.pathname.includes(CONFIG.API.POST)) {
         __capturedPostQuery = params;
@@ -297,75 +306,136 @@
     return url && url.startsWith("http:") ? url.replace("http:", "") : url || "";
   }
 
+  // 与 background.js 同款：从 CDN 直链 query 解析过期时间戳
+  function parseExpire(value) {
+    const n = Number(value);
+    if (!isFinite(n) || n <= 0) return null;
+    if (n > 1e11) return n > 1e13 ? null : n; // 毫秒时间戳
+    if (n > 1e9) return n * 1000; // 秒时间戳
+    if (n <= 86400 * 30) return Date.now() + n * 1000; // 剩余秒数
+    return null;
+  }
+
+  function urlExpireAt(url) {
+    try {
+      const abs = url.startsWith("//") ? "https:" + url : url;
+      const sp = new URL(abs).searchParams;
+      // 键名含 expire（大小写不敏感）的参数优先，兼容 expire/x-expires/expires 等变体
+      for (const key of sp.keys()) {
+        if (/expire/i.test(key)) {
+          const at = parseExpire(sp.get(key));
+          if (at != null) return at;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // 返回 { url, expireAt }。api 源与 background formatWork 同款三级取链：
+  // 长效（各档 playApi）→ 无 playApi 时用最高清档 play_addr.uri 合成 /aweme/v1/play/ 长效链
+  // → CDN url_list 短效直链兜底。长效作为整体类目优先于 CDN，只在同类内部比分辨率；
+  // 不要改回"混池按最高分辨率挑选"——最高清档恰好缺 playApi 时会把短效直链存进库。
   function extractVideo(raw, source) {
     const video = raw.video || {};
     const bitRateList = source === "fiber" ? video.bitRateList || video.bit_rate : video.bit_rate;
 
     if (!Array.isArray(bitRateList) || bitRateList.length === 0) {
-      return normalizeProtocol(video.play_addr?.url_list?.[0] || "");
+      const url = normalizeProtocol(video.play_addr?.url_list?.[0] || "");
+      return { url, expireAt: urlExpireAt(url) || 0 };
     }
 
-    const videoBitRates = [];
+    const rates = [];
     for (const item of bitRateList) {
       const gear = (item.gearName || item.gear_name || "").toLowerCase();
       if (source === "fiber") {
         if (gear.includes("智能") || gear.includes("smart") || gear.includes("adapt")) continue;
       }
       if (item.isH265 || item.is_h265) continue;
+      rates.push(item);
+    }
 
-      const playAddr = item.play_addr || {};
-      const urlList = Array.isArray(playAddr.url_list) ? playAddr.url_list : [];
-      const mainUrl = item.playApi || (source === "fiber" ? "" : urlList.filter(Boolean)[0]) || "";
-      if (!mainUrl) continue;
+    // fiber 分支维持原行为：只认 playApi、无 url_list 回退，按高度排序后仅留一档
+    if (source === "fiber") {
+      const picked = [];
+      for (const item of rates) {
+        if (!item.playApi) continue;
+        const playAddr = item.play_addr || {};
+        picked.push({
+          url: item.playApi,
+          width: playAddr.width || item.width || 0,
+          height: playAddr.height || item.height || 0,
+          fps: item.FPS || 0,
+          dataSize: playAddr.data_size || 0,
+        });
+      }
+      picked.sort((a, b) => (b.height || 0) - (a.height || 0));
+      picked.splice(1);
+      const url = picked.length > 0 ? normalizeProtocol(picked[0].url) : "";
+      return { url, expireAt: urlExpireAt(url) || 0 };
+    }
 
-      videoBitRates.push({
-        url: mainUrl,
-        width: playAddr.width || item.width || 0,
-        height: playAddr.height || item.height || 0,
-        fps: item.FPS || 0,
-        dataSize: playAddr.data_size || 0,
+    const longs = [];
+    for (const item of rates) {
+      const api = String(item.playApi || "");
+      if (!api) continue;
+      const addr = item.play_addr || {};
+      longs.push({
+        url: /^https?:\/\//i.test(api) ? api : CONFIG.URL_BASE + (api.startsWith("/") ? "" : "/") + api,
+        height: addr.height || item.height || 0,
       });
     }
 
-    if (source === "fiber") {
-      videoBitRates.sort((a, b) => (b.height || 0) - (a.height || 0));
-      videoBitRates.splice(1);
+    let url = "";
+    let expireAt = 0;
+    if (longs.length > 0) {
+      // ID 型链接无时效参数，expireAt 保持 0（长效/未知）
+      const maxH = Math.max(...longs.map((c) => c.height));
+      url = (longs.find((c) => c.height === maxH) || longs[0]).url;
     } else {
-      const unique = new Map();
-      for (const item of videoBitRates) {
-        const key = `${item.width}:${item.height}:${item.fps}`;
-        const existing = unique.get(key);
-        if (!existing || (item.dataSize || 0) > (existing.dataSize || 0)) {
-          unique.set(key, item);
-        }
-      }
-      videoBitRates.length = 0;
-      videoBitRates.push(...unique.values());
-      if (videoBitRates.length === 0) {
-        const first = bitRateList[0];
-        if (first && !first.is_h265) {
-          const pa = first.play_addr || {};
-          const ul = Array.isArray(pa.url_list) ? pa.url_list : [];
-          const mu = ul.filter(Boolean)[0] || "";
-          if (mu) {
-            videoBitRates.push({
-              url: mu,
-              width: pa.width || 0,
-              height: pa.height || 0,
-              fps: first.FPS || 0,
-              dataSize: pa.data_size || 0,
-            });
+      const bestBr = rates.reduce(
+        (a, b) => (((b.play_addr || {}).height || 0) > (((a || {}).play_addr || {}).height || 0) ? b : a),
+        null,
+      );
+      const uri =
+        ((bestBr || {}).play_addr || {}).uri ||
+        (video.play_addr && video.play_addr.uri) ||
+        "";
+      if (uri) {
+        url =
+          CONFIG.URL_BASE +
+          "/aweme/v1/play/?video_id=" +
+          encodeURIComponent(uri) +
+          "&aid=6383&is_play_url=1&line=0";
+      } else {
+        // CDN 短效直链兜底：先取最高清档，档内比较 expireAt 取最长者
+        const cands = [];
+        for (const item of rates) {
+          const addr = item.play_addr || {};
+          const h = addr.height || item.height || 0;
+          for (const u of Array.isArray(addr.url_list) ? addr.url_list : []) {
+            if (u) cands.push({ url: u, height: h, expireAt: urlExpireAt(u) });
           }
         }
+        if (cands.length === 0) {
+          for (const u of (video.play_addr && video.play_addr.url_list) || []) {
+            if (u) cands.push({ url: u, height: 0, expireAt: urlExpireAt(u) });
+          }
+        }
+        if (cands.length > 0) {
+          const maxH = Math.max(...cands.map((c) => c.height));
+          const top = cands.filter((c) => c.height === maxH);
+          let best = top[0];
+          for (const c of top) {
+            if (c.expireAt != null && (best.expireAt == null || c.expireAt > best.expireAt)) best = c;
+          }
+          url = best.url;
+          expireAt = best.expireAt || 0;
+        }
       }
     }
-
-    if (videoBitRates.length > 0) {
-      const best = videoBitRates.reduce((a, b) => ((a.height || 0) >= (b.height || 0) ? a : b));
-      return normalizeProtocol(best.url);
-    }
-
-    return "";
+    return { url: normalizeProtocol(url), expireAt };
   }
 
   function extractCover(raw) {
@@ -411,6 +481,7 @@
 
     const author = extractAuthor(raw);
     const isNote = (raw.awemeType || raw.aweme_type) === CONFIG.AWEME_TYPE_NOTE;
+    const vid = extractVideo(raw, source);
 
     return {
       awemeId,
@@ -420,7 +491,8 @@
       uid: String(author.uid || ""),
       authorHomeUrl: buildAuthorHomeUrl(author),
       cover: extractCover(raw),
-      video: extractVideo(raw, source),
+      video: vid.url,
+      videoExpireAt: vid.expireAt || 0,
       images: extractImages(raw),
       music: extractMusic(raw),
       createTime: raw.create_time || 0,
@@ -696,6 +768,44 @@
     }
   }
 
+  async function fetchProfileOther(secUid, externalSignal) {
+    const sigSource =
+      __capturedProfileQuery || __capturedFollowingQuery || __capturedPostQuery || __capturedFavoriteQuery || __capturedCollectionQuery;
+    const url = buildUrl(
+      CONFIG.API.PROFILE_OTHER,
+      Object.assign({}, CONFIG.DEVICE_PARAMS, {
+        sec_user_id: secUid,
+      }),
+    );
+    const merged = mergeParams(url, stripPageKeys(sigSource));
+    const controller = new AbortController();
+    // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else
+        externalSignal.addEventListener("abort", () => controller.abort(), {
+          once: true,
+        });
+    }
+    const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
+    try {
+      const resp = await window.fetch(merged.toString(), {
+        credentials: "include",
+        headers: { Referer: window.location.origin + "/" },
+        method: "GET",
+        signal: controller.signal,
+        _dyInternal: true,
+      });
+      clearTimeout(tid);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return await resp.json();
+    } catch (e) {
+      clearTimeout(tid);
+      throw e;
+    }
+  }
+
   // ===== 作者作品拉取 (tools 移植, 侧边栏用) =====
 
   async function fetchAuthorWorks(secUid, startCursor, count) {
@@ -895,7 +1005,9 @@
         uid: String(item.uid || ""),
         nickname: item.nickname || "未知",
         avatarLarger: (item.avatar_larger && item.avatar_larger.url_list && item.avatar_larger.url_list[0]) || "",
-        followerCount: item.follower_count || 0,
+        // 粉丝/作品数不再取自关注列表（滞后快照），字段占位为 0，仅由 profile/other 校准写入
+        followerCount: 0,
+        awemeCount: 0,
         profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
       }));
       const hasMore = data.has_more === true || data.has_more === 1;
@@ -914,6 +1026,47 @@
     } catch (e) {
       document.dispatchEvent(
         new CustomEvent(CONFIG.EVENTS.FETCH_FOLLOWING_PAGE_RESULT, {
+          detail: { requestId, ok: false, error: e.message },
+        }),
+      );
+    } finally {
+      setActiveTask(null);
+    }
+  });
+
+  document.addEventListener(CONFIG.EVENTS.FETCH_PROFILE_OTHER_REQUEST, async (event) => {
+    const { requestId, secUid } = event.detail || {};
+    if (!requestId || !secUid) return;
+    const sigSource =
+      __capturedProfileQuery || __capturedFollowingQuery || __capturedPostQuery || __capturedFavoriteQuery || __capturedCollectionQuery;
+    if (!sigSource) {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_PROFILE_OTHER_RESULT, {
+          detail: { requestId, ok: false, error: "NO_SIGNATURE" },
+        }),
+      );
+      return;
+    }
+    const controller = new AbortController();
+    setActiveTask(() => controller.abort());
+    try {
+      const data = await fetchProfileOther(secUid, controller.signal);
+      if (data.status_code !== undefined && data.status_code !== 0)
+        throw new Error("API_ERROR: status_code=" + data.status_code);
+      const user = data.user || {};
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_PROFILE_OTHER_RESULT, {
+          detail: {
+            requestId,
+            ok: true,
+            awemeCount: user.aweme_count || 0,
+            followerCount: user.follower_count || 0,
+          },
+        }),
+      );
+    } catch (e) {
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.FETCH_PROFILE_OTHER_RESULT, {
           detail: { requestId, ok: false, error: e.message },
         }),
       );

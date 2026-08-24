@@ -222,6 +222,7 @@ const CONFIG = {
   AWEME_TYPE_NOTE: 68,
   API: {
     FOLLOWING: "/aweme/v1/web/user/following/list",
+    PROFILE_OTHER: "/aweme/v1/web/user/profile/other/",
     COLLECTION: "/aweme/v1/web/aweme/listcollection/",
     DETAIL: "/aweme/v1/web/aweme/detail/",
     POST: "/aweme/v1/web/aweme/post/",
@@ -271,6 +272,7 @@ const RUNTIME_CONFIG_DEFAULTS = {
   syncBatchPauseMax: 20000,
   syncKeepaliveInterval: 2000,
   syncRetryMax: 2,
+  calibrateFollowings: true,
 };
 
 function getDelayRange(type) {
@@ -298,6 +300,7 @@ async function reloadRuntimeConfig() {
     CONFIG.SYNC.BATCH_PAUSE_MAX = RUNTIME_CONFIG_DEFAULTS.syncBatchPauseMax;
     CONFIG.SYNC.KEEPALIVE_INTERVAL = RUNTIME_CONFIG_DEFAULTS.syncKeepaliveInterval;
     CONFIG.SYNC.RETRY_MAX = RUNTIME_CONFIG_DEFAULTS.syncRetryMax;
+    _calibrateFollowings = RUNTIME_CONFIG_DEFAULTS.calibrateFollowings;
     return;
   }
   CONFIG.TIMEOUT.REQUEST = cfg.timeoutRequest ?? CONFIG.TIMEOUT.REQUEST;
@@ -313,6 +316,7 @@ async function reloadRuntimeConfig() {
   CONFIG.SYNC.BATCH_PAUSE_MAX = cfg.syncBatchPauseMax ?? CONFIG.SYNC.BATCH_PAUSE_MAX;
   CONFIG.SYNC.KEEPALIVE_INTERVAL = cfg.syncKeepaliveInterval ?? CONFIG.SYNC.KEEPALIVE_INTERVAL;
   CONFIG.SYNC.RETRY_MAX = cfg.syncRetryMax ?? CONFIG.SYNC.RETRY_MAX;
+  _calibrateFollowings = cfg.calibrateFollowings ?? true;
 }
 
 // ---------- 模块级常量 ----------
@@ -321,6 +325,7 @@ let cachedClockSkew = 0;
 let clockSkewTime = 0;
 let _independentMode = false;
 let _independentModeLoaded = false;
+let _calibrateFollowings = true;
 
 const DOMAIN_CONFIG = {
   [CONFIG.STORAGE_KEYS.WORKS]: {
@@ -851,7 +856,9 @@ function formatFollowing(item) {
     uid: String(item.uid || ""),
     nickname: item.nickname || "未知",
     avatarLarger: ((item.avatar_larger && item.avatar_larger.url_list) || [])[0] || "",
-    followerCount: item.follower_count || 0,
+    // 粉丝/作品数不再取自关注列表（滞后快照），字段占位为 0，仅由 profile/other 校准写入
+    followerCount: 0,
+    awemeCount: 0,
     profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
   };
 }
@@ -916,6 +923,24 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
         await new Promise((r) =>
           setTimeout(r, getDelayRange("syncFollowings").MIN + Math.random() * (getDelayRange("syncFollowings").MAX - getDelayRange("syncFollowings").MIN)),
         );
+    }
+    if (!cancelled && all.length > 0 && _calibrateFollowings) {
+      await calibrateFollowingStats(
+        all,
+        async (secUid) => {
+          const data = await independentRequest(
+            CONFIG.API.PROFILE_OTHER,
+            await buildBaseParams({ sec_user_id: secUid }),
+          );
+          if (!data.user) throw new Error("PROFILE_FETCH_FAILED");
+          return {
+            awemeCount: data.user.aweme_count || 0,
+            followerCount: data.user.follower_count || 0,
+          };
+        },
+        () => cancelled,
+        requestId,
+      );
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
     sendResponse({ ok: true, requestId, followings: all, total: all.length });
@@ -1429,6 +1454,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (im) return handleIndependentFetchFollowing(message.secUid, sendResponse);
         return handleFetchFollowing(message.secUid, sendResponse);
       }, sendResponse);
+    case "CALIBRATE_FOLLOWING":
+      return asyncHandler(() => handleCalibrateFollowing(message.uid, message.secUid, sendResponse), sendResponse);
     case "FETCH_FAVORITES":
       return asyncHandler(async () => {
         return handleFetchFavorites(message.secUid, sendResponse);
@@ -1599,6 +1626,77 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // ---------- 分页抓取 Handler ----------
 
+// 关注列表接口返回的 aweme_count/follower_count 是滞后快照值（与主页展示差异大），
+// 列表收集完成后逐用户请求 user/profile/other 用权威计数覆盖。
+// fetchStats(secUid) 由调用方按模式提供（tab 转发 / 独立直连）；单条失败静默跳过保留旧值。
+async function calibrateFollowingStats(list, fetchStats, isCancelled, requestId) {
+  let processed = 0;
+  for (const entry of list) {
+    if (isCancelled()) break;
+    processed += 1;
+    const m = String(entry.profileUrl || "").match(/\/user\/([^/?#]+)/);
+    if (m && m[1]) {
+      try {
+        const stats = await fetchStats(m[1]);
+        entry.awemeCount = stats.awemeCount;
+        entry.followerCount = stats.followerCount;
+      } catch (_e) {}
+    }
+    chrome.runtime
+      .sendMessage({
+        type: "FOLLOWING_PROGRESS",
+        phase: "calibrate",
+        collected: processed,
+        total: list.length,
+        hasMore: false,
+        requestId,
+      })
+      .catch(() => {});
+    if (!isCancelled()) {
+      const d = getDelayRange("syncFollowings");
+      const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
+// 单用户校准：打开侧边栏时触发（不受 calibrateFollowings 开关门控），取 profile/other
+// 权威计数后直接落库；options 端据返回值更新 state 与可见卡片
+async function handleCalibrateFollowing(uid, secUid, sendResponse) {
+  try {
+    if (!uid || !secUid) return sendResponse({ ok: false, error: "BAD_PARAMS" });
+    let stats;
+    if (await loadIndependentMode()) {
+      await ensureABogus();
+      const data = await independentRequest(
+        CONFIG.API.PROFILE_OTHER,
+        await buildBaseParams({ sec_user_id: secUid }),
+      );
+      if (!data.user) throw new Error("PROFILE_FETCH_FAILED");
+      stats = {
+        awemeCount: data.user.aweme_count || 0,
+        followerCount: data.user.follower_count || 0,
+      };
+    } else {
+      const resp = await sendToTabAsync("FETCH_USER_PROFILE", {
+        secUid,
+        timeout: CONFIG.TIMEOUT.REQUEST,
+      });
+      if (!resp?.ok) throw new Error(resp?.error || "PROFILE_FETCH_FAILED");
+      stats = { awemeCount: resp.awemeCount, followerCount: resp.followerCount };
+    }
+    const ds = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+    const record = await ds.get(String(uid));
+    if (!record) return sendResponse({ ok: false, error: "NOT_FOUND" });
+    record.awemeCount = stats.awemeCount;
+    record.followerCount = stats.followerCount;
+    await ds.putBatch([record]);
+    sendResponse({ ok: true, ...stats });
+  } catch (err) {
+    sendResponse({ ok: false, error: err.message });
+  }
+}
+
 async function handleFetchFollowing(secUid, sendResponse) {
   try {
     const requestId = crypto.randomUUID();
@@ -1644,6 +1742,21 @@ async function handleFetchFollowing(secUid, sendResponse) {
         const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
         await new Promise((r) => setTimeout(r, delay));
       }
+    }
+    if (!cancelled && all.length > 0 && _calibrateFollowings) {
+      await calibrateFollowingStats(
+        all,
+        async (secUid) => {
+          const resp = await sendToTabAsync("FETCH_USER_PROFILE", {
+            secUid,
+            timeout: CONFIG.TIMEOUT.REQUEST,
+          });
+          if (!resp?.ok) throw new Error(resp?.error || "PROFILE_FETCH_FAILED");
+          return resp;
+        },
+        () => cancelled,
+        requestId,
+      );
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
     if (!cancelled && all.length === 0 && lastError) {
@@ -1945,6 +2058,9 @@ async function handleSaveFollowings(followings, sendResponse, isImport = false) 
       const old = stored[uid];
       stored[uid] = {
         ...f,
+        // 计数仅由校准更新：常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
+        followerCount: f.followerCount > 0 ? f.followerCount : old?.followerCount || 0,
+        awemeCount: f.awemeCount > 0 ? f.awemeCount : old?.awemeCount || 0,
         uid,
         groupId: isImport
           ? f.groupId || CONFIG.GROUPS.DEFAULT_ID
