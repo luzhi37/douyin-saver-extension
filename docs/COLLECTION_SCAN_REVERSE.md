@@ -4,7 +4,8 @@
 > 三层签名各自管什么、403 攻坚的每一步是怎么想的、以及复发时怎么再抓。
 > 侧重**方法论**——下次遇到同类防线时照此复用。
 > 速查类内容：算法定案见本文第十节与 [INDEPENDENT_MODE.md](./INDEPENDENT_MODE.md)；
-> 所有实验脚本保留在 `tmp/`，文中文件名均可直接检索。
+> 本文自洽：当时的实验脚本已随 `tmp/` 临时目录清理删除（2026-08-24），
+> 可复用的工具片段已内联进正文，附录仅作实验编号体系的历史索引。
 
 ---
 
@@ -127,14 +128,35 @@ Referer: https://www.douyin.com/user/self?showTab=favorite_collection
 
 DevTools Sources 全局搜 `x-secsdk-web-signature` / `webSign`：全站几十个 bundle
 只有 secsdk 的打包 chunk（`runtime_bundler` 族）命中。业务代码不碰这个头，
-生成者必然在 secsdk 内部。下载对应 chunk 存档（`tmp/secsdk_runtime_bundler_34.js`）
-供离线分析。
+生成者必然在 secsdk 内部。把对应 chunk 存到本地供离线分析。
 
 ### 6.2 hook XMLHttpRequest 抓调用栈
 
 secsdk 包装了 `XMLHttpRequest.prototype.open`，任何 XHR 的 `new Error().stack`
-都会经过它的包装层。用 Playwright 注入 init script（`tmp/pw_xhr_stack.js`）：
-包一层 `open`，凡 URL 含 `listcollection` 就记录栈与"URL 是否已带签名"。
+都会经过它的包装层。用 Playwright `addInitScript` 在页面加载前包一层 `open`，
+凡 URL 命中目标端点就记录调用栈与「URL 是否已带签名」：
+
+```js
+// 当时脚本 pw_xhr_stack.js 的内核，复发时照此重新落盘即可
+async page => {
+  await page.addInitScript(() => {
+    const OXO = XMLHttpRequest.prototype.open;
+    window.__xhrStacks = [];
+    XMLHttpRequest.prototype.open = function (m, u) {
+      try {
+        const us = String(u);
+        if (/listcollection/.test(us) && window.__xhrStacks.length < 4)
+          window.__xhrStacks.push({
+            hasSig: /x-secsdk-web-signature/.test(us),
+            stack: String(new Error().stack || "").slice(0, 4500),
+          });
+      } catch (_) {}
+      return OXO.apply(this, arguments);
+    };
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+}
+```
 
 栈中出现 `executeXHRRequestOpen` 帧（bundle 第 17 行附近，minified 单行）：
 它在放行真正的 `open()` 前按策略开关分支，其中 `"webSign"` 字符串分支负责取签名
@@ -145,7 +167,7 @@ secsdk 包装了 `XMLHttpRequest.prototype.open`，任何 XHR 的 `new Error().s
 
 ### 7a 黑盒爆破先行（未中，但失败本身有价值）
 
-`tmp/crack_sig.mjs`：4 组页面真实样本 × 参数删减组合（raw/去sig/去ts/去uifid/
+写一个爆破脚本跑组合矩阵：4 组页面真实样本 × 参数删减组合（raw/去sig/去ts/去uifid/
 仅业务参数）× 拼接形态（裸串/path+?/?前缀）× 编码（原始/decode）× ts 参与方式
 （不参与/前置/后置/`&timestamp=`），数百组合全部 MD5 对比目标 sig，无一命中。
 
@@ -156,9 +178,18 @@ secsdk 包装了 `XMLHttpRequest.prototype.open`，任何 XHR 的 `new Error().s
 
 两条腿并行：
 
-- **VM 复现**：node 起 sandbox 加载 secsdk chunk（`vm_sign_test.mjs` +
-  `sdk_glue.js` 补 DOM 桩），直接调 `frontierSign` 观察输入输出行为；
-- **hook 加密原语**（决定性一步）：在页面上下文包一层 `CryptoJS.MD5` 打印入参，
+- **VM 复现**：node 起 sandbox 加载 SDK 存档，补最小 DOM/Cookie 桩并把 `Date`
+  固定到样本时刻，直接调 `frontierSign` 观察输入输出行为；
+- **hook 加密原语**（决定性一步）：在页面上下文包一层 `CryptoJS.MD5` 打印入参：
+
+  ```js
+  const __origMD5 = CryptoJS.MD5.bind(CryptoJS);
+  CryptoJS.MD5 = (msg, ...rest) => {
+    console.log("[md5]", String(msg));
+    return __origMD5(msg, ...rest);
+  };
+  ```
+
   立刻拿到待签明文原文，与该请求自己的 URL 逐段比对，公式与盐同时出土。
 
 > 教学点：6.2 和 7b 是固定搭档。栈告诉你去哪下钩子；钩住加密原语打印明文，
@@ -179,7 +210,7 @@ sig = md5( uifid + "_" + ts + "_" + 盐 + "_" + qs' )
 
 公式对了还不算完——服务端到底验哪些东西？以一份已知 200 的完整样本为基准
 （R13，页面形态重放，落在边缘域名 `www-hj.douyin.com` 上也照常通过，说明
-主机不是变量），逐项篡改后重放（`tmp/test_sig_binding.mjs`）：
+主机不是变量），对 URL 逐项做单参数增删改后用同一 Cookie 重放：
 
 | 变体 | 改动 | 结果 | 结论 |
 |---|---|---|---|
@@ -207,8 +238,8 @@ sig = md5( uifid + "_" + ts + "_" + 盐 + "_" + qs' )
 ### 9.1 实现
 
 - `background/crypto.js` 新增纯 JS `md5Hex()`（SW 里不能引 node crypto）；
-  用页面 hook 抓到的 `(明文, 摘要)` 对照对（`tmp/md5_pair.json` +
-  `md5_check.mjs`）逐字节验证移植正确性；
+  用页面 hook 抓到的 `(明文, 摘要)` 对照对（明文形如
+  `<uifid>_<ts>_<盐>_<qs'>`，约 716 字符）逐字节验证移植正确性；
 - `CONFIG.WEB_SIGN_SALT` 入配置（注释写明盐变更风险）;
 - `independentRequest` 增加 `options.webSign` 分支：
   - 待签串必须是**最终发送的完整 query 去掉 sig 自身**，键顺序一致——
@@ -220,8 +251,8 @@ sig = md5( uifid + "_" + ts + "_" + 盐 + "_" + qs' )
 
 ### 9.2 验证
 
-完整复刻扩展构造路径做端到端预演：`tmp/test_ext_e2e.mjs`（cursor=0）、
-`tmp/test_ext_e2e_p2.mjs`（cursor=20）均 **HTTP 200**，aweme_list 与翻页游标正常。
+脱离扩展环境、按与 `independentRequest` 相同的构造路径独立组包预演两页
+（cursor=0 与 cursor=20）均 **HTTP 200**，aweme_list 与翻页游标正常。
 
 ### 9.3 参考项目的边界
 
@@ -270,12 +301,16 @@ SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"              # CONFIG.WEB_SIGN_SALT
 - 绑定域实验（基于已知 200 样本逐项篡改重放）摸清服务端校验语义；
 - 移植先用 `(明文,摘要)` 对照对验证实现，再做服务端端到端（含翻页）；
 - 参考项目能抄的是架构与线格式，新防线（如本次 webSign）通常要自己逆；
-- 每步落盘成 tmp 脚本：既是证据链，也是复发时的工具箱。
+- 每步落盘成独立小脚本：既是证据链，也是复发时的工具箱（本次脚本已随临时目录清理删除，可复用的钩子片段已内联本文 6.2 与 7b）。
 
-## 附录：实验编号与证据文件索引（tmp/）
+## 附录：实验编号体系与脚本清单（历史索引）
 
 实验编号体系：**R 系列**=端点行为探索（参数集/形态矩阵），**U 系列**=VM 调
 frontierSign 的 URL 形态变体，**V 系列**=绑定域篡改重放。
+
+下列实验脚本原存于 `tmp/`，2026-08-24 已随临时目录清理删除，文件名仅作过程
+存档。复发时需要重新落盘的最小集合就是正文内联的两段钩子（6.2 抓 XHR 栈、
+7b 抓 MD5 明文），其余脚本按需照方法论重写即可。
 
 | 文件 | 内容 |
 |---|---|

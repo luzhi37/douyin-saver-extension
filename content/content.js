@@ -87,6 +87,12 @@
       timeout: (msg) => msg.timeout,
       detail: (msg) => ({ secUid: msg.secUid, offset: msg.offset || 0, count: msg.count }),
     },
+    FETCH_USER_PROFILE: {
+      req: "DY_FETCH_PROFILE_OTHER_REQUEST",
+      res: "DY_FETCH_PROFILE_OTHER_RESULT",
+      timeout: (msg) => msg.timeout,
+      detail: (msg) => ({ secUid: msg.secUid }),
+    },
     FETCH_WORKS_PAGE: {
       req: "DY_FETCH_WORKS_REQUEST",
       res: "DY_FETCH_WORKS_RESULT",

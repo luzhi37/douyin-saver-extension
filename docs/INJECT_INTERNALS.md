@@ -6,13 +6,13 @@
 
 ### transformAwemeItem
 
-输入为 API 返回的 `aweme_list` 中单个 item，委托给 `normalizeWork(aw, "api")` 提取核心字段（`awemeId`, `type`, `desc`, `nickname/uid/authorHomeUrl`, `cover`, `video`, `images`, `music`, `createTime`, `statistics`）。`includeAuthorFollowed` 选项通过 `extractAuthorFollowed` 读取 `author.follow_status` 判断作者是否被关注。
+输入为 API 返回的 `aweme_list` 中单个 item，委托给 `normalizeWork(aw, "api")` 提取核心字段（`awemeId`, `type`, `desc`, `nickname/uid/authorHomeUrl`, `cover`, `video`, `videoExpireAt`, `images`, `music`, `createTime`, `statistics`）。`includeAuthorFollowed` 选项通过 `extractAuthorFollowed` 读取 `author.follow_status` 判断作者是否被关注。
 
 ### extractWorkFromRaw
 
 薄包装，委托给 `normalizeWork(awemeData, source)`，根据 `source` 选择码率提取逻辑：
 - `"fiber"`（React Fiber 注入按钮）：码率字段 `video.bitRateList`（驼峰），按分辨率降序，排除 `gearName` 含 `adapt` 的档位
-- `"api"`（API 响应）：码率字段 `video.bit_rate`（下划线），按 `height` 取最高分辨率，同分辨率取最大 `dataSize`
+- `"api"`（API 响应）：码率字段 `video.bit_rate`（下划线），与 background `formatWork` 同款三级取链（长效 playApi → uri 合成 → CDN 短效兜底，详见 [SYNC_AND_SCAN.md](./SYNC_AND_SCAN.md) 视频直链时效一节），并解析 CDN 链接 `expire` 参数产出 `videoExpireAt`
 
 ### React Fiber 遍历
 

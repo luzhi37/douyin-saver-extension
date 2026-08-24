@@ -456,35 +456,23 @@ body.domain-works #sidebarResizeHandle {
   opacity: 0.3;
 }
 
-.work-card::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  background: linear-gradient(135deg, transparent 40%, rgba(254, 44, 85, 0.08), transparent 60%);
-  opacity: 0;
-  transition: opacity 0.4s ease;
-  pointer-events: none;
-  z-index: 0;
-}
-
 .work-card:hover {
   transform: translateY(-4px) scale(1.02);
-  box-shadow:
-    0 16px 40px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(254, 44, 85, 0.25);
   border-color: rgba(254, 44, 85, 0.45);
-}
-
-.work-card:hover::after {
-  opacity: 1;
 }
 
 .work-media {
   position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
-  background: #1a1a1a;
+  /* 封面未就绪时的占位底：中性渐变，避免"死灰板"被误读为加载失败 */
+  background: linear-gradient(135deg, var(--dy-surface-elevated), #1e1f28);
+}
+
+/* 媒体就绪前透明（探针成功提交时移除类），经 .work-thumb 自身 transition 淡入 */
+.work-thumb.media-loading,
+.following-avatar.media-loading {
+  opacity: 0;
 }
 
 .work-type-badge {
@@ -533,17 +521,7 @@ body.domain-works #sidebarResizeHandle {
   background: var(--dy-primary);
   border-color: var(--dy-primary);
   color: #fff;
-  box-shadow: 0 0 0 0 rgba(254, 44, 85, 0.6);
-  animation: checkBounce 0.25s var(--dy-ease-spring), checkboxPulse 1.5s ease-in-out 0.25s infinite;
-}
-
-@keyframes checkboxPulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(254, 44, 85, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 6px rgba(254, 44, 85, 0);
-  }
+  animation: checkBounce 0.25s var(--dy-ease-spring);
 }
 
 .following-checkbox {
@@ -579,19 +557,12 @@ body.domain-works #sidebarResizeHandle {
 .work-thumb {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* div+background-image：裂图无载体；size/position 作用于内联背景图层 */
+  background-size: cover;
+  background-position: center;
   display: block;
+  /* 淡入由 .media-loading 类在探针成功后移除触发，不再用插入即播的 thumbFadeIn */
   transition: transform 0.3s ease, opacity 0.3s ease;
-  animation: thumbFadeIn 0.35s ease both;
-}
-
-@keyframes thumbFadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 .work-card:hover .work-thumb {
@@ -746,8 +717,8 @@ body.domain-works #sidebarResizeHandle {
 /* ===== 关注者卡片 ===== */
 .following-card {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   padding: 12px 16px;
   min-width: 0;
   background: var(--dy-surface);
@@ -756,13 +727,15 @@ body.domain-works #sidebarResizeHandle {
   cursor: pointer;
   position: relative;
   transition: background var(--dy-transition), border-color var(--dy-transition), transform var(--dy-transition), box-shadow var(--dy-transition);
+  /* 视口外的卡片跳过渲染：骨架 shimmer 动画若不由此隔离，几千行的无限动画会把 Layerize/样式重算拖垮 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 102px;
 }
 
 .following-card:hover {
   background: var(--dy-surface-hover);
   border-color: rgba(254, 44, 85, 0.25);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .following-card.sidebar-active {
@@ -774,21 +747,46 @@ body.domain-works #sidebarResizeHandle {
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  object-fit: cover;
   flex-shrink: 0;
   cursor: pointer;
+  /* 加载中/失败的占位底，与骨架占位同色系；头像本体是 div+background-image（见 options.html 模板注释） */
+  background: var(--dy-surface-elevated);
+  background-size: cover;
+  background-position: center;
+  transition: opacity 0.3s ease;
+}
+
+/* 头像加载失败或无头像时的昵称首字占位圆，占据 img 原槽位 */
+.following-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  cursor: pointer;
+  background: var(--dy-surface-elevated);
+  color: var(--dy-text-secondary);
+  font-size: 18px;
+  user-select: none;
 }
 
 .following-avatar:hover {
   opacity: 0.85;
 }
 
-.following-info {
-  flex: 1;
-  min-width: 0;
+/* .hidden 定义于文件前部，同特异性下会被上面的 display:flex 覆盖，须成对声明 */
+.following-avatar-fallback.hidden {
+  display: none;
+}
+
+/* 上块：头像+昵称并排，头像高度即两行文本高 */
+.following-main {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .following-nickname {
@@ -802,67 +800,51 @@ body.domain-works #sidebarResizeHandle {
   white-space: nowrap;
 }
 
+/* 下行独占一行：粉丝数、作品数并排靠左 */
 .following-stats {
-  flex-shrink: 0;
-  width: 90px;
-  text-align: right;
-  font-size: 15px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.35;
   color: var(--dy-text-secondary);
   white-space: nowrap;
 }
 
-body.sidebar-open .following-stats {
-  display: none;
-}
-
-.following-skeleton {
-  background: var(--dy-surface);
-}
-
-.following-skeleton-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  position: relative;
-  overflow: hidden;
-  flex-shrink: 0;
+/* 骨架态与完整卡共享同一 DOM 结构（填充/降级只切换类名，不换根节点，
+   否则 grid 容器会全量重排）；仅以 .following-skeleton 覆盖占位样式，
+   shimmer 用卡片级单个 ::after，避免每卡多个无限动画 */
+.following-skeleton .following-avatar {
   background: var(--dy-surface-elevated);
 }
 
-.following-skeleton-avatar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
-  animation: shimmer 1.2s ease-in-out infinite;
-}
-
-.following-skeleton-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.following-skeleton-line {
+.following-skeleton .following-nickname {
   height: 14px;
   border-radius: 4px;
-  position: relative;
-  overflow: hidden;
   background: var(--dy-surface-elevated);
 }
 
-.following-skeleton-line::after {
+.following-skeleton .stat-followers,
+.following-skeleton .stat-works {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--dy-surface-elevated);
+}
+
+.following-skeleton .stat-followers {
+  width: 64px;
+}
+
+.following-skeleton .stat-works {
+  width: 48px;
+}
+
+.following-skeleton::after {
   content: '';
   position: absolute;
   inset: 0;
   background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
   animation: shimmer 1.2s ease-in-out infinite;
-}
-
-.following-skeleton-line.short {
-  width: 60%;
 }
 
 /* ===== 侧边栏 ===== */
@@ -906,14 +888,18 @@ body.sidebar-open .following-stats {
   overflow: hidden;
   cursor: pointer;
   background: var(--dy-surface);
-  content-visibility: auto;
-  contain-intrinsic-size: 280px;
+  /* 不用 content-visibility:auto：媒体生命周期由 Sidebar 的显式升降级（IntersectionObserver）
+     管理，降级后子树本就为空；CV 的相关状态切换在滚动期每帧触发 Layerize 抖动，
+     实测占风暴期 CPU 约三成 */
 }
 
 .sidebar-work-cover {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* div+background-image：裂图无载体；探针成功才提交背景图层 */
+  background: var(--dy-surface-elevated);
+  background-size: cover;
+  background-position: center;
 }
 
 .sidebar-work-cover-placeholder {
@@ -1385,7 +1371,9 @@ body.sidebar-open .following-stats {
 .fav-work-thumb {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* div+background-image：裂图无载体；失败时露出 .fav-work-item 底色 */
+  background-size: cover;
+  background-position: center;
 }
 
 /* ===== 同步弹窗 ===== */
@@ -1624,12 +1612,6 @@ body.sidebar-open .following-stats {
   font-size: 14px;
 }
 
-.img-placeholder {
-  background: #2a2a2a;
-  font-size: 32px;
-  color: #555;
-}
-
 .dy-text-danger {
   color: var(--dy-danger);
 }
@@ -1860,28 +1842,6 @@ body.sidebar-open .following-stats {
   line-height: 1.5;
 }
 
-.config-hint {
-  font-size: 12px;
-  margin: 0;
-  line-height: 1.5;
-}
-.config-hint-err { color: #f87171; }
-.config-hint-ok { color: #4ade80; }
-
-.config-footer-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex: 1;
-}
-
-.config-footer-row .config-hint {
-  flex: 1;
-  margin: 0;
-  text-align: left;
-}
-
 /* Cookie 状态 */
 .cookie-status {
   font-size: 12px;
@@ -1914,23 +1874,9 @@ body.sidebar-open .following-stats {
   font-size: 12px;
 }
 
-.cookie-table th {
-  padding: 6px 8px;
-  text-align: left;
-  font-weight: 600;
-  color: var(--dy-text);
-  background: var(--dy-surface-elevated);
-  border-bottom: 1px solid var(--dy-border);
-  user-select: none;
-}
-
-.cookie-table th:first-child {
-  border-radius: 6px 0 0 0;
-}
-
-.cookie-table th:last-child {
-  border-radius: 0 6px 0 0;
-  border-left: 1px solid var(--dy-border-light);
+/* 无表头：键列宽度由 colgroup 锚定 */
+.cookie-key-col {
+  width: 180px;
 }
 
 .cookie-table td {
@@ -1945,41 +1891,6 @@ body.sidebar-open .following-stats {
 
 .cookie-table tbody tr:nth-child(even) td {
   background: var(--dy-surface);
-}
-
-.cookie-th-key {
-  width: 180px;
-  position: relative;
-}
-
-.cookie-th-val {
-  border-left: 1px solid var(--dy-border-light);
-}
-
-.cookie-resize-handle {
-  position: absolute;
-  top: 0;
-  right: -3px;
-  width: 7px;
-  height: 100%;
-  cursor: col-resize;
-  z-index: 1;
-}
-
-.cookie-resize-handle::after {
-  content: "";
-  position: absolute;
-  top: 25%;
-  right: 3px;
-  height: 50%;
-  width: 1px;
-  background: var(--dy-border);
-}
-
-.cookie-resize-handle:hover::after,
-.cookie-resize-handle.active::after {
-  background: var(--dy-primary);
-  width: 2px;
 }
 
 .cookie-key {
