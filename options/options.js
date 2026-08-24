@@ -40,6 +40,7 @@ const config = {
   // 分块渲染
   RENDER_CHUNK_SIZE: 50,
   OBSERVER_ROOT_MARGIN: "200px",
+  OBSERVE_CHUNK_SIZE: 48,
   FILL_FRAME_BUDGET_MS: 8,
   UNLOAD_ROOT_MARGIN: "1200px",
 
@@ -212,10 +213,6 @@ const utils = {
     if (n >= 1000) return (n / 1000).toFixed(1) + "k";
     return String(n);
   },
-  setImagePlaceholder(el, emoji) {
-    el.classList.add("img-placeholder");
-    el.alt = emoji;
-  },
   getVideoUrl(work) {
     return this.pickHttpsUrl(work?.video || "");
   },
@@ -263,6 +260,7 @@ const runtimeConfig = {
     syncBatchPauseMax: 20000,
     syncKeepaliveInterval: 2000,
     syncRetryMax: 2,
+    calibrateFollowings: true,
   },
   _cache: null,
   async load() {
@@ -411,8 +409,11 @@ class VirtualGrid {
   #unloadObserver = null;
   #fillQueue = [];
   #drainRafId = 0;
+  #pendingSkeletons = [];
+  #sentinelCard = null;
   #itemMap = new Map();
   #chunkRaf = 0;
+  #scrollRafId = 0;
   #boundClickHandler = null;
   #container = null;
   #skeletonClass = "";
@@ -432,11 +433,18 @@ class VirtualGrid {
     this.#emptyHint = emptyHint || "";
     this.#boundClickHandler = this.#onClick.bind(this);
     this.#container.addEventListener("click", this.#boundClickHandler);
+    dom.mainGrid.addEventListener("scroll", () => this.#scheduleCatchUp(), { passive: true });
+  }
+
+  get skeletonClass() {
+    return this.#skeletonClass;
   }
 
   render(items, emptyMsg, emptyHint) {
     cancelAnimationFrame(this.#chunkRaf);
     this.#chunkRaf = 0;
+    // wipe 前先停媒体：卡片摘除后 pointerout 永不触发，游离的播放中 video 会继续出声
+    this.stopAllMedia();
     this.#container.className = "main-container";
     this.#container.innerHTML = "";
     dom.emptyState.classList.add("hidden");
@@ -451,6 +459,8 @@ class VirtualGrid {
       this.#unloadObserver.disconnect();
       this.#unloadObserver = null;
     }
+    this.#pendingSkeletons = [];
+    this.#sentinelCard = null;
     this.#itemMap = new Map(items.map((item) => [item[this.#itemKey], item]));
     cancelAnimationFrame(this.#drainRafId);
     this.#drainRafId = 0;
@@ -504,6 +514,12 @@ class VirtualGrid {
       if (card) {
         if (this.#observer) this.#observer.unobserve(card);
         if (this.#unloadObserver) this.#unloadObserver.unobserve(card);
+        if (card === this.#sentinelCard) {
+          // 哨兵被删除会导致观察圈断链、后续骨架永不填充，立刻续接
+          this.#sentinelCard = null;
+          this.#extendObservation();
+        }
+        this.clearCard(card);
         card.remove();
       }
     }
@@ -517,6 +533,7 @@ class VirtualGrid {
 
   // 中止未完成的分块渲染（域切换时调用，防止旧域骨架卡/observer 残留到共享容器）
   abortRender() {
+    this.stopAllMedia();
     cancelAnimationFrame(this.#chunkRaf);
     this.#chunkRaf = 0;
     if (this.#observer) {
@@ -527,6 +544,8 @@ class VirtualGrid {
       this.#unloadObserver.disconnect();
       this.#unloadObserver = null;
     }
+    this.#pendingSkeletons = [];
+    this.#sentinelCard = null;
     this.#itemMap = new Map();
     cancelAnimationFrame(this.#drainRafId);
     this.#drainRafId = 0;
@@ -539,7 +558,7 @@ class VirtualGrid {
     );
   }
 
-  // 双向虚拟化：完整卡滚出 UNLOAD_ROOT_MARGIN 外时降级回骨架（DOM/video/监听器随节点释放），
+  // 双向虚拟化：完整卡滚出 UNLOAD_ROOT_MARGIN 外时降级回骨架（媒体子树/监听器随清空释放），
   // 重新滚近时经既有 fill 流程重填。卸载圈远大于填充圈形成滞回，避免边界抖动。
   #ensureUnloadObserver() {
     if (this.#unloadObserver) return;
@@ -553,22 +572,23 @@ class VirtualGrid {
     );
   }
 
+  // 原地降级：只清内容、切回骨架类，不换根节点。grid 容器任一直接子节点被替换
+  // 都会触发 Blink 全量重排，成本随卡片总数线性增长（3000 卡单次 >10ms）。
   #demote(card) {
     if (!card.isConnected || card.classList.contains(this.#skeletonClass)) return;
     const key = card.dataset[this.#itemKey];
     if (!key || !this.#itemMap.has(key)) return;
 
-    const skel = this.#getSkeletonTemplate().content.cloneNode(true).firstElementChild;
-    skel.dataset[this.#itemKey] = key;
-    if (state.batchMode) {
-      const cb = skel.querySelector(".work-checkbox, .following-checkbox");
-      if (cb) cb.style.display = "";
-    }
-    card.replaceWith(skel);
-    this.#unloadObserver.unobserve(card);
-    this.#observer.observe(skel);
+    this.clearCard(card);
+    card.classList.add(this.#skeletonClass);
+    // unloadObserver 持续观察同一根节点无需重挂；fill observer 在填充时已 unobserve
+    if (this.#observer) this.#observer.observe(card);
   }
 
+  // 分圈观察：新骨架先进待观察队列，只把最靠前一圈（OBSERVE_CHUNK_SIZE 个）交给 IO，
+  // 圈尾哨兵进圈（进入 OBSERVER_ROOT_MARGIN）时再放下一批。
+  // computeIntersections 成本随已观察目标数线性，全量 observe 会让滚动期每帧
+  // 重算 O(全部卡) 次几何——这是侧边栏打开后风扇高转的主因之一（实测 trace 占 1.2s/5s）
   #observeNewSkeletons(nodes) {
     if (!this.#observer) {
       this.#observer = new IntersectionObserver(
@@ -577,15 +597,83 @@ class VirtualGrid {
             if (!entry.isIntersecting) continue;
             const card = entry.target;
             this.#observer.unobserve(card);
+            if (card === this.#sentinelCard) {
+              this.#sentinelCard = null;
+              this.#extendObservation();
+            }
             this.#enqueueFill(card);
           }
         },
         { rootMargin: config.OBSERVER_ROOT_MARGIN },
       );
     }
-    for (const c of nodes) {
-      c.dataset.observed = "1";
-      this.#observer.observe(c);
+    this.#pendingSkeletons.push(...nodes);
+    if (!this.#sentinelCard) this.#extendObservation();
+  }
+
+  #extendObservation() {
+    while (this.#pendingSkeletons.length) {
+      const chunk = [];
+      while (this.#pendingSkeletons.length && chunk.length < config.OBSERVE_CHUNK_SIZE) {
+        const card = this.#pendingSkeletons.shift();
+        if (card.isConnected) chunk.push(card);
+      }
+      if (!chunk.length) continue; // 本批全是被重渲染丢弃的死节点，继续丢
+      for (const c of chunk) {
+        c.dataset.observed = "1";
+        this.#observer.observe(c);
+      }
+      this.#sentinelCard = chunk[chunk.length - 1];
+      return;
+    }
+    this.#sentinelCard = null;
+  }
+
+  // 远跳兜底：快速滚动/拖动滚动条落点可能越过观察圈前沿，哨兵留在视口上方
+  // 永不再相交、分圈推进断链，落点骨架因从未 observe 过而永远不填充。
+  // 滚动时把填充带内未观察的骨架直连交给 fill observer（不走队列与哨兵，
+  // 两条机制独立并存：慢速滚动仍由零成本的哨兵链推进）。
+  #scheduleCatchUp() {
+    if (this.#scrollRafId) return;
+    this.#scrollRafId = requestAnimationFrame(() => {
+      this.#scrollRafId = 0;
+      this.#catchUpToViewport();
+    });
+  }
+
+  #catchUpToViewport() {
+    // 非活跃实例的 observer 已被 abortRender()/render() 重置置空
+    if (!this.#observer) return;
+    // 未标记的骨架必然仍在待观察队列里；队列与哨兵双空 = 无需追赶
+    if (!this.#sentinelCard && !this.#pendingSkeletons.length) return;
+    const children = this.#container.children;
+    const count = children.length;
+    if (!count) return;
+    const margin = parseFloat(config.OBSERVER_ROOT_MARGIN) || 0;
+    const gridRect = dom.mainGrid.getBoundingClientRect();
+    const bandTop = gridRect.top - margin;
+    const bandBottom = gridRect.bottom + margin;
+    // 卡片等高成行、纵向位置单调，二分定位带区起点后线性扫描到带区底；
+    // 全程只读探测（gBCR），收集完再统一标记 observe，避免读写交错引发布局抖动
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const rect = children[mid].getBoundingClientRect();
+      if (rect.bottom < bandTop) lo = mid + 1;
+      else hi = mid;
+    }
+    const caught = [];
+    for (let i = lo; i < count; i++) {
+      const card = children[i];
+      if (card.getBoundingClientRect().top > bandBottom) break;
+      if (!card.classList.contains(this.#skeletonClass)) continue;
+      if (card.dataset.observed === "1") continue; // 圈内/降级重观察路径已覆盖
+      caught.push(card);
+    }
+    for (const card of caught) {
+      card.dataset.observed = "1";
+      this.#observer.observe(card);
     }
   }
 
@@ -628,12 +716,13 @@ class VirtualGrid {
     }
   }
 
+  // 原地填充：在骨架根节点上直接构建内容（同 #demote，禁止换根节点）
   populateItem(skeleton, item) {
     if (!skeleton.parentNode) return;
-    const fullCard = this.createItem(item);
-    skeleton.parentNode.replaceChild(fullCard, skeleton);
+    if (!skeleton.classList.contains(this.#skeletonClass)) return;
+    this.fillCard(skeleton, item);
     this.#ensureUnloadObserver();
-    this.#unloadObserver.observe(fullCard);
+    this.#unloadObserver.observe(skeleton);
   }
 
   #onClick(event) {
@@ -644,10 +733,15 @@ class VirtualGrid {
     if (item) this.handleClick(event, item, itemEl);
   }
 
-  // 子类必须实现
-  createItem(item) {
-    throw new Error("子类必须实现 createItem");
+  // 子类必须实现：原地填充 / 清空还原骨架（均不得替换根节点）
+  fillCard(card, item) {
+    throw new Error("子类必须实现 fillCard");
   }
+  clearCard(card) {
+    throw new Error("子类必须实现 clearCard");
+  }
+  // render()/abortRender() wipe 容器前调用；含可播放媒体的子类覆写（默认无媒体）
+  stopAllMedia() {}
   handleClick(event, item, itemEl) {
     throw new Error("子类必须实现 handleClick");
   }
@@ -771,7 +865,9 @@ const dialog = new Dialog();
 
 // ---------- FollowingsGrid ----------
 class FollowingsGrid extends VirtualGrid {
-  #followingCardTmpl = document.getElementById("followingCardTemplate");
+  // 头像分帧队列，避免同步赋 src 触发批量网络/解码调度
+  #avatarQueue = [];
+  #avatarDrainRafId = 0;
   constructor() {
     super({
       container: dom.mainContainer,
@@ -787,8 +883,8 @@ class FollowingsGrid extends VirtualGrid {
     this.render(state.followings, "还没有保存的关注者", "点击菜单「同步关注」获取你的关注列表");
   }
 
-  createItem(following) {
-    const card = this.#followingCardTmpl.content.cloneNode(true).firstElementChild;
+  fillCard(card, following) {
+    card.classList.remove(this.skeletonClass);
     card.dataset.uid = following.uid;
 
     const checkbox = card.querySelector(".following-checkbox");
@@ -796,19 +892,98 @@ class FollowingsGrid extends VirtualGrid {
     checkbox.style.display = state.batchMode ? "" : "none";
 
     const avatar = card.querySelector(".following-avatar");
-    avatar.src = following.avatarLarger || following.avatar || "";
-    avatar.onerror = () => {
-      avatar.style.display = "none";
-    };
+    const fallback = card.querySelector(".following-avatar-fallback");
+    this.#bumpFillGen(card);
+    avatar.classList.add("media-loading");
+    avatar.style.display = "";
+    fallback?.classList.add("hidden");
+
+    const avatarUrl = following.avatarLarger || following.avatar || "";
+    if (avatarUrl) this.#enqueueAvatar(avatar, avatarUrl, following.nickname, card.dataset.fillGen);
+    else this.#showAvatarFallback(avatar, fallback, following.nickname);
 
     card.querySelector(".following-nickname").textContent = following.nickname || "未知";
     card.querySelector(".stat-followers").textContent = utils.formatCount(following.followerCount) + " 粉丝";
+    card.querySelector(".stat-works").textContent = utils.formatCount(following.awemeCount) + " 作品";
+  }
 
-    return card;
+  // 头像不可用时的占位：灰底圆圈换为昵称首字，不再让头像凭空消失
+  #showAvatarFallback(avatar, fallback, nickname) {
+    avatar.classList.remove("media-loading");
+    avatar.style.display = "none";
+    avatar.style.backgroundImage = "";
+    if (!fallback) return;
+    const initial = (nickname || "").trim().charAt(0).toUpperCase();
+    fallback.textContent = initial || "?";
+    fallback.classList.remove("hidden");
+  }
+
+  // 填充代际：卡片每次重填/降级自增，使在途探针结果过期作废，防止跨代提交旧 URL
+  #bumpFillGen(card) {
+    card.dataset.fillGen = String((Number(card.dataset.fillGen) || 0) + 1);
+  }
+  #avatarTargetAlive(img, gen) {
+    if (!img.isConnected || img.closest(".following-skeleton")) return false;
+    const card = img.closest(".following-card");
+    return !!card && card.dataset.fillGen === gen;
+  }
+
+  // 原地还原骨架：清内容与占位样式由 .following-skeleton 类接管，根节点保留
+  clearCard(card) {
+    this.#bumpFillGen(card); // 在途探针立即作废
+    const avatar = card.querySelector(".following-avatar");
+    if (avatar) {
+      avatar.style.backgroundImage = "";
+      avatar.style.display = "";
+      avatar.classList.remove("media-loading");
+    }
+    card.querySelector(".following-avatar-fallback")?.classList.add("hidden");
+    card.querySelector(".following-nickname").textContent = "";
+    card.querySelector(".stat-followers").textContent = "";
+    card.querySelector(".stat-works").textContent = "";
+    const checkbox = card.querySelector(".following-checkbox");
+    if (checkbox) {
+      batch.updateCheckboxDOM(checkbox, false);
+      checkbox.style.display = state.batchMode ? "" : "none";
+    }
+  }
+
+  // 头像分帧预载：离屏探针先行请求，只有成功的 URL 才提交给头像节点。
+  // 头像是 div+background-image：背景图失败时浏览器不绘制任何占位图标，断裂图在元素层面失去载体
+  #enqueueAvatar(img, url, nickname, gen) {
+    this.#avatarQueue.push({ img, url, nickname, gen });
+    this.#scheduleAvatarDrain();
+  }
+  #scheduleAvatarDrain() {
+    if (this.#avatarDrainRafId) return;
+    this.#avatarDrainRafId = requestAnimationFrame(() => {
+      this.#avatarDrainRafId = 0;
+      let n = 0;
+      while (this.#avatarQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
+        const { img, url, nickname, gen } = this.#avatarQueue.shift();
+        if (!this.#avatarTargetAlive(img, gen)) continue;
+        const probe = new Image();
+        probe.onload = () => {
+          if (!this.#avatarTargetAlive(img, gen)) return; // 已重填/降级，结果作废
+          img.style.backgroundImage = `url("${url.replace(/["\\]/g, "\\$&")}")`;
+          img.classList.remove("media-loading");
+          detail.markMediaOk();
+        };
+        probe.onerror = () => {
+          if (!this.#avatarTargetAlive(img, gen)) return;
+          detail.markMediaFail();
+          const card = img.closest(".following-card");
+          this.#showAvatarFallback(img, card?.querySelector(".following-avatar-fallback"), nickname);
+        };
+        probe.src = url;
+        n++;
+      }
+      if (this.#avatarQueue.length) this.#scheduleAvatarDrain();
+    });
   }
 
   handleClick(event, following, el) {
-    if (event.target.closest(".following-avatar")) {
+    if (event.target.closest(".following-avatar, .following-avatar-fallback")) {
       if (state.batchMode) return;
       event.stopPropagation();
       window.open(following.profileUrl || `${config.URL_BASE}/user/${following.uid}`, "_blank");
@@ -1305,9 +1480,15 @@ class Sidebar {
   static STORAGE_KEY = "douyin_sidebar_width";
   #dragStartX = 0;
   #dragStartW = 0;
+  #pendingSidebarWidth = 0;
+  #pendingSidebarWidthDirty = false;
+  #pendingSidebarWidthRafId = 0;
   #scrollRafPending = false;
   #imgQueue = [];
   #imgDrainRafId = 0;
+  #sideFillObs = null;
+  #sideUnloadObs = null;
+  #workMeta = new WeakMap();
   #onResizeDown = (e) => {
     this.#dragStartX = e.clientX;
     this.#dragStartW = dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width;
@@ -1317,8 +1498,17 @@ class Sidebar {
     e.preventDefault();
   };
   #onResizeMove = (e) => {
-    const w = this.#dragStartW - (e.clientX - this.#dragStartX);
-    this.setSidebarWidth(this.#snapTo(w));
+    const snapped = this.#snapTo(this.#dragStartW - (e.clientX - this.#dragStartX));
+    this.#pendingSidebarWidth = snapped;
+    this.#pendingSidebarWidthDirty = true;
+    if (this.#pendingSidebarWidthRafId) return;
+    this.#pendingSidebarWidthRafId = requestAnimationFrame(() => {
+      this.#pendingSidebarWidthRafId = 0;
+      if (this.#pendingSidebarWidthDirty) {
+        this.#pendingSidebarWidthDirty = false;
+        this.setSidebarWidth(this.#pendingSidebarWidth);
+      }
+    });
   };
   #onResizeUp = () => {
     const finalWidth = this.#snapTo(
@@ -1381,16 +1571,51 @@ class Sidebar {
     state.sidebarCursor = null;
     state.sidebarLoading = false;
 
-    const currentWidth = dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width;
-    if (currentWidth < config.SIDEBAR_MIN_WIDTH) {
+    const needsExpand = dom.sidebar.classList.contains("sidebar-zero");
+    if (needsExpand) {
       const target = this.#loadWidth() || 650;
       this.setSidebarWidth(target);
       this.saveSidebarWidth(target);
     }
 
-    this.#clearImgQueue();
-    dom.sidebarWorksGrid.innerHTML = "";
+    this.#resetSidebarGrid();
     this.loadSidebarWorks(state.currentFollowingSecUid, null, true);
+    this.#calibrateFollowing(following);
+  }
+
+  // 打开侧边栏即顺带校准该用户的权威计数（profile/other，单请求）：成功后同步
+  // 更新 state 与可见卡片；失败静默忽略，不影响作品加载
+  async #calibrateFollowing(following) {
+    const secUid = state.currentFollowingSecUid;
+    if (!secUid || !following?.uid) return;
+    const res = await services.bgMsg({ type: "CALIBRATE_FOLLOWING", uid: following.uid, secUid });
+    if (!res?.ok) return;
+    const entry = state.followings.find((f) => String(f.uid) === String(following.uid));
+    if (entry) {
+      entry.awemeCount = res.awemeCount;
+      entry.followerCount = res.followerCount;
+    }
+    const card = dom.mainContainer.querySelector(`[data-uid="${following.uid}"]`);
+    if (card && !card.classList.contains(followingsGrid.skeletonClass)) {
+      const followersEl = card.querySelector(".stat-followers");
+      const worksEl = card.querySelector(".stat-works");
+      if (followersEl) followersEl.textContent = utils.formatCount(res.followerCount) + " 粉丝";
+      if (worksEl) worksEl.textContent = utils.formatCount(res.awemeCount) + " 作品";
+    }
+  }
+
+  // 重开作者前整体复位：在途探针作废、观察器断开重建，防止上一作者的条目观察残留
+  #resetSidebarGrid() {
+    this.#clearImgQueue();
+    if (this.#sideFillObs) {
+      this.#sideFillObs.disconnect();
+      this.#sideFillObs = null;
+    }
+    if (this.#sideUnloadObs) {
+      this.#sideUnloadObs.disconnect();
+      this.#sideUnloadObs = null;
+    }
+    dom.sidebarWorksGrid.innerHTML = "";
   }
 
   async loadSidebarWorks(secUid, cursor, reset) {
@@ -1409,11 +1634,19 @@ class Sidebar {
 
       if (res.ok && res.works) {
         const fragment = document.createDocumentFragment();
+        const items = [];
         for (const w of res.works) {
-          fragment.appendChild(this.#createWorkItem(w));
+          const item = this.#createWorkItem(w);
+          fragment.appendChild(item);
+          items.push(item);
         }
         dom.sidebarWorksGrid.appendChild(fragment);
         state.sidebarCursor = res.hasMore ? res.maxCursor || "" : null;
+        // 新条目只进"观察圈"：进入视口才升级（发探针+绘制），滚出远圈后降级回占位态
+        this.#ensureSideObservers();
+        for (const el of items) {
+          if (this.#workMeta.has(el)) this.#sideFillObs.observe(el);
+        }
       }
       dom.sidebarLoader.classList.add("hidden");
     } catch (_e) {
@@ -1453,21 +1686,81 @@ class Sidebar {
     this.loadSidebarWorks(state.currentFollowingSecUid, state.sidebarCursor, false);
   }
 
-  // 封面分帧赋 src：每帧最多 SIDEBAR_IMG_PER_FRAME 张，避免整页图片集中解码造成卡顿
-  #enqueueCover(img, url) {
-    this.#imgQueue.push({ img, url });
+  // 侧边栏双向虚拟化：与 VirtualGrid 同一不变量——根节点不换，只在占位态/完整态间原地切换。
+  // 观察圈以 sidebarBody 为 root（rootMargin 相对滚动容器自身矩形展开，不受祖先裁剪抵消）
+  #ensureSideObservers() {
+    if (this.#sideFillObs) return;
+    this.#sideFillObs = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          this.#sideFillObs.unobserve(entry.target);
+          this.#promoteItem(entry.target);
+        }
+      },
+      { root: dom.sidebarBody, rootMargin: config.OBSERVER_ROOT_MARGIN },
+    );
+    this.#sideUnloadObs = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) this.#demoteItem(entry.target);
+        }
+      },
+      { root: dom.sidebarBody, rootMargin: config.UNLOAD_ROOT_MARGIN },
+    );
+  }
+
+  #promoteItem(item) {
+    const meta = this.#workMeta.get(item);
+    if (!meta || !meta.url) return;
+    this.#enqueueCover(meta.cover, meta.url, meta.placeholder);
+    this.#sideUnloadObs.observe(item);
+  }
+
+  // 原地降级：清背景图、恢复占位层，尺寸由 aspect-ratio 保持；
+  // 代际自增作废在途探针（重升级会再次入队，旧回调不得回填）
+  #demoteItem(item) {
+    const meta = this.#workMeta.get(item);
+    if (!meta || !meta.url) return;
+    meta.cover.dataset.gen = String((Number(meta.cover.dataset.gen) || 0) + 1);
+    meta.cover.style.backgroundImage = "";
+    meta.placeholder.style.display = "";
+    this.#sideUnloadObs.unobserve(item);
+    this.#sideFillObs.observe(item);
+  }
+
+  // 封面分帧探针化：每帧最多 SIDEBAR_IMG_PER_FRAME 张；gen 代际防降级/重升级后的乱序回填
+  #enqueueCover(cover, url, placeholder) {
+    const gen = String((Number(cover.dataset.gen) || 0) + 1);
+    cover.dataset.gen = gen;
+    this.#imgQueue.push({ cover, url, placeholder, gen });
     this.#scheduleImgDrain();
   }
 
+  // 探针预载：失败 URL 不落可见节点（与关注头像同一不变量），封面 div 保持透明由条目底色兜底；
+  // 成功提交背景图并直接隐藏占位层
   #scheduleImgDrain() {
     if (this.#imgDrainRafId) return;
     this.#imgDrainRafId = requestAnimationFrame(() => {
       this.#imgDrainRafId = 0;
       let n = 0;
       while (this.#imgQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
-        const { img, url } = this.#imgQueue.shift();
-        if (!img.isConnected) continue; // 已随网格重建被移除的节点直接丢弃
-        img.src = url;
+        const { cover, url, placeholder, gen } = this.#imgQueue.shift();
+        // 已降级/已重建的条目直接丢弃，不再发探针请求
+        if (!cover.isConnected || cover.dataset.gen !== gen) continue;
+        const alive = () => cover.isConnected && cover.dataset.gen === gen;
+        const probe = new Image();
+        probe.onload = () => {
+          if (!alive()) return;
+          detail.markMediaOk();
+          cover.style.backgroundImage = `url("${url.replace(/["\\]/g, "\\$&")}")`;
+          if (placeholder && placeholder.isConnected) placeholder.style.display = "none";
+        };
+        probe.onerror = () => {
+          if (!alive()) return;
+          detail.markMediaFail();
+        };
+        probe.src = url;
         n++;
       }
       if (this.#imgQueue.length) this.#scheduleImgDrain();
@@ -1495,12 +1788,10 @@ class Sidebar {
     const img = link.children[0];
     const placeholder = link.children[1];
     const cover = isNote ? work.images?.[0] || work.cover : work.cover;
-    if (cover) {
-      img.decoding = "async";
-      img.addEventListener("load", () => {
-        placeholder.style.display = "none";
-      }, { once: true });
-      this.#enqueueCover(img, utils.pickHttpsUrl(cover));
+    const url = cover ? utils.pickHttpsUrl(cover) : "";
+    if (url) {
+      // 元数据挂 WeakMap；探针推迟到条目进入视口（#promoteItem）才发，不再创建即全量急切加载
+      this.#workMeta.set(item, { url, cover: img, placeholder });
     } else {
       img.style.display = "none";
       if (isNote) placeholder.textContent = "📰";
@@ -1638,7 +1929,7 @@ class Sync {
     this.#doneCount = msg.collected || 0;
     this.#total = msg.total || 0;
     this.#updateCount();
-    this.#setSummary("正在获取关注…");
+    this.#setSummary(msg.phase === "calibrate" ? "正在校准作品数…" : "正在获取关注…");
   }
 
   async startSync(awemeIds) {
@@ -1830,11 +2121,9 @@ class Settings {
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
     this._dialogBody = dom.dialogBody;
-    dom.dialogFooter.innerHTML = `
-      <div class="config-footer-row">
-        <span class="config-hint" id="configHint"></span>
-        <button class="dy-btn flex-inline-center dy-btn-primary" id="btnSaveConfig">保存</button>
-      </div>`;
+    // 两个开关的未保存选择：_refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
+    this._pendingIndependent = null;
+    this._pendingCalibrate = null;
     this._bind();
     this._bindStatus();
     state.preventDialogClose = true;
@@ -1968,18 +2257,6 @@ class Settings {
       colgroup.appendChild(colKey);
       colgroup.appendChild(colVal);
       table.appendChild(colgroup);
-      const thead = document.createElement("thead");
-      const headerRow = document.createElement("tr");
-      const thKey = document.createElement("th");
-      thKey.className = "cookie-th-key";
-      thKey.innerHTML = "<span>键</span><span class=\"cookie-resize-handle\"></span>";
-      const thVal = document.createElement("th");
-      thVal.className = "cookie-th-val";
-      thVal.textContent = "值";
-      headerRow.appendChild(thKey);
-      headerRow.appendChild(thVal);
-      thead.appendChild(headerRow);
-      table.appendChild(thead);
       const tbody = document.createElement("tbody");
       for (const p of pairs) {
         const tr = document.createElement("tr");
@@ -1997,7 +2274,6 @@ class Settings {
       }
       table.appendChild(tbody);
       cookieList.appendChild(table);
-      this._bindCookieResize(table);
     } else {
       const hint = document.createElement("p");
       hint.className = "settings-hint";
@@ -2006,16 +2282,7 @@ class Settings {
     }
     const modeSwitch = $("settingsModeSwitch");
     if (modeSwitch) {
-      const btns = modeSwitch.querySelectorAll(".mode-btn");
-      const slider = $("settingsModeSlider");
-      btns.forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.mode === (independentMode ? "on" : "off"));
-      });
-      const active = modeSwitch.querySelector(".mode-btn.active");
-      if (slider && active) {
-        slider.style.width = active.offsetWidth + "px";
-        slider.style.transform = "translateX(" + active.offsetLeft + "px)";
-      }
+      this.#applySwitchUI(modeSwitch, this._pendingIndependent ?? independentMode);
     }
     $("settingsModeHint").textContent = "";
     const features = bf?.features;
@@ -2033,18 +2300,6 @@ class Settings {
         colgroup.appendChild(colKey);
         colgroup.appendChild(colVal);
         table.appendChild(colgroup);
-        const thead = document.createElement("thead");
-        const headerRow = document.createElement("tr");
-        const thKey = document.createElement("th");
-        thKey.className = "cookie-th-key";
-        thKey.innerHTML = "<span>特征</span><span class=\"cookie-resize-handle\"></span>";
-        const thVal = document.createElement("th");
-        thVal.className = "cookie-th-val";
-        thVal.textContent = "值";
-        headerRow.appendChild(thKey);
-        headerRow.appendChild(thVal);
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
         const tbody = document.createElement("tbody");
         for (const [k, v] of entries) {
           const tr = document.createElement("tr");
@@ -2062,7 +2317,6 @@ class Settings {
         }
         table.appendChild(tbody);
         list.appendChild(table);
-        this._bindCookieResize(table);
       } else {
         list.innerHTML = '<span class="settings-hint">未捕获，将使用默认值。打开抖音页面后可自动捕获。</span>';
       }
@@ -2105,12 +2359,14 @@ class Settings {
     };
     const section = this._dialogBody.querySelector("#settingsConfigSection");
     if (!section) return;
-    const hint = dom.dialogFooter.querySelector("#configHint");
     for (const [key, inputKey] of Object.entries(map)) {
       const input = section.querySelector(`.config-input[data-key="${inputKey}"]`);
       if (input) input.value = cfg[key] ?? "";
     }
-    if (hint) hint.textContent = "";
+    const calSwitch = section.querySelector("#settingsCalibrateSwitch");
+    if (calSwitch) {
+      this.#applySwitchUI(calSwitch, this._pendingCalibrate ?? (cfg.calibrateFollowings !== false));
+    }
   }
 
   _renderCacheList(ci, ct) {
@@ -2215,6 +2471,18 @@ class Settings {
     this._renderStatusHooks(root, s.hooks);
   }
 
+  // 开关仅切换视觉态；持久化与副作用统一走「关闭时校验并持久化」（saveBeforeClose）
+  #applySwitchUI(switchEl, on) {
+    const btn = switchEl.querySelector(`.mode-btn[data-mode="${on ? "on" : "off"}"]`);
+    if (!btn) return;
+    switchEl.querySelectorAll(".mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    const slider = switchEl.querySelector(".mode-slider");
+    if (slider) {
+      slider.style.width = btn.offsetWidth + "px";
+      slider.style.transform = "translateX(" + btn.offsetLeft + "px)";
+    }
+  }
+
   _bind() {
     const $ = (id) => this._dialogBody.querySelector("#" + id);
     // ponytail: section titles toggle a .collapsed class; CSS grid-template-rows handles the animation
@@ -2225,12 +2493,20 @@ class Settings {
     });
     const modeSwitch = $("settingsModeSwitch");
     if (modeSwitch) {
-      modeSwitch.addEventListener("click", async (e) => {
+      modeSwitch.addEventListener("click", (e) => {
         const btn = e.target.closest(".mode-btn");
         if (!btn || btn.classList.contains("active")) return;
-        const enabled = btn.dataset.mode === "on";
-        await services.bgMsg({ type: "SET_MODE", enabled });
-        await this._refresh();
+        this._pendingIndependent = btn.dataset.mode === "on";
+        this.#applySwitchUI(modeSwitch, this._pendingIndependent);
+      });
+    }
+    const calibrateSwitch = this._dialogBody.querySelector("#settingsCalibrateSwitch");
+    if (calibrateSwitch) {
+      calibrateSwitch.addEventListener("click", (e) => {
+        const btn = e.target.closest(".mode-btn");
+        if (!btn || btn.classList.contains("active")) return;
+        this._pendingCalibrate = btn.dataset.mode === "on";
+        this.#applySwitchUI(calibrateSwitch, this._pendingCalibrate);
       });
     }
     // 缓存刷新按钮
@@ -2292,14 +2568,14 @@ class Settings {
         }
       });
     }
-    this._bindConfigSave();
   }
 
-  _bindConfigSave() {
-    const saveBtn = dom.dialogFooter.querySelector("#btnSaveConfig");
-    if (!saveBtn) return;
+  // X 关闭时校验并持久化运行参数与 secUid；返回 false 表示校验未通过、保持弹窗打开
+  async saveBeforeClose() {
+    if (!this._dialogBody) return true;
     const section = this._dialogBody.querySelector("#settingsConfigSection");
-    const hint = dom.dialogFooter.querySelector("#configHint");
+    // 设置面板未打开（当前弹窗是其它面板）时无需处理
+    if (!section) return true;
     const FIELDS = [
       "timeoutRequest", "timeoutSecurityStatus",
       "syncWorksDelayMin", "syncWorksDelayMax",
@@ -2319,65 +2595,48 @@ class Settings {
       ["cancelLikeDelayMin", "cancelLikeDelayMax", "取消点赞"],
       ["cancelCollectionDelayMin", "cancelCollectionDelayMax", "取消收藏"],
     ];
-    saveBtn.addEventListener("click", async () => {
-      const values = {};
-      for (const key of FIELDS) {
-        const input = section.querySelector(`.config-input[data-key="${key}"]`);
-        const raw = input?.value.trim();
-        const num = Number(raw);
-        if (!raw || !Number.isFinite(num) || num <= 0) {
-          if (hint) { hint.textContent = `"${key}" 请输入有效的正数`; hint.className = "config-hint config-hint-err"; }
-          return;
-        }
-        values[key] = num;
+    const values = {};
+    for (const key of FIELDS) {
+      const input = section.querySelector(`.config-input[data-key="${key}"]`);
+      const raw = input?.value.trim();
+      const num = Number(raw);
+      if (!raw || !Number.isFinite(num) || num <= 0) {
+        dialog.showToast(`"${key}" 请输入有效的正数`);
+        return false;
       }
-      for (const [minKey, maxKey, label] of DELAY_PAIRS) {
-        if (values[minKey] > values[maxKey]) {
-          if (hint) { hint.textContent = `${label}延迟最小值不能大于最大值`; hint.className = "config-hint config-hint-err"; }
-          return;
-        }
+      values[key] = num;
+    }
+    for (const [minKey, maxKey, label] of DELAY_PAIRS) {
+      if (values[minKey] > values[maxKey]) {
+        dialog.showToast(`${label}延迟最小值不能大于最大值`);
+        return false;
       }
-      if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
-        if (hint) { hint.textContent = "批次暂停最小值不能大于最大值"; hint.className = "config-hint config-hint-err"; }
-        return;
-      }
+    }
+    values.calibrateFollowings = this._pendingCalibrate ?? (section.querySelector("#settingsCalibrateSwitch .mode-btn.active")?.dataset.mode === "on");
+    if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
+      dialog.showToast("批次暂停最小值不能大于最大值");
+      return false;
+    }
+    try {
+      await runtimeConfig.save(values);
+      const secUidInput = this._dialogBody.querySelector("#settingsSecUid");
+      await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
+    } catch {
+      dialog.showToast("保存失败");
+    }
+    // 独立模式：与运行参数同走关闭通道；与存储值有变化才下发 SET_MODE（写存储+background 运行态+a-bogus 初始化）
+    const modeOn = this._pendingIndependent ?? (section.querySelector("#settingsModeSwitch .mode-btn.active")?.dataset.mode === "on");
+    const { independentMode: savedOn } = await chrome.storage.local.get("independentMode");
+    if (modeOn !== (savedOn === true)) {
       try {
-        await runtimeConfig.save(values);
-        const secUidInput = this._dialogBody.querySelector("#settingsSecUid");
-        await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
-        if (hint) { hint.textContent = "已保存"; hint.className = "config-hint config-hint-ok"; }
+        await services.bgMsg({ type: "SET_MODE", enabled: modeOn });
+        this._pendingIndependent = null;
       } catch {
-        if (hint) { hint.textContent = "保存失败"; hint.className = "config-hint config-hint-err"; }
+        dialog.showToast("独立模式切换失败");
+        return false;
       }
-    });
-  }
-
-  _bindCookieResize(table) {
-    const handle = table.querySelector(".cookie-resize-handle");
-    const colKey = table.querySelector(".cookie-key-col");
-    if (!handle || !colKey) return;
-    let startX, startWidth;
-    const onMove = (e) => {
-      const dx = e.clientX - startX;
-      colKey.style.width = Math.max(60, startWidth + dx) + "px";
-    };
-    const onUp = () => {
-      handle.classList.remove("active");
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    handle.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      startX = e.clientX;
-      startWidth = colKey.offsetWidth;
-      handle.classList.add("active");
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-    });
+    }
+    return true;
   }
 }
 
@@ -2427,6 +2686,7 @@ class Favorites {
 
     if (msg.cancelled) {
       cancelBtn.disabled = false;
+      ctx.syncAddBtn?.();
       return;
     }
 
@@ -2436,6 +2696,7 @@ class Favorites {
       // all failed - likely auth issue
       dialog.showToast("取消失败: 可能是密钥已过期,请刷新抖音页面后重试");
       cancelBtn.disabled = false;
+      ctx.syncAddBtn?.();
       return;
     }
 
@@ -2449,6 +2710,7 @@ class Favorites {
     dom.dialogTitle.textContent = `${cfg.title} (${remaining.length}/${state[cfg.stateKey].length})`;
     cancelBtn.textContent = cfg.cancelLabel;
     cancelBtn.disabled = remaining.length === 0;
+    ctx.syncAddBtn?.();
     const successCount = msg.refreshed;
     dialog.showToast(
       msg.failed > 0
@@ -2501,6 +2763,43 @@ class Favorites {
         dom.dialogBody.appendChild(timeoutHint);
       }
 
+      // “添加”按钮：与取消按钮同批 targets（未关注作者的作品），经 SAVE_WORKS 批量入
+      // 扩展作品库（mergeWork 去重合并，新记录落默认“未分类”分组）。已入账的 awemeId
+      // 记入 addedIds，避免重复点击时重复计数。
+      const addedIds = new Set();
+      const pendingAdds = () =>
+        state[cfg.stateKey].filter((w) => w.authorFollowed === false && !addedIds.has(w.awemeId));
+      const addBtn = document.createElement("button");
+      addBtn.className = "dy-btn flex-inline-center dy-btn-primary";
+      const syncAddBtn = () => {
+        const pending = pendingAdds();
+        addBtn.textContent =
+          pending.length > 0 ? `添加 (${pending.length})` : addedIds.size > 0 ? `已添加 (${addedIds.size})` : "添加";
+        addBtn.disabled = pending.length === 0;
+      };
+      syncAddBtn();
+      addBtn.addEventListener("click", async () => {
+        const targets = pendingAdds();
+        if (targets.length === 0) return;
+        addBtn.disabled = true;
+        addBtn.classList.add("dy-btn-loading");
+        const res = await services.bgMsg({ type: "SAVE_WORKS", works: targets });
+        addBtn.classList.remove("dy-btn-loading");
+        if (!res || res.ok !== true) {
+          syncAddBtn();
+          const errHint =
+            typeof res?.error === "string" && res.error.includes("AUTH_FAILED")
+              ? "密钥已过期，请刷新抖音页面后重试"
+              : "添加失败: " + (res?.error || "未知错误");
+          dialog.showToast(errHint);
+          return;
+        }
+        for (const w of targets) addedIds.add(w.awemeId);
+        syncAddBtn();
+        dialog.showToast(`已添加 ${targets.length} 个作品（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`);
+      });
+      dom.dialogFooter.appendChild(addBtn);
+
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "dy-btn flex-inline-center dy-btn-danger";
       cancelBtn.textContent = unfollowed.length > 0 ? `${cfg.cancelLabel} (${unfollowed.length})` : cfg.cancelLabel;
@@ -2510,6 +2809,7 @@ class Favorites {
         if (targets.length === 0) return;
         state[cfg.cancelingKey] = true;
         cancelBtn.disabled = true;
+        addBtn.disabled = true;
         cancelBtn.classList.add("dy-btn-loading");
         const ids = targets.map((w) => w.awemeId);
         // 启动 cancel — bgMsg 立即返回 { ok: true, requestId, total }
@@ -2519,6 +2819,7 @@ class Favorites {
           state[cfg.cancelingKey] = false;
           cancelBtn.classList.remove("dy-btn-loading");
           cancelBtn.disabled = false;
+          syncAddBtn();
           const errHint = cancelRes.error?.includes("AUTH_FAILED")
             ? "密钥已过期，请刷新抖音页面后重试"
             : "取消失败: " + (cancelRes.error || "未知错误");
@@ -2526,7 +2827,7 @@ class Favorites {
           return;
         }
         // 记录活动 cancel 上下文,供 onCancelProgress / onCancelDone 使用
-        this.#activeCancel = { btn: cancelBtn, cfg, requestId: cancelRes.requestId };
+        this.#activeCancel = { btn: cancelBtn, cfg, requestId: cancelRes.requestId, syncAddBtn };
         cancelBtn.textContent = `取消中... (0/${ids.length})`;
       });
       dom.dialogFooter.appendChild(cancelBtn);
@@ -2571,8 +2872,9 @@ class Favorites {
     for (const w of unfollowed) {
       const item = document.getElementById("favWorkTemplate").content.cloneNode(true).firstElementChild;
       const thumb = item.querySelector(".fav-work-thumb");
-      thumb.src = w.cover || "";
-      thumb.alt = w.desc || "";
+      // div+background-image：失败浏览器不绘制裂图图标，直接露出条目底色
+      const coverUrl = w.cover || "";
+      if (coverUrl) thumb.style.backgroundImage = `url("${coverUrl.replace(/["\\]/g, "\\$&")}")`;
 
       item.addEventListener("click", () => {
         if (w.awemeId) window.open(`${config.URL_BASE}/video/${w.awemeId}`, "_blank");
@@ -2590,7 +2892,12 @@ const favorites = new Favorites();
 // ---------- WorksGrid ----------
 class WorksGrid extends VirtualGrid {
   #sliderRaf = 0;
+  #container = dom.mainContainer;
   #workCardTmpl = document.getElementById("workCardTemplate");
+  #coverQueue = [];
+  #coverDrainRafId = 0;
+  #videoStates = new WeakMap();
+  #currentMediaCard = null;
   constructor() {
     super({
       container: dom.mainContainer,
@@ -2600,17 +2907,26 @@ class WorksGrid extends VirtualGrid {
       emptyMsg: "还没有保存的作品",
       emptyHint: "浏览抖音时，作品会自动被捕获",
     });
+    this.#bindMediaEvents();
   }
 
   renderCards() {
     this.render(state.works, "还没有保存的作品", "浏览抖音时，作品会自动被捕获");
   }
 
-  createItem(work) {
-    const card = this.#workCardTmpl.content.cloneNode(true).firstElementChild;
+  // 原地填充：骨架根节点保留，媒体区/操作按钮从完整模板取新节点移入
+  fillCard(card, work) {
+    const fresh = this.#workCardTmpl.content.cloneNode(true).firstElementChild;
+    card.classList.remove(this.skeletonClass);
     card.dataset.awemeId = work.awemeId;
 
     const media = card.querySelector(".work-media");
+    media.replaceChildren(...fresh.querySelector(".work-media").childNodes);
+
+    const title = card.querySelector(".work-title");
+    title.querySelectorAll(".work-action-btn").forEach((btn) => btn.remove());
+    title.append(...fresh.querySelectorAll(".work-action-btn"));
+
     const badge = card.querySelector(".work-type-badge");
     const thumb = card.querySelector(".work-thumb");
     const video = card.querySelector(".work-video-player");
@@ -2629,131 +2945,104 @@ class WorksGrid extends VirtualGrid {
 
     if (work.type === "video" && utils.getVideoUrl(work)) {
       const videoSrc = utils.getVideoUrl(work);
-      const coverUrl = work.cover || "";
-      thumb.decoding = "async";
-      thumb.src = utils.pickHttpsUrl(coverUrl);
-      thumb.alt = work.desc || "";
-      thumb.onerror = function () {
-        detail.markMediaFail();
-        if (!this.dataset.retry && !detail.mediaRetryBlocked()) {
-          this.dataset.retry = "1";
-          this.src = utils.pickHttpsUrl(coverUrl);
-          return;
-        }
-        utils.setImagePlaceholder(this, "🎬");
-      };
+      card.dataset.videoUrl = videoSrc;
+      const coverUrl = utils.pickHttpsUrl(work.cover || "");
+      this.#stageThumb(thumb);
+      if (coverUrl) this.#enqueueCover(thumb, coverUrl);
 
-      const progress = controls.querySelector(".video-progress");
-      const timeSpan = controls.querySelector(".video-time");
-      const muteBtn = controls.querySelector(".video-mute-btn");
-      const playBtn = controls.querySelector(".video-play-btn");
-      let hoverTimer = null;
-
-      media.addEventListener("mouseenter", () => {
-        if (state.batchMode) return;
-        if (!dom.dialogOverlay.classList.contains("hidden")) return;
-        // 熔断冷却期内跳过悬停预览，避免坏网下反复发起必败的视频加载
-        if (detail.mediaRetryBlocked()) return;
-        if (hoverTimer) clearTimeout(hoverTimer);
-        hoverTimer = setTimeout(() => {
-          delete video.dataset.retries;
-          video.dataset.hovered = "1";
-          video.src = card.dataset.videoUrl || videoSrc;
-          video.currentTime = 0;
-          video.muted = false;
-          muteBtn.innerHTML = config.icons.unmute;
-          video.load();
-          const onCanPlay = () => {
-            if (!video.dataset.hovered) return;
-            detail.markMediaOk();
-            video.classList.add("video-ready");
-            controls.classList.add("video-ready");
-            thumb.classList.add("video-hidden");
-            video.play().catch(() => {
-              timeSpan.textContent = "⚠ 无法播放";
-            });
-          };
-          video.addEventListener("canplay", onCanPlay, { once: true });
-          setTimeout(() => {
-            video.removeEventListener("canplay", onCanPlay);
-            // canplay 未触发（URL 过期），保持封面可见
-          }, config.VIDEO_FALLBACK_TIMEOUT);
-        }, config.HOVER_PREVIEW_DELAY);
-      });
-      media.addEventListener("mouseleave", () => {
-        if (state.batchMode) return;
-        if (hoverTimer) clearTimeout(hoverTimer);
-        clearTimeout(video._retryTimer);
-        delete video.dataset.hovered;
-        video.pause();
-        video.classList.remove("video-ready");
-        controls.classList.remove("video-ready");
-        thumb.classList.remove("video-hidden");
-      });
-      video.addEventListener("timeupdate", () => {
-        if (video._lastProgressUpdate && Date.now() - video._lastProgressUpdate < 250) return;
-        video._lastProgressUpdate = Date.now();
-        detail.updateVideoProgress(video, progress, timeSpan, "0.3");
-      });
-      video.addEventListener("loadedmetadata", () => {
-        timeSpan.textContent = `0:00 / ${detail.formatTime(video.duration)}`;
-      });
-      video.onerror = () => {
-        detail.handleVideoError(video, {
-          onMax: () => {
-            timeSpan.textContent = "⚠ 链接失效";
-          },
-          onRetry: (retries, delay) => {
-            timeSpan.textContent = delay > 0 ? `⏳ 重试(${retries + 1})…` : "⏳ 重试…";
-          },
-        });
-      };
-      progress.addEventListener("input", () => {
-        if (this.#sliderRaf) cancelAnimationFrame(this.#sliderRaf);
-        this.#sliderRaf = requestAnimationFrame(() => {
-          if (video.duration) video.currentTime = (progress.value / 100) * video.duration;
-        });
-      });
-      muteBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        detail.toggleVideoMute(video, muteBtn);
-      });
-      playBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        detail.toggleVideoPlay(video, playBtn);
-      });
-      video.addEventListener("play", () => {
-        clearTimeout(video._retryTimer);
-        playBtn.innerHTML = config.icons.pause;
-      });
-      video.addEventListener("pause", () => {
-        playBtn.innerHTML = config.icons.play;
+      this.#videoStates.set(video, {
+        progress: controls.querySelector(".video-progress"),
+        timeSpan: controls.querySelector(".video-time"),
+        muteBtn: controls.querySelector(".video-mute-btn"),
+        playBtn: controls.querySelector(".video-play-btn"),
+        controls: controls,
       });
     } else if (work.type === "note") {
-      const imgUrl = work.images?.[0] || work.cover || "";
-      thumb.decoding = "async";
-      thumb.src = imgUrl;
-      thumb.alt = work.desc || "";
-      thumb.onerror = function () {
-        detail.markMediaFail();
-        if (!this.dataset.retry && !detail.mediaRetryBlocked()) {
-          this.dataset.retry = "1";
-          this.src = imgUrl;
-          return;
-        }
-        utils.setImagePlaceholder(this, "📰");
-      };
+      const imgUrl = utils.pickHttpsUrl(work.images?.[0] || work.cover || "");
+      this.#stageThumb(thumb);
+      if (imgUrl) this.#enqueueCover(thumb, imgUrl);
     }
 
     titleText.textContent = work.desc || "无文案";
+  }
 
-    return card;
+  // 停止某张卡的悬停预览并复位 UI。卡片任何摘除/降级路径必须先走这里：
+  // 元素脱 DOM 后 pointerout 等边界事件永不触发、浏览器也不会自动暂停，
+  // 游离的播放中 video 会"画面消失但音频继续"
+  #stopPreview(video) {
+    const st = this.#videoStates.get(video);
+    if (!st) return;
+    const card = video.closest(".work-card");
+    clearTimeout(st.hoverTimer);
+    clearTimeout(video._retryTimer);
+    clearTimeout(video._hoverTimeout);
+    delete video.dataset.hovered;
+    video.pause();
+    video.classList.remove("video-ready");
+    st.controls.classList.remove("video-ready");
+    const thumb = card?.querySelector(".work-thumb");
+    if (thumb) thumb.classList.remove("video-hidden");
+    if (card && this.#currentMediaCard === card) this.#currentMediaCard = null;
+  }
+
+  stopAllMedia() {
+    for (const video of this.#container.querySelectorAll(".work-video-player")) {
+      this.#stopPreview(video);
+    }
+    this.#currentMediaCard = null;
+  }
+
+  // 原地还原骨架：清空媒体区与标题，根节点与 .work-media/.work-title 容器保留
+  clearCard(card) {
+    // #demote 等摘除媒体子树的路径经此统一停掉预览，防止游离视频残留音频
+    const previewVideo = card.querySelector(".work-video-player");
+    if (previewVideo) this.#stopPreview(previewVideo);
+    card.querySelector(".work-media")?.replaceChildren();
+    card.querySelectorAll(".work-action-btn").forEach((btn) => btn.remove());
+    const titleText = card.querySelector(".work-title-text");
+    if (titleText) titleText.textContent = "";
+    delete card.dataset.videoUrl;
+    const checkbox = card.querySelector(".work-checkbox");
+    if (checkbox) {
+      batch.updateCheckboxDOM(checkbox, false);
+      checkbox.style.display = state.batchMode ? "" : "none";
+    }
+  }
+
+  updateCardDOM(awemeId) {
+    const card = dom.mainContainer.querySelector(`[data-aweme-id="${awemeId}"]`);
+    if (!card) return;
+    const work = state.works.find((w) => w.awemeId === awemeId);
+    if (!work) return;
+    if (card.classList.contains("work-skeleton")) {
+      this.populateItem(card, work);
+      return;
+    }
+    const videoUrl = utils.getVideoUrl(work);
+    if (videoUrl) card.dataset.videoUrl = videoUrl;
+    const thumb = card.querySelector(".work-thumb");
+    const coverUrl = work.cover ? utils.pickHttpsUrl(work.cover) : "";
+    if (thumb && coverUrl) this.#enqueueCover(thumb, coverUrl);
+    const title = card.querySelector(".work-title-text");
+    if (title) title.textContent = work.desc || "无文案";
   }
 
   handleClick(event, work, el) {
     if (event.target.closest(".work-checkbox")) {
       event.stopPropagation();
       batch.toggleBatchSelect(work.awemeId, event.target.closest(".work-checkbox"));
+      return;
+    }
+    if (event.target.closest(".video-mute-btn")) {
+      event.stopPropagation();
+      const video = el.querySelector(".work-video-player");
+      if (video) detail.toggleVideoMute(video, el.querySelector(".video-mute-btn"));
+      return;
+    }
+    if (event.target.closest(".video-play-btn")) {
+      event.stopPropagation();
+      const video = el.querySelector(".work-video-player");
+      if (video) detail.toggleVideoPlay(video, el.querySelector(".video-play-btn"));
       return;
     }
     if (event.target.closest('.work-action-btn[title="同步"]')) {
@@ -2763,7 +3052,6 @@ class WorksGrid extends VirtualGrid {
       return;
     }
     if (event.target.closest('.work-action-btn[title="下载"]')) {
-      event.stopPropagation();
       detail.downloadWork(work);
       return;
     }
@@ -2804,26 +3092,173 @@ class WorksGrid extends VirtualGrid {
     });
   }
 
-  updateCardDOM(awemeId) {
-    const card = dom.mainContainer.querySelector(`[data-aweme-id="${awemeId}"]`);
-    if (!card) return;
-    const work = state.works.find((w) => w.awemeId === awemeId);
-    if (!work) return;
-    if (card.classList.contains("work-skeleton")) {
-      this.populateItem(card, work);
-      return;
-    }
-    const videoUrl = utils.getVideoUrl(work);
-    if (videoUrl) card.dataset.videoUrl = videoUrl;
-    const thumb = card.querySelector(".work-thumb");
-    if (thumb && work.cover) thumb.src = utils.pickHttpsUrl(work.cover);
-    const title = card.querySelector(".work-title-text");
-    if (title) title.textContent = work.desc || "无文案";
+  #bindMediaEvents() {
+    // pointerenter/leave 不冒泡、无法做容器级委托；用冒泡的 pointerover/out，
+    // relatedTarget 仍在同一 .work-media 内部时忽略，实现"跨界只触发一次"
+    this.#container.addEventListener("pointerover", (e) => {
+      const media = e.target.closest?.(".work-media");
+      if (!media) return;
+      if (e.relatedTarget && media.contains(e.relatedTarget)) return;
+      const card = media.closest(".work-card");
+      if (!card) return;
+      if (this.#currentMediaCard === card) return;
+      // 先停上一张卡的预览再判模式/弹窗守卫：批量模式、弹窗打开、熔断期间换卡
+      // 也必须静音旧视频，否则旧预览只能依赖本委托链清理，漏掉即音频残留
+      if (this.#currentMediaCard) {
+        const prevVideo = this.#currentMediaCard.querySelector(".work-video-player");
+        if (prevVideo) this.#stopPreview(prevVideo);
+      }
+      if (state.batchMode) return;
+      if (!dom.dialogOverlay.classList.contains("hidden")) return;
+      if (detail.mediaRetryBlocked()) return;
+      const video = card.querySelector(".work-video-player");
+      if (!video || !this.#videoStates.has(video)) return;
+      const st = this.#videoStates.get(video);
+      this.#currentMediaCard = card;
+      if (st.hoverTimer) clearTimeout(st.hoverTimer);
+      st.hoverTimer = setTimeout(() => {
+        // 兜底：悬停延迟窗口内卡片被重建/摘除时，不得在游离节点上起播
+        if (!card.isConnected || !video.isConnected) return;
+        delete video.dataset.retries;
+        video.dataset.hovered = "1";
+        video.src = card.dataset.videoUrl || "";
+        video.currentTime = 0;
+        video.muted = false;
+        st.muteBtn.innerHTML = config.icons.unmute;
+        video.load();
+        const onCanPlay = () => {
+          if (!video.dataset.hovered) return;
+          detail.markMediaOk();
+          video.classList.add("video-ready");
+          st.controls.classList.add("video-ready");
+          const thumb = card.querySelector(".work-thumb");
+          if (thumb) thumb.classList.add("video-hidden");
+          video.play().catch(() => {
+            st.timeSpan.textContent = "⚠ 无法播放";
+          });
+        };
+        video.addEventListener("canplay", onCanPlay, { once: true });
+        video._hoverTimeout = setTimeout(() => {
+          video.removeEventListener("canplay", onCanPlay);
+        }, config.VIDEO_FALLBACK_TIMEOUT);
+      }, config.HOVER_PREVIEW_DELAY);
+    });
+
+    this.#container.addEventListener("pointerout", (e) => {
+      const media = e.target.closest?.(".work-media");
+      if (!media) return;
+      if (e.relatedTarget && media.contains(e.relatedTarget)) return;
+      const card = media.closest(".work-card");
+      if (!card) return;
+      if (this.#currentMediaCard !== card) return;
+      const video = card.querySelector(".work-video-player");
+      if (video) this.#stopPreview(video);
+    });
+    this.#container.addEventListener("timeupdate", (e) => {
+      const video = e.target;
+      if (!video.matches || !video.matches(".work-video-player")) return;
+      if (video._lastProgressUpdate && Date.now() - video._lastProgressUpdate < 250) return;
+      video._lastProgressUpdate = Date.now();
+      if (!this.#videoStates.has(video)) return;
+      const st = this.#videoStates.get(video);
+      detail.updateVideoProgress(video, st.progress, st.timeSpan, "0.3");
+    });
+    this.#container.addEventListener("loadedmetadata", (e) => {
+      const video = e.target;
+      if (!video.matches || !video.matches(".work-video-player")) return;
+      if (!this.#videoStates.has(video)) return;
+      const st = this.#videoStates.get(video);
+      st.timeSpan.textContent = `0:00 / ${detail.formatTime(video.duration)}`;
+    });
+    this.#container.addEventListener("error", (e) => {
+      const video = e.target;
+      if (!video.matches || !video.matches(".work-video-player")) return;
+      if (!this.#videoStates.has(video)) return;
+      const st = this.#videoStates.get(video);
+      detail.handleVideoError(video, {
+        onMax: () => { st.timeSpan.textContent = "⚠ 链接失效"; },
+        onRetry: (retries, delay) => {
+          st.timeSpan.textContent = delay > 0 ? `⏳ 重试(${retries + 1})…` : "⏳ 重试…";
+        },
+      });
+    });
+    this.#container.addEventListener("input", (e) => {
+      const slider = e.target;
+      if (!slider.matches || !slider.matches(".video-progress")) return;
+      const card = slider.closest(".work-card");
+      if (!card) return;
+      const video = card.querySelector(".work-video-player");
+      if (this.#sliderRaf) cancelAnimationFrame(this.#sliderRaf);
+      this.#sliderRaf = requestAnimationFrame(() => {
+        if (video && video.duration) video.currentTime = (slider.value / 100) * video.duration;
+      });
+    });
+    this.#container.addEventListener("play", (e) => {
+      const video = e.target;
+      if (!video.matches || !video.matches(".work-video-player")) return;
+      if (!this.#videoStates.has(video)) return;
+      clearTimeout(video._retryTimer);
+      this.#videoStates.get(video).playBtn.innerHTML = config.icons.pause;
+    });
+    this.#container.addEventListener("pause", (e) => {
+      const video = e.target;
+      if (!video.matches || !video.matches(".work-video-player")) return;
+      if (!this.#videoStates.has(video)) return;
+      this.#videoStates.get(video).playBtn.innerHTML = config.icons.play;
+    });
+  }
+
+  // 封面代际自增：updateCardDOM 会复用同一节点再次入队，作废在途探针的乱序回填
+  #enqueueCover(img, url) {
+    const gen = String((Number(img.dataset.coverGen) || 0) + 1);
+    img.dataset.coverGen = gen;
+    this.#coverQueue.push({ img, url, gen });
+    this.#scheduleCoverDrain();
+  }
+
+  // 探针预载：成功才提交背景图（div 无裂图载体）；失败原样重试一次，仍失败停留透明占位态
+  #scheduleCoverDrain() {
+    if (this.#coverDrainRafId) return;
+    this.#coverDrainRafId = requestAnimationFrame(() => {
+      this.#coverDrainRafId = 0;
+      let n = 0;
+      while (this.#coverQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
+        const { img, url, gen } = this.#coverQueue.shift();
+        const alive = () => img.isConnected && img.dataset.coverGen === gen;
+        const commit = () => {
+          if (!alive()) return;
+          detail.markMediaOk();
+          img.style.backgroundImage = `url("${url.replace(/["\\]/g, "\\$&")}")`;
+          img.classList.remove("media-loading");
+        };
+        const fail = () => {
+          if (!alive()) return;
+          detail.markMediaFail();
+          // dataset.retry 挂在可见节点上，随重填换新节点自然复位；熔断冷却中不重试
+          if (img.dataset.retry || detail.mediaRetryBlocked()) return;
+          img.dataset.retry = "1";
+          const retryProbe = new Image();
+          retryProbe.onload = commit;
+          retryProbe.onerror = fail;
+          retryProbe.src = url;
+        };
+        const probe = new Image();
+        probe.onload = commit;
+        probe.onerror = fail;
+        probe.src = url;
+        n++;
+      }
+      if (this.#coverQueue.length) this.#scheduleCoverDrain();
+    });
+  }
+
+  // 赋 src 前置三态：thumb 先透明，露出 .work-media 渐变占位底
+  #stageThumb(thumb) {
+    thumb.classList.add("media-loading");
   }
 }
 
 const worksGrid = new WorksGrid();
-
 // ---------- Detail ----------
 class Detail {
   #index = -1;
@@ -2838,27 +3273,35 @@ class Detail {
   #mediaFailCount = 0;
   #mediaLastFailAt = 0;
   #mediaBreakUntil = 0;
+  #imgProbeToken = 0;
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
     // 淡出当前图片
     img.style.opacity = '0';
     requestAnimationFrame(() => {
-      img.src = utils.pickHttpsUrl(this.#noteWork.images[this.#noteImgIndex])
+      const url = utils.pickHttpsUrl(this.#noteWork.images[this.#noteImgIndex])
         || utils.pickHttpsUrl(this.#noteWork.cover)
         || "";
-      // 新图片加载完成后淡入
-      const done = () => {
+      // 探针先行：失败 URL 不落可见节点（裂图无载体），失败时恢复显示上一张
+      const token = ++this.#imgProbeToken;
+      if (!url) {
         img.style.opacity = '1';
-        img.removeEventListener('load', done);
-        img.removeEventListener('error', onError);
+        return;
+      }
+      const probe = new Image();
+      probe.onload = () => {
+        if (token !== this.#imgProbeToken) return;
+        this.markMediaOk();
+        img.addEventListener('load', () => { img.style.opacity = '1'; }, { once: true });
+        img.src = url;
       };
-      const onError = () => {
+      probe.onerror = () => {
+        if (token !== this.#imgProbeToken) return;
         this.markMediaFail();
-        done();
+        img.style.opacity = '1';
       };
-      img.addEventListener('load', done, { once: true });
-      img.addEventListener('error', onError, { once: true });
+      probe.src = url;
     });
     dom.detailImgCounter.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
     dom.detailTime.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
@@ -3118,13 +3561,26 @@ class Detail {
       } else if (isNote) {
         this.renderDetailNote(work, onReady);
       } else if (work.cover) {
-        dom.detailImage.src = work.cover;
         dom.detailPlayBtn.style.display = "none";
         dom.detailMuteBtn.style.display = "none";
         dom.detailImgCounter.classList.add("hidden");
         dom.detailNavLeft.classList.add("hidden");
         dom.detailNavRight.classList.add("hidden");
-        onReady();
+        // 探针先行：失败不落可见节点；onReady 在探针落定后触发，不再先于加载结束过渡
+        const token = ++this.#imgProbeToken;
+        const probe = new Image();
+        probe.onload = () => {
+          if (token !== this.#imgProbeToken) return;
+          this.markMediaOk();
+          dom.detailImage.src = work.cover;
+          onReady();
+        };
+        probe.onerror = () => {
+          if (token !== this.#imgProbeToken) return;
+          this.markMediaFail();
+          onReady();
+        };
+        probe.src = work.cover;
       } else {
         onReady();
       }
@@ -3209,7 +3665,6 @@ class Detail {
     const audio = dom.detailAudio;
 
     const readyFn = () => { if (onReady) onReady(); };
-    img.src = work.images[0] || work.cover || "";
     // 图片加载完成时结束过渡
     let readyFired = false;
     const fireReady = () => {
@@ -3217,12 +3672,28 @@ class Detail {
       readyFired = true;
       readyFn();
     };
-    img.addEventListener("load", fireReady, { once: true });
-    img.addEventListener("error", () => {
-      this.markMediaFail();
-      fireReady();
-    }, { once: true });
     img.alt = work.desc || "";
+    // 探针先行：失败 URL 不落可见节点（裂图无载体）；成功后经缓存落 src，load 时结束过渡
+    const firstUrl = work.images[0] || work.cover || "";
+    const token = ++this.#imgProbeToken;
+    if (!firstUrl) {
+      fireReady();
+    } else {
+      const probe = new Image();
+      probe.onload = () => {
+        if (token !== this.#imgProbeToken) return;
+        this.markMediaOk();
+        img.addEventListener("load", fireReady, { once: true });
+        img.addEventListener("error", fireReady, { once: true });
+        img.src = firstUrl;
+      };
+      probe.onerror = () => {
+        if (token !== this.#imgProbeToken) return;
+        this.markMediaFail();
+        fireReady();
+      };
+      probe.src = firstUrl;
+    }
 
     dom.detailImgCounter.textContent = `1 / ${work.images.length}`;
     dom.detailImgCounter.classList.toggle("hidden", work.images.length <= 1);
@@ -3517,6 +3988,7 @@ class Detail {
     ui.onRetry(retries, delay);
     clearTimeout(video._retryTimer);
     video._retryTimer = setTimeout(() => {
+      if (!video.isConnected) return;
       video.load();
       video.play().catch(() => {});
     }, delay);
@@ -3697,12 +4169,14 @@ dom.menuDropdown.addEventListener("click", () => {
   dom.menuDropdown.classList.add("hidden");
 });
 
-dom.dialogClose.addEventListener("click", () => {
+dom.dialogClose.addEventListener("click", async () => {
   if (state.preventDialogClose) return;
   if (state.activeDialog) {
     state.activeDialog();
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
   }
+  // 设置面板在关闭前保存运行参数；校验失败则保持打开
+  if (!(await settings.saveBeforeClose())) return;
   dialog.closeDialog();
 });
 
@@ -3797,6 +4271,8 @@ dom.btnSync.addEventListener("click", async () => {
 
 // ---------- init IIFE ----------
 (async function init() {
+  // 构建标记：用于确认页面运行的是最新构建（头像探针预载版）
+  console.info("[DDM] options build 2026-08-24 sidebar-virtualize");
   document.body.classList.remove("batch-mode");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");

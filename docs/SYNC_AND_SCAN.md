@@ -11,7 +11,7 @@
 - 每完成 40 条后暂停 10–20s（`CONFIG.SYNC.BATCH_SIZE`），暂停期间每 2s 调用 `chrome.storage.local.get` 保活 SW
 - 检查 `cancelled` 标志，循环结束调用 `mergeAndSaveWorks(allWorks)` 写入存储
 
-**视频直链时效**：`formatWork` 按三级优先取链接——① `bit_rate[].playApi`（与推荐页手动"添加"按钮同款的长效 ID 型播放链接，`/aweme/v1/play/?video_id=…`）；② 无 playApi 时用最高清档 `play_addr.uri` 合成同形态裸链接（实测服务端认可，访问即 302 到新签 douyinvod 直链，参数仅需 `video_id/aid/is_play_url/line`）；③ 前两者皆缺时回落 CDN `url_list` 预签名直链（**短效**，几小时过期；部分直链过期时间藏在路径段 `/<sig>/<8位hex过期秒>` 而非 query 的 `expire`）。前两级 `videoExpireAt = 0`（长效），第③级解析 `expire` 参数写入。另：`mergeWork` 有降级保护——旧记录已是长效 v1/play 链接而新结果为短效 CDN 直链时不覆盖。
+**视频直链时效**：tab 模式链路的实际取链点是 inject.js `extractVideo`（api 源，由 `normalizeWork` 调用并带出 `videoExpireAt`），与独立模式 background.js `formatWork` **同款三级优先取链接（两处实现需同步修改）**——① `bit_rate[].playApi`（与推荐页手动"添加"按钮同款的长效 ID 型播放链接，`/aweme/v1/play/?video_id=…`）；② 无 playApi 时用最高清档 `play_addr.uri` 合成同形态裸链接（实测服务端认可，访问即 302 到新签 douyinvod 直链，参数仅需 `video_id/aid/is_play_url/line`）；③ 前两者皆缺时回落 CDN `url_list` 预签名直链（**短效**，几小时过期；部分直链过期时间藏在路径段 `/<sig>/<8位hex过期秒>` 而非 query 的 `expire`）。长效作为整体类目优先于 CDN，只在同类内部比分辨率，禁止改回"混池按最高分辨率挑选"——最高清档恰好缺 playApi 时会把短效直链存进库。前两级 `videoExpireAt = 0`（长效），第③级解析 `expire` 参数写入（inject 与 background 各有一份同款 `parseExpire`/`urlExpireAt`）。fiber 源分支有意不同：只认 playApi、无 url_list 回退、仅留最高一档。另：`mergeWork` 有降级保护——旧记录已是长效 v1/play 链接而新结果为短效 CDN 直链时不覆盖。
 
 **错误分类**：
 
@@ -24,7 +24,18 @@
 
 **链路**：`sync.syncFollowings()` → `services.findSecUid()` → `FETCH_FOLLOWING` → background.js `handleFetchFollowing` → 逐页 `sendToTabAsync('FETCH_FOLLOWING_PAGE')` → inject.js `fetchFollowingPage`
 
-**循环**：逐页 for 循环，`offset` 分页，延迟 500–1200ms。标准化为 5 字段 `{ uid, nickname, avatarLarger, followerCount, profileUrl }`。最终调用 `handleSaveFollowings` 写入存储。
+**循环**：逐页 for 循环，`offset` 分页，延迟 500–1200ms。标准化为 6 字段 `{ uid, nickname, avatarLarger, followerCount, awemeCount, profileUrl }`。**列表阶段不采集 `followerCount`/`awemeCount`**（关注列表接口的计数是滞后快照，常与主页展示差很远，两字段占位为 0）；二者仅由 profile/other 校准写入。
+
+**校准阶段**：列表收集完成后（未取消且非空），background 调用 `calibrateFollowingStats(list, fetchStats, isCancelled, requestId)` 逐用户请求 `GET /aweme/v1/web/user/profile/other/?sec_user_id=…`，用返回的 `user.aweme_count`/`user.follower_count` 原地覆盖条目，再随整体结果交给 options 走既有 `handleSaveFollowings` 落库。要点：
+
+- sec_uid 从 `entry.profileUrl` 反解（存储仍是 6 字段，不新增字段）
+- 单条失败静默跳过保留旧值；全部失败不影响同步结果
+- 条目间延迟 500–1200ms；取消复用 `CANCEL_ACTIVE_TASK` 链路（inject 端 `setActiveTask` 中止在途 fetch）
+- 进度经 `FOLLOWING_PROGRESS { phase: "calibrate", collected, total, requestId }` 透传，options 端文案切「正在校准作品数…」
+- 整个校准阶段受运行参数 `calibrateFollowings` 门控（设置弹窗「运行参数 → 同步关注后校准作品/粉丝数」开关，默认开启）
+- `fetchStats` 按模式注入：tab 模式 `sendToTabAsync('FETCH_USER_PROFILE')` → inject.js `fetchProfileOther`（签名源多源 fallback：profile/following/post/favorite/collection 任一捕获 query）；独立模式直接 `independentRequest(CONFIG.API.PROFILE_OTHER, …)`（a_bogus 本地生成，无 webSign）
+
+**侧边栏单用户校准**：打开作者侧边栏（`Sidebar.openSidebar`）时另发一次 `CALIBRATE_FOLLOWING { uid, secUid }`（不受上述开关门控），background 按模式取 profile/other 后直接写存储并返回计数，options 端更新 `state.followings` 与可见卡片 DOM；失败静默忽略。
 
 ## 3. 扫描点赞/收藏
 
@@ -41,7 +52,7 @@
 | 超时               | 15s                       | 15s                           |
 | 独立模式           | 不支持（Turing 验证）     | ✅ 支持                       |
 
-**openScanDialog 流程**：`services.findSecUid()` → `services.bgMsg(fetchArgs)` → 收到结果存入 `state[cfg.stateKey]` → `#renderGrid()` 渲染未关注作品网格 → 添加取消按钮。
+**openScanDialog 流程**：`services.findSecUid()` → `services.bgMsg(fetchArgs)` → 收到结果存入 `state[cfg.stateKey]` → `#renderGrid()` 渲染未关注作品网格 → footer 添加「添加」与「取消点赞/收藏」两个按钮。「添加」= 把未关注作者的作品（`authorFollowed === false`，与取消同批 targets）经 `SAVE_WORKS` 批量入扩展作品库：`mergeWork` 按 awemeId 去重合并、新记录落默认"未分类"分组；已入账的 awemeId 在弹窗会话内记入 `addedIds` 集合不重复计数，成功后按钮进入"已添加"态。取消进行中添加按钮禁用，`onCancelDone` 三个出口（中止/全失败/正常完成）经 `ctx.syncAddBtn` 按剩余数量恢复或刷新。「取消」= 同批 targets 走下述取消链路。
 
 **失败处理**：tab 模式下当 `secUid === "self"`（用户在 `/user/self` 页面）时，inject.js 通过 `resolveSelfSecUidFromCaptures()` 从捕获的签名参数（`sec_user_id`）解析真实 sec_uid——与签名同源，签名缓存存在则必然可解析；签名缓存缺失时 inject.js 直接返回 `NO_SIGNATURE`（options 弹引导对话框）；首页请求失败时 background 返回 `{ ok: false, error }` 而非假成功（0 结果），避免弹窗显示"已扫描 0 个"误导结论。
 

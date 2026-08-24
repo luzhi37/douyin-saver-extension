@@ -147,26 +147,20 @@
     </div>
   </div>
 
-  <!-- ====== 关注者卡片模板 ====== -->
-  <template id="followingCardTemplate">
-    <div class="following-card" data-uid="">
-      <div class="following-checkbox"></div>
-      <img class="following-avatar" alt="" loading="lazy" />
-      <div class="following-info">
-        <div class="following-nickname"></div>
-        <div class="following-stats">
-          <span class="stat-followers"></span>
-        </div>
-      </div>
-    </div>
-  </template>
-
+  <!-- 骨架与完整卡同构（原地填充/降级不换根节点），仅类名与占位样式不同；
+       头像失败时由 following-avatar-fallback 显示昵称首字占位。
+       头像必须是 div+background-image：背景图加载失败浏览器不绘制裂图图标，元素层面杜绝断裂图 -->
   <template id="followingSkeletonTemplate">
     <div class="following-card following-skeleton" data-uid="">
-      <div class="following-skeleton-avatar"></div>
-      <div class="following-skeleton-info">
-        <div class="following-skeleton-line"></div>
-        <div class="following-skeleton-line short"></div>
+      <div class="following-checkbox"></div>
+      <div class="following-main">
+        <div class="following-avatar" role="img"></div>
+        <span class="following-avatar-fallback hidden"></span>
+        <div class="following-nickname"></div>
+      </div>
+      <div class="following-stats">
+        <span class="stat-followers"></span>
+        <span class="stat-works"></span>
       </div>
     </div>
   </template>
@@ -175,7 +169,8 @@
   <template id="sidebarWorkTemplate">
     <div class="sidebar-work-item">
       <a target="_blank" rel="noopener" class="sidebar-work-link">
-        <img class="sidebar-work-cover" loading="lazy" onerror="this.style.display='none'" />
+        <!-- 封面必须是 div+background-image：背景图失败浏览器不绘制裂图图标，内联 onerror 一并废除 -->
+        <div class="sidebar-work-cover"></div>
         <div class="sidebar-work-cover-placeholder">📹</div>
         <div class="sidebar-work-plays"></div>
         <div class="work-type-badge flex-row hidden">
@@ -190,7 +185,8 @@
   <!-- ====== 点赞/收藏作品模板 ====== -->
   <template id="favWorkTemplate">
     <div class="fav-work-item">
-      <img class="fav-work-thumb" alt="" loading="lazy" />
+      <!-- 缩略图必须是 div+background-image：背景图失败浏览器不绘制裂图图标 -->
+      <div class="fav-work-thumb" role="img"></div>
     </div>
   </template>
 
@@ -203,7 +199,8 @@
             <use href="#icon-image-badge" />
           </svg>
         </div>
-        <img class="work-thumb" alt="" loading="lazy" />
+        <!-- 缩略图必须是 div+background-image：背景图失败浏览器不绘制裂图图标，元素层面杜绝断裂图 -->
+        <div class="work-thumb" role="img"></div>
         <video class="work-video-player" muted playsinline preload="none"></video>
         <div class="work-video-controls">
           <div class="video-controls-top">
@@ -344,16 +341,9 @@
             <div class="kv-row"><label class="bf-label">批次暂停最大值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMax" type="number" /></div>
             <div class="kv-row"><label class="bf-label">保活间隔 (ms)</label><input class="bf-input config-input" data-key="syncKeepaliveInterval" type="number" /></div>
             <div class="kv-row"><label class="bf-label">最大重试次数</label><input class="bf-input config-input" data-key="syncRetryMax" type="number" /></div>
-          </div>
-        </div>
-      </section>
-      <section class="settings-section">
-        <h3 class="settings-section-title">
-          <span class="section-title-text">独立模式</span>
-          <span class="section-chevron"></span>
-        </h3>
-        <div class="section-body">
-          <div class="section-body-inner">
+            <div class="cache-divider"></div>
+            <div class="settings-mode-row"><span>同步关注后校准作品/粉丝数</span><div class="mode-switch" id="settingsCalibrateSwitch"><div class="mode-slider"></div><button class="mode-btn" data-mode="off">关闭</button><button class="mode-btn active" data-mode="on">开启</button></div></div>
+            <div class="cache-divider"></div>
             <div class="settings-mode-row"><span>启用独立模式（无需抖音标签页）</span><div class="mode-switch" id="settingsModeSwitch"><div class="mode-slider" id="settingsModeSlider"></div><button class="mode-btn active" data-mode="off">关闭</button><button class="mode-btn" data-mode="on">开启</button></div></div>
             <p class="settings-hint" id="settingsModeHint">加载中…</p>
             <div class="kv-row bf-item" style="margin-top:6px">
