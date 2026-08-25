@@ -182,11 +182,6 @@ function genBrowserInfo(platform, features = {}) {
   return `${iw}|${ih}|${ow}|${oh}|0|0|0|0|${ow}|${oh}|${ow}|${oh}|${iw}|${ih}|24|24|${platform || "Win32"}`;
 }
 
-// 平台：抖音 — ABogus 原始浏览器信息（30 字符，用于 endCheck + RC4 输入）
-function genOriginalBrowser(platform) {
-  return `1536|742|0|0|0|0|0|0|${platform || "Win32"}`;
-}
-
 // 平台：抖音 — ABogus 校验位 endCheck
 function endCheck(a) {
   let r = 0;
