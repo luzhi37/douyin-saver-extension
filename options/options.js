@@ -4850,10 +4850,10 @@ dom.btnSync.addEventListener("click", async () => {
   });
 
   store.on("works", () => {
-    if (state.domain === "works") worksGrid.renderCards();
+    if (state.domain === "works") search.refreshGridView();
   });
   store.on("followings", () => {
-    if (state.domain === "followings") followingsGrid.renderFollowingCards();
+    if (state.domain === "followings") search.refreshGridView();
   });
   store.on("groups", () => groups.renderGroupTabs());
   store.on("currentGroupId", async () => {
