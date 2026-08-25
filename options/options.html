@@ -20,8 +20,9 @@
       <div class="group-tabs" id="groupTabs"></div>
     </div>
     <div class="topbar-right flex-row">
-      <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove">移动</button>
-      <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete">移除</button>
+      <span id="batchCount" class="batch-count hidden" aria-live="polite"></span>
+      <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove" disabled>移动</button>
+      <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete" disabled>移除</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost batch-action" id="btnBatchSelectAll">全选</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch" title="批量管理作品">批量</button>
       <div class="menu-container">
@@ -36,6 +37,7 @@
           <button class="menu-item" id="btnGroupManage">分组</button>
           <button class="menu-item" id="btnFavorites">扫描点赞</button>
           <button class="menu-item" id="btnCollections">扫描收藏</button>
+          <button class="menu-item" id="btnSearch">搜索</button>
           <button class="menu-item" id="btnSettings">设置</button>
           <div class="menu-divider"></div>
           <button class="menu-item danger" id="btnReset">重置</button>
@@ -44,6 +46,44 @@
       </div>
     </div>
   </header>
+
+  <!-- ====== 搜索栏（菜单「搜索」在顶栏下方展开的内联工具条，无快捷键，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
+  <div id="searchBar" class="search-bar hidden">
+    <svg width="16" height="16">
+      <use href="#icon-search" />
+    </svg>
+    <input id="searchInput" type="text" placeholder="搜索标题 / 作者 / ID" spellcheck="false" />
+    <span class="sb-filter-label">范围</span>
+    <div class="sb-seg" id="sbScope">
+      <button class="sb-seg-btn active" data-scope="all">综合</button>
+      <button class="sb-seg-btn" data-scope="author" id="sbScopeAuthor">作者</button>
+      <button class="sb-seg-btn" data-scope="title" id="sbScopeTitle">标题</button>
+      <button class="sb-seg-btn" data-scope="id">ID</button>
+    </div>
+    <span id="sbWorkFilters" class="sb-domain-filters flex-row">
+      <span class="sb-filter-label">排序</span>
+      <div class="sb-seg" id="sbSort">
+        <button class="sb-seg-btn active" data-sort="saved">保存时间</button>
+        <button class="sb-seg-btn" data-sort="authorCount">作者作品数</button>
+      </div>
+    </span>
+    <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
+      <span class="sb-filter-label">排序</span>
+      <div class="sb-seg" id="sbFollowSort">
+        <button class="sb-seg-btn active" data-fsort="followers">粉丝数</button>
+        <button class="sb-seg-btn" data-fsort="works">作品数</button>
+      </div>
+    </span>
+    <label class="sb-reverse"><input type="checkbox" id="sbReverse" />逆序</label>
+    <button id="btnClearInBar" class="filter-clear-btn">清除</button>
+    <button id="btnCloseSearch" class="icon-btn flex-center sb-close" aria-label="收起搜索">✕</button>
+  </div>
+
+  <!-- ====== 筛选状态条（仅「搜索栏收起但筛选仍生效」期间显示，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
+  <div id="filterBar" class="filter-bar hidden">
+    <span id="filterBarText" class="filter-bar-text"></span>
+    <button id="btnClearFilter" class="filter-clear-btn">清除筛选</button>
+  </div>
 
   <!-- ====== 主体内容 ====== -->
   <div id="appBody">
@@ -82,65 +122,82 @@
 
   <!-- ====== 详情报覆盖层（类似抖音刷作品） ====== -->
   <div id="detailOverlay" class="flex-col hidden">
-    <button id="detailClose" class="flex-center">✕</button>
+    <button id="detailClose" class="flex-center" aria-label="关闭详情">
+      <svg width="20" height="20">
+        <use href="#icon-close" />
+      </svg>
+    </button>
     <div class="detail-body">
       <div id="detailVideoContainer" class="flex-col hidden">
         <div id="detailVideoWrap" class="flex-center">
           <video id="detailVideo" playsinline></video>
+          <!-- 加载中指示（建议17） -->
+          <div id="detailLoader" class="detail-loader hidden flex-center">
+            <div class="spinner"></div>
+          </div>
         </div>
       </div>
       <div id="detailImageContainer" class="hidden">
         <div class="detail-image-container flex-center">
           <img id="detailImage" style="transition: opacity 0.2s" />
           <audio id="detailAudio" style="display: none" loop></audio>
-          <div id="detailImgCounter" class="hidden"></div>
-          <div id="detailNavLeft" class="detail-nav-btn flex-center hidden">
-            <svg width="24" height="24">
-              <use href="#icon-nav-left" />
-            </svg>
-          </div>
-          <div id="detailNavRight" class="detail-nav-btn flex-center hidden">
-            <svg width="24" height="24">
-              <use href="#icon-nav-right" />
-            </svg>
-          </div>
         </div>
       </div>
+      <!-- 导航箭头/图集计数挂 .detail-body 直下：不参与作品切换动效（容器淡入淡出与媒体滑动） -->
+      <div id="detailImgCounter" class="hidden"></div>
+      <div id="detailNavLeft" class="detail-nav-btn flex-center hidden" aria-label="上一张">
+        <svg width="24" height="24">
+          <use href="#icon-nav-left" />
+        </svg>
+      </div>
+      <div id="detailNavRight" class="detail-nav-btn detail-nav-right flex-center hidden" aria-label="下一张">
+        <svg width="24" height="24">
+          <use href="#icon-nav-right" />
+        </svg>
+      </div>
     </div>
-    <input type="range" id="detailProgressSlider" class="detail-progress-slider hidden" min="0" max="100" value="0" />
-    <div id="detailBottomBar" class="flex-row">
-      <button id="detailPlayBtn" class="detail-bar-btn icon-btn flex-center"></button>
-      <span id="detailTime" class="detail-bar-text detail-bar-time">0:00 / 0:00</span>
-      <span id="detailAuthor" class="detail-bar-text detail-bar-author hidden"></span>
-      <span id="detailTitle" class="detail-bar-title text-ellipsis"></span>
-      <span style="flex: 1; min-width: 0"></span>
-      <button id="detailMuteBtn" class="detail-bar-btn icon-btn flex-center"></button>
-      <button id="detailRemoveBtn" class="detail-bar-btn icon-btn flex-center" title="移除">
-        <svg width="24" height="24">
-          <use href="#icon-delete" />
-        </svg>
-      </button>
-      <button id="detailLoopBtn" class="detail-bar-btn icon-btn flex-center"></button>
-      <button id="detailSyncBtn" class="detail-bar-btn icon-btn flex-center" title="同步">
-        <svg width="24" height="24">
-          <use href="#icon-sync" />
-        </svg>
-      </button>
-      <button id="detailDownloadBtn" class="detail-bar-btn icon-btn flex-center" title="下载">
-        <svg width="24" height="24">
-          <use href="#icon-download" />
-        </svg>
-      </button>
-      <span id="detailCounter" class="detail-bar-text detail-bar-counter hidden"></span>
+    <div id="detailBottomBar">
+      <!-- 进度条并入底栏顶缘（建议16），通栏绝对定位 -->
+      <input type="range" id="detailProgressSlider" class="detail-progress-slider hidden" min="0" max="100" value="0" aria-label="播放进度" />
+      <div class="bar-group bar-controls flex-row">
+        <button id="detailPlayBtn" class="detail-bar-btn icon-btn flex-center" aria-label="播放"></button>
+        <span id="detailTime" class="detail-bar-text detail-bar-time">0:00 / 0:00</span>
+      </div>
+      <span class="bar-divider"></span>
+      <div class="bar-group bar-meta flex-row">
+        <a id="detailAuthor" class="detail-bar-text detail-bar-author hidden" target="_blank" rel="noopener"></a>
+        <a id="detailTitle" class="detail-bar-title text-ellipsis" target="_blank" rel="noopener"></a>
+      </div>
+      <span class="bar-divider"></span>
+      <div class="bar-group bar-actions flex-row">
+        <button id="detailMuteBtn" class="detail-bar-btn icon-btn flex-center" aria-label="静音"></button>
+        <button id="detailRemoveBtn" class="detail-bar-btn icon-btn flex-center" title="移除" aria-label="移除">
+          <svg width="24" height="24">
+            <use href="#icon-delete" />
+          </svg>
+        </button>
+        <button id="detailLoopBtn" class="detail-bar-btn icon-btn flex-center" title="循环模式" aria-label="循环模式"></button>
+        <button id="detailSyncBtn" class="detail-bar-btn icon-btn flex-center" title="同步" aria-label="同步">
+          <svg width="24" height="24">
+            <use href="#icon-sync" />
+          </svg>
+        </button>
+        <button id="detailDownloadBtn" class="detail-bar-btn icon-btn flex-center" title="下载" aria-label="下载">
+          <svg width="24" height="24">
+            <use href="#icon-download" />
+          </svg>
+        </button>
+        <span id="detailCounter" class="detail-bar-text detail-bar-counter hidden"></span>
+      </div>
     </div>
   </div>
 
   <!-- ====== 自定义弹窗容器（抖音风格） ====== -->
   <div id="dialogOverlay" class="hidden">
-    <div class="dy-dialog flex-col">
+    <div class="dy-dialog flex-col" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
       <div class="dy-dialog-header flex-row">
         <span id="dialogTitle"></span>
-        <button class="dy-dialog-close icon-btn flex-center" id="dialogClose">✕</button>
+        <button class="dy-dialog-close icon-btn flex-center" id="dialogClose" aria-label="关闭">✕</button>
       </div>
       <div class="dy-dialog-body" id="dialogBody"></div>
       <div class="dy-dialog-footer" id="dialogFooter"></div>
@@ -151,8 +208,8 @@
        头像失败时由 following-avatar-fallback 显示昵称首字占位。
        头像必须是 div+background-image：背景图加载失败浏览器不绘制裂图图标，元素层面杜绝断裂图 -->
   <template id="followingSkeletonTemplate">
-    <div class="following-card following-skeleton" data-uid="">
-      <div class="following-checkbox"></div>
+    <div class="following-card following-skeleton" data-uid="" tabindex="0">
+      <div class="following-checkbox" role="checkbox" tabindex="0" aria-checked="false" aria-label="选择关注者"></div>
       <div class="following-main">
         <div class="following-avatar" role="img"></div>
         <span class="following-avatar-fallback hidden"></span>
@@ -192,26 +249,26 @@
 
   <!-- ====== 作品卡片模板 ====== -->
   <template id="workCardTemplate">
-    <div class="work-card flex-col">
+    <div class="work-card flex-col" tabindex="0">
       <div class="work-media">
         <div class="work-type-badge flex-row hidden">
           <svg width="12" height="12">
             <use href="#icon-image-badge" />
           </svg>
         </div>
-        <!-- 缩略图必须是 div+background-image：背景图失败浏览器不绘制裂图图标，元素层面杜绝断裂图 -->
+        <!-- 缩略图必须是 div+background-image：背景图加载失败浏览器不绘制裂图图标，元素层面杜绝断裂图 -->
         <div class="work-thumb" role="img"></div>
         <video class="work-video-player" muted playsinline preload="none"></video>
         <div class="work-video-controls">
           <div class="video-controls-top">
-            <button class="video-play-btn icon-btn"></button>
+            <button class="video-play-btn icon-btn" aria-label="播放预览"></button>
             <span class="video-time">0:00 / 0:00</span>
-            <button class="video-mute-btn icon-btn"></button>
+            <button class="video-mute-btn icon-btn" aria-label="静音预览"></button>
           </div>
-          <input type="range" class="video-progress" min="0" max="100" value="0" />
+          <input type="range" class="video-progress" min="0" max="100" value="0" aria-label="播放进度" />
         </div>
       </div>
-      <div class="work-checkbox"></div>
+      <div class="work-checkbox" role="checkbox" tabindex="0" aria-checked="false" aria-label="选择作品"></div>
       <div class="work-title flex-row">
         <span class="work-title-text text-ellipsis">无文案</span>
         <button class="work-action-btn icon-btn flex-center" title="同步">
@@ -229,9 +286,9 @@
   </template>
 
   <template id="workSkeletonTemplate">
-    <div class="work-card work-skeleton flex-col">
+    <div class="work-card work-skeleton flex-col" tabindex="0">
       <div class="work-media"></div>
-      <div class="work-checkbox"></div>
+      <div class="work-checkbox" role="checkbox" tabindex="0" aria-checked="false" aria-label="选择作品"></div>
       <div class="work-title flex-row">
         <span class="work-title-text text-ellipsis"></span>
       </div>
@@ -254,8 +311,8 @@
               <use href="#icon-edit" />
             </svg></span>
         </button>
-        <button class="dy-btn flex-inline-center dy-btn-sm dy-btn-ghost dy-btn-danger delete-btn">
-          <span class="btn-icon flex-inline-center"><svg width="24" height="24">
+        <button class="dy-btn flex-inline-center dy-btn-sm dy-btn-ghost dy-btn-danger delete-btn" aria-label="删除分组">
+          <span class="btn-icon flex-inline-center"><svg width="14" height="14">
               <use href="#icon-delete" />
             </svg></span>
         </button>
@@ -322,6 +379,7 @@
       <section class="settings-section">
         <h3 class="settings-section-title">
           <span class="section-title-text">运行参数</span>
+          <button class="cookie-copy-all-btn" id="btnResetConfig" title="填入默认值，关闭面板时保存">恢复默认</button>
           <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
@@ -531,6 +589,14 @@
       </symbol>
       <symbol id="icon-arrow-down" viewBox="0 0 24 24">
         <path fill="currentColor" d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z" />
+      </symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24">
+        <path fill="currentColor"
+          d="M15.5 14h-.79l-.28-.27a6.47 6.47 0 0 0 1.57-4.23 6.5 6.5 0 1 0-6.5 6.5c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
+      </symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24">
+        <path fill="currentColor"
+          d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
       </symbol>
     </defs>
   </svg>
