@@ -965,21 +965,22 @@ body.domain-works #sidebarResizeHandle {
   transition: width 0.15s, background 0.15s;
 }
 
-/* 把手：底色圆角胶囊承载完整 ⣿ 双列点阵（列距 4px，密排），
-   骑在缝线上形成「线上串珠」结构 */
+/* 把手：底色圆角徽章承载双向箭头 ❮❯（横向伸缩语义，兼指点击切换与拖拽调宽） */
 .sidebar-resize-handle::after {
   --grip-color: var(--dy-border);
-  content: "";
+  content: "❮❯";
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 8px;
-  height: 24px;
-  border-radius: 4px;
+  padding: 4px 5px;
+  border-radius: 9px;
   background-color: var(--dy-bg);
-  background-image: radial-gradient(circle, var(--grip-color) 1.1px, transparent 1.4px);
-  background-size: 4px 4px;
+  font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--grip-color);
+  transition: color 0.15s;
 }
 
 .sidebar-resize-handle:hover,
