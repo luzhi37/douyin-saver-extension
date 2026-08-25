@@ -986,15 +986,12 @@ body.domain-works #sidebarResizeHandle {
 .sidebar-resize-handle:hover::before,
 .sidebar-resize-handle.active::before {
   width: 8px;
-  background: var(--dy-primary);
 }
 
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle.active::after {
   width: 8px;
   height: 64px;
-  border-radius: 4px;
-  background-color: var(--dy-primary);
 }
 
 /* ===== 按钮系统 ===== */
