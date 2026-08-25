@@ -869,7 +869,6 @@ body.domain-works #sidebarResizeHandle {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--dy-border);
   background: var(--dy-bg);
   overflow: hidden;
   contain: layout style paint;
@@ -878,7 +877,6 @@ body.domain-works #sidebarResizeHandle {
 .sidebar.sidebar-zero {
   width: 0 !important;
   min-width: 0 !important;
-  border-left: none;
   padding: 0;
 }
 
@@ -953,9 +951,47 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
+/* 分割条：缝线贯穿全高（仅侧边栏展开时可见、可交互），
+   悬停/拖动时加粗变主色。点击切换显隐 / 拖拽调宽 */
+.sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 5px;
+  background: var(--dy-border);
+  transition: width 0.15s, background 0.15s;
+}
+
+/* 把手：与缝线同宽的小长块（可抓取段），悬停/拖动随缝线一起变主色 */
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 5px;
+  height: 48px;
+  border-radius: 2.5px;
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
 .sidebar-resize-handle:hover,
 .sidebar-resize-handle.active {
-  background: var(--dy-primary);
+  background: transparent;
+}
+
+.sidebar-resize-handle:hover::before,
+.sidebar-resize-handle.active::before {
+  width: 8px;
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.active::after {
+  width: 8px;
+  height: 64px;
 }
 
 /* ===== 按钮系统 ===== */
