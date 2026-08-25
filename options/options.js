@@ -259,19 +259,19 @@ const utils = {
 // ---------- 检索：搜索/排序 ----------
 // 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
 // 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响
-const searchState = {
-  keyword: "",
-  scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID
-  sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品域）
-  followingsSort: "followers", // followers 粉丝数 | works 作品数（仅关注域）
-  reverse: false, // 逆序（翻转最终顺序，两域共用）
-};
-
-const SEARCH_SCOPE_LABELS = { author: "作者", title: "标题", id: "ID" };
-const SEARCH_SORT_LABELS = { authorCount: "作者作品数" };
-const SEARCH_FOLLOWINGS_SORT_LABELS = { works: "作品数" };
-
 class SearchBar {
+  static SEARCH_SCOPE_LABELS = { author: "作者", title: "标题", id: "ID" };
+  static SEARCH_SORT_LABELS = { authorCount: "作者作品数" };
+  static SEARCH_FOLLOWINGS_SORT_LABELS = { works: "作品数" };
+
+  #searchState = {
+    keyword: "",
+    scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID
+    sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品域）
+    followingsSort: "followers", // followers 粉丝数 | works 作品数（仅关注域）
+    reverse: false, // 逆序（翻转最终顺序，两域共用）
+  };
+
   #debounceTimer = 0;
 
   constructor() {
@@ -280,15 +280,15 @@ class SearchBar {
 
   // ---------- 数据层：过滤与排序视图 ----------
   isFilterActive() {
-    if (!searchState.keyword.trim() && !searchState.reverse) return false;
+    if (!this.#searchState.keyword.trim() && !this.#searchState.reverse) return false;
     return state.domain === "works"
-      ? searchState.sort !== "saved"
-      : searchState.followingsSort !== "followers";
+      ? this.#searchState.sort !== "saved"
+      : this.#searchState.followingsSort !== "followers";
   }
 
   // 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
   #matchWork(work, kw) {
-    switch (searchState.scope) {
+    switch (this.#searchState.scope) {
       case "author":
         return (work.nickname || "").toLowerCase().includes(kw) || String(work.uid || "").toLowerCase().includes(kw);
       case "title":
@@ -305,10 +305,10 @@ class SearchBar {
   }
 
   getWorksView() {
-    const kw = searchState.keyword.trim().toLowerCase();
+    const kw = this.#searchState.keyword.trim().toLowerCase();
     let list = state.works;
     if (kw) list = list.filter((w) => this.#matchWork(w, kw));
-    if (searchState.sort === "authorCount") {
+    if (this.#searchState.sort === "authorCount") {
       // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
       // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
       const counts = new Map();
@@ -325,17 +325,17 @@ class SearchBar {
       // 保存时间（savedAt）降序为基准，与 storage 层默认返回顺序一致
       list = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
     }
-    if (searchState.reverse) list.reverse();
+    if (this.#searchState.reverse) list.reverse();
     return list;
   }
 
   getFollowingsView() {
-    const kw = searchState.keyword.trim().toLowerCase();
+    const kw = this.#searchState.keyword.trim().toLowerCase();
     // 关注域无标题维度：title 范围（域切换残留）按昵称处理。
     // 无关键词也须拷贝后再排序，不得原地改动 state.followings
     let list = kw
       ? state.followings.filter((f) => {
-          switch (searchState.scope) {
+          switch (this.#searchState.scope) {
             case "author":
             case "title":
               return (f.nickname || "").toLowerCase().includes(kw);
@@ -347,23 +347,23 @@ class SearchBar {
         })
       : [...state.followings];
     // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定
-    const field = searchState.followingsSort === "works" ? "awemeCount" : "followerCount";
+    const field = this.#searchState.followingsSort === "works" ? "awemeCount" : "followerCount";
     list.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
-    if (searchState.reverse) list.reverse();
+    if (this.#searchState.reverse) list.reverse();
     return list;
   }
 
   // ---------- UI 同步 ----------
   updateFilterBar() {
     const parts = [];
-    const kw = searchState.keyword.trim();
-    if (kw) parts.push(`${SEARCH_SCOPE_LABELS[searchState.scope] || "关键词"} "${kw}"`);
+    const kw = this.#searchState.keyword.trim();
+    if (kw) parts.push(`${SearchBar.SEARCH_SCOPE_LABELS[this.#searchState.scope] || "关键词"} "${kw}"`);
     if (state.domain === "works") {
-      if (searchState.sort !== "saved") parts.push(SEARCH_SORT_LABELS[searchState.sort]);
-    } else if (searchState.followingsSort !== "followers") {
-      parts.push(SEARCH_FOLLOWINGS_SORT_LABELS[searchState.followingsSort]);
+      if (this.#searchState.sort !== "saved") parts.push(SearchBar.SEARCH_SORT_LABELS[this.#searchState.sort]);
+    } else if (this.#searchState.followingsSort !== "followers") {
+      parts.push(SearchBar.SEARCH_FOLLOWINGS_SORT_LABELS[this.#searchState.followingsSort]);
     }
-    if (searchState.reverse) parts.push("逆序");
+    if (this.#searchState.reverse) parts.push("逆序");
     // 搜索栏展开期间控件状态自可见，摘要条隐藏避免两行重复
     if (!parts.length || !this.isFilterActive() || this.#isSearchBarOpen()) {
       dom.filterBar.classList.add("hidden");
@@ -398,15 +398,15 @@ class SearchBar {
 
   syncSegUI() {
     dom.sbScope.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.scope === searchState.scope);
+      btn.classList.toggle("active", btn.dataset.scope === this.#searchState.scope);
     });
     dom.sbSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.sort === searchState.sort);
+      btn.classList.toggle("active", btn.dataset.sort === this.#searchState.sort);
     });
     dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.fsort === searchState.followingsSort);
+      btn.classList.toggle("active", btn.dataset.fsort === this.#searchState.followingsSort);
     });
-    dom.sbReverse.checked = searchState.reverse;
+    dom.sbReverse.checked = this.#searchState.reverse;
   }
 
   // 范围段的域差异：「标题」仅作品域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
@@ -414,14 +414,14 @@ class SearchBar {
     const isWorks = state.domain === "works";
     dom.sbScopeTitle.classList.toggle("hidden", !isWorks);
     dom.sbScopeAuthor.textContent = isWorks ? "作者" : "昵称";
-    if (!isWorks && searchState.scope === "title") searchState.scope = "all";
+    if (!isWorks && this.#searchState.scope === "title") this.#searchState.scope = "all";
   }
 
   #updateSearchPlaceholder() {
     const placeholders = state.domain === "works"
       ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
       : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
-    dom.searchInput.placeholder = placeholders[searchState.scope] || placeholders.all;
+    dom.searchInput.placeholder = placeholders[this.#searchState.scope] || placeholders.all;
   }
 
   #isSearchBarOpen() {
@@ -438,7 +438,7 @@ class SearchBar {
     dom.searchBar.classList.remove("hidden");
     // 排序段随域显隐；逆序复选框两域共用
     this.syncForDomain();
-    dom.searchInput.value = searchState.keyword;
+    dom.searchInput.value = this.#searchState.keyword;
     this.updateFilterBar();
     this.#updateSearchMenuLabel();
     dom.searchInput.focus();
@@ -460,17 +460,17 @@ class SearchBar {
   applySearchInput() {
     clearTimeout(this.#debounceTimer);
     this.#debounceTimer = setTimeout(() => {
-      searchState.keyword = dom.searchInput.value;
+      this.#searchState.keyword = dom.searchInput.value;
       this.refreshGridView();
     }, config.SEARCH_DEBOUNCE);
   }
 
   clearSearchFilters() {
-    searchState.keyword = "";
-    searchState.scope = "all";
-    searchState.sort = "saved";
-    searchState.followingsSort = "followers";
-    searchState.reverse = false;
+    this.#searchState.keyword = "";
+    this.#searchState.scope = "all";
+    this.#searchState.sort = "saved";
+    this.#searchState.followingsSort = "followers";
+    this.#searchState.reverse = false;
     dom.searchInput.value = "";
     this.syncScopeUIForDomain();
     this.#updateSearchPlaceholder();
@@ -484,7 +484,7 @@ class SearchBar {
     dom.sbScope.addEventListener("click", (e) => {
       const btn = e.target.closest(".sb-seg-btn");
       if (!btn) return;
-      searchState.scope = btn.dataset.scope;
+      this.#searchState.scope = btn.dataset.scope;
       this.syncSegUI();
       this.#updateSearchPlaceholder();
       this.refreshGridView();
@@ -492,19 +492,19 @@ class SearchBar {
     dom.sbSort.addEventListener("click", (e) => {
       const btn = e.target.closest(".sb-seg-btn");
       if (!btn) return;
-      searchState.sort = btn.dataset.sort;
+      this.#searchState.sort = btn.dataset.sort;
       this.syncSegUI();
       this.refreshGridView();
     });
     dom.sbFollowSort.addEventListener("click", (e) => {
       const btn = e.target.closest(".sb-seg-btn");
       if (!btn) return;
-      searchState.followingsSort = btn.dataset.fsort;
+      this.#searchState.followingsSort = btn.dataset.fsort;
       this.syncSegUI();
       this.refreshGridView();
     });
     dom.sbReverse.addEventListener("change", () => {
-      searchState.reverse = dom.sbReverse.checked;
+      this.#searchState.reverse = dom.sbReverse.checked;
       this.refreshGridView();
     });
     dom.btnClearInBar.addEventListener("click", () => this.clearSearchFilters());
