@@ -965,8 +965,8 @@ body.domain-works #sidebarResizeHandle {
   transition: width 0.15s, background 0.15s;
 }
 
-/* 把手：主色实心圆角徽章 + 白色双向箭头，任何背景下高对比可见
-   （侧边栏收起后仍是显眼入口）；悬停放大反馈 */
+/* 把手：白色实心圆角徽章 + 深色双向箭头，中性高对比，不抢主题色；
+   侧边栏收起后仍是显眼入口；悬停放大反馈 */
 .sidebar-resize-handle::after {
   content: "❮❯";
   position: absolute;
@@ -975,13 +975,13 @@ body.domain-works #sidebarResizeHandle {
   transform: translate(-50%, -50%);
   padding: 5px 6px;
   border-radius: 10px;
-  background-color: var(--dy-primary);
+  background-color: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
   font-size: 10px;
   line-height: 1;
   letter-spacing: 1px;
-  color: #fff;
+  color: #1a1c28;
   transition: transform 0.15s, filter 0.15s;
 }
 
@@ -993,7 +993,7 @@ body.domain-works #sidebarResizeHandle {
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle.active::after {
   transform: translate(-50%, -50%) scale(1.12);
-  filter: brightness(1.15);
+  filter: brightness(0.92);
 }
 
 /* ===== 按钮系统 ===== */
