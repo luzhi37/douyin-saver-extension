@@ -123,6 +123,7 @@ const dom = {
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
   sidebarLoader: document.querySelector("#sidebarLoader"),
   sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
+  sidebarWorkTemplate: document.querySelector("#sidebarWorkTemplate"),
   btnFavorites: document.querySelector("#btnFavorites"),
   btnCollections: document.querySelector("#btnCollections"),
   batchCount: document.querySelector("#batchCount"),
@@ -1813,8 +1814,6 @@ class ImportExport {
 
 const importExport = new ImportExport();
 
-const $sidebarTmpl = document.getElementById("sidebarWorkTemplate");
-
 // ---------- Sidebar ----------
 class Sidebar {
   static SNAP_POINTS = config.SIDEBAR_SNAP_POINTS;
@@ -2117,7 +2116,7 @@ class Sidebar {
   }
 
   #createWorkItem(work) {
-    const item = $sidebarTmpl.content.cloneNode(true).firstElementChild;
+    const item = dom.sidebarWorkTemplate.content.cloneNode(true).firstElementChild;
     const link = item.children[0];
     const isNote = work.type === "note";
     const type = isNote ? "note" : "video";
