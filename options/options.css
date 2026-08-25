@@ -953,9 +953,29 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
+/* 常显抓握条（点击切换显隐 / 拖拽调宽）：默认描边色，收起后仍可见作为展开入口 */
+.sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 56px;
+  border-radius: 2px;
+  background: var(--dy-border);
+  transition: background 0.15s, height 0.15s;
+}
+
 .sidebar-resize-handle:hover,
 .sidebar-resize-handle.active {
+  background: transparent;
+}
+
+.sidebar-resize-handle:hover::before,
+.sidebar-resize-handle.active::before {
   background: var(--dy-primary);
+  height: 96px;
 }
 
 /* ===== 按钮系统 ===== */
