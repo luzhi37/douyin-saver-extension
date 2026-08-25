@@ -953,7 +953,7 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
-/* 分割条抓握纹理：三短横杠（分割把手惯用形，避免误读为滚动条滑块）。
+/* 分割条抓握纹理：竖点阵 2×4（braille ⣿ 式把手，避免误读为滚动条滑块）。
    点击切换显隐 / 拖拽调宽；收起后仍可见作为展开入口 */
 .sidebar-resize-handle::before {
   --grip-color: var(--dy-border);
@@ -962,13 +962,10 @@ body.domain-works #sidebarResizeHandle {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 16px;
-  height: 12px;
-  background-image: repeating-linear-gradient(
-    to bottom,
-    var(--grip-color) 0 2px,
-    transparent 2px 4px
-  );
+  width: 14px;
+  height: 20px;
+  background-image: radial-gradient(circle, var(--grip-color) 1.5px, transparent 1.9px);
+  background-size: 7px 5px;
 }
 
 .sidebar-resize-handle:hover,
