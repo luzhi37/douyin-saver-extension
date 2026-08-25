@@ -24,7 +24,6 @@ const config = {
   // 侧边栏
   SIDEBAR_SNAP_POINTS: [650, 0],
   SIDEBAR_SCROLL_THRESHOLD: 100,
-  SIDEBAR_MIN_WIDTH: 80,
   SIDEBAR_FILL_THRESHOLD: 50,
   SIDEBAR_IMG_PER_FRAME: 6,
 
@@ -272,193 +271,250 @@ const SEARCH_SCOPE_LABELS = { author: "作者", title: "标题", id: "ID" };
 const SEARCH_SORT_LABELS = { authorCount: "作者作品数" };
 const SEARCH_FOLLOWINGS_SORT_LABELS = { works: "作品数" };
 
-function isFilterActive() {
-  if (!searchState.keyword.trim() && !searchState.reverse) return false;
-  return state.domain === "works"
-    ? searchState.sort !== "saved"
-    : searchState.followingsSort !== "followers";
-}
+class SearchBar {
+  #debounceTimer = 0;
 
-// 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
-function matchWork(work, kw) {
-  switch (searchState.scope) {
-    case "author":
-      return (work.nickname || "").toLowerCase().includes(kw) || String(work.uid || "").toLowerCase().includes(kw);
-    case "title":
-      return (work.desc || "").toLowerCase().includes(kw);
-    case "id":
-      return String(work.awemeId).toLowerCase().includes(kw);
-    default:
-      return (
-        (work.desc || "").toLowerCase().includes(kw) ||
-        (work.nickname || "").toLowerCase().includes(kw) ||
-        String(work.awemeId).toLowerCase().includes(kw)
-      );
+  constructor() {
+    this.#bindEvents();
   }
-}
 
-function getWorksView() {
-  const kw = searchState.keyword.trim().toLowerCase();
-  let list = state.works;
-  if (kw) list = list.filter((w) => matchWork(w, kw));
-  if (searchState.sort === "authorCount") {
-    // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
-    // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
-    const counts = new Map();
-    for (const w of state.works) {
-      const key = w.uid || w.nickname || "";
-      counts.set(key, (counts.get(key) || 0) + 1);
+  // ---------- 数据层：过滤与排序视图 ----------
+  isFilterActive() {
+    if (!searchState.keyword.trim() && !searchState.reverse) return false;
+    return state.domain === "works"
+      ? searchState.sort !== "saved"
+      : searchState.followingsSort !== "followers";
+  }
+
+  // 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
+  #matchWork(work, kw) {
+    switch (searchState.scope) {
+      case "author":
+        return (work.nickname || "").toLowerCase().includes(kw) || String(work.uid || "").toLowerCase().includes(kw);
+      case "title":
+        return (work.desc || "").toLowerCase().includes(kw);
+      case "id":
+        return String(work.awemeId).toLowerCase().includes(kw);
+      default:
+        return (
+          (work.desc || "").toLowerCase().includes(kw) ||
+          (work.nickname || "").toLowerCase().includes(kw) ||
+          String(work.awemeId).toLowerCase().includes(kw)
+        );
     }
-    const rank = new Map(
-      [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : 1)).map((k, i) => [k, i]),
-    );
-    const authorKey = (w) => w.uid || w.nickname || "";
-    list = [...list].sort((a, b) => (rank.get(authorKey(a)) ?? 0) - (rank.get(authorKey(b)) ?? 0) || (b.savedAt || 0) - (a.savedAt || 0));
-  } else {
-    // 保存时间（savedAt）降序为基准，与 storage 层默认返回顺序一致
-    list = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
   }
-  if (searchState.reverse) list.reverse();
-  return list;
-}
 
-function getFollowingsView() {
-  const kw = searchState.keyword.trim().toLowerCase();
-  // 关注域无标题维度：title 范围（域切换残留）按昵称处理。
-  // 无关键词也须拷贝后再排序，不得原地改动 state.followings
-  let list = kw
-    ? state.followings.filter((f) => {
-        switch (searchState.scope) {
-          case "author":
-          case "title":
-            return (f.nickname || "").toLowerCase().includes(kw);
-          case "id":
-            return String(f.uid).toLowerCase().includes(kw);
-          default:
-            return (f.nickname || "").toLowerCase().includes(kw) || String(f.uid).toLowerCase().includes(kw);
-        }
-      })
-    : [...state.followings];
-  // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定
-  const field = searchState.followingsSort === "works" ? "awemeCount" : "followerCount";
-  list.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
-  if (searchState.reverse) list.reverse();
-  return list;
-}
-
-function updateFilterBar() {
-  const parts = [];
-  const kw = searchState.keyword.trim();
-  if (kw) parts.push(`${SEARCH_SCOPE_LABELS[searchState.scope] || "关键词"} "${kw}"`);
-  if (state.domain === "works") {
-    if (searchState.sort !== "saved") parts.push(SEARCH_SORT_LABELS[searchState.sort]);
-  } else if (searchState.followingsSort !== "followers") {
-    parts.push(SEARCH_FOLLOWINGS_SORT_LABELS[searchState.followingsSort]);
+  getWorksView() {
+    const kw = searchState.keyword.trim().toLowerCase();
+    let list = state.works;
+    if (kw) list = list.filter((w) => this.#matchWork(w, kw));
+    if (searchState.sort === "authorCount") {
+      // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
+      // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
+      const counts = new Map();
+      for (const w of state.works) {
+        const key = w.uid || w.nickname || "";
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      const rank = new Map(
+        [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : 1)).map((k, i) => [k, i]),
+      );
+      const authorKey = (w) => w.uid || w.nickname || "";
+      list = [...list].sort((a, b) => (rank.get(authorKey(a)) ?? 0) - (rank.get(authorKey(b)) ?? 0) || (b.savedAt || 0) - (a.savedAt || 0));
+    } else {
+      // 保存时间（savedAt）降序为基准，与 storage 层默认返回顺序一致
+      list = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    }
+    if (searchState.reverse) list.reverse();
+    return list;
   }
-  if (searchState.reverse) parts.push("逆序");
-  // 搜索栏展开期间控件状态自可见，摘要条隐藏避免两行重复
-  if (!parts.length || !isFilterActive() || isSearchBarOpen()) {
-    dom.filterBar.classList.add("hidden");
-    return;
+
+  getFollowingsView() {
+    const kw = searchState.keyword.trim().toLowerCase();
+    // 关注域无标题维度：title 范围（域切换残留）按昵称处理。
+    // 无关键词也须拷贝后再排序，不得原地改动 state.followings
+    let list = kw
+      ? state.followings.filter((f) => {
+          switch (searchState.scope) {
+            case "author":
+            case "title":
+              return (f.nickname || "").toLowerCase().includes(kw);
+            case "id":
+              return String(f.uid).toLowerCase().includes(kw);
+            default:
+              return (f.nickname || "").toLowerCase().includes(kw) || String(f.uid).toLowerCase().includes(kw);
+          }
+        })
+      : [...state.followings];
+    // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定
+    const field = searchState.followingsSort === "works" ? "awemeCount" : "followerCount";
+    list.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
+    if (searchState.reverse) list.reverse();
+    return list;
   }
-  dom.filterBarText.textContent = parts.join(" · ");
-  dom.filterBar.classList.remove("hidden");
+
+  // ---------- UI 同步 ----------
+  updateFilterBar() {
+    const parts = [];
+    const kw = searchState.keyword.trim();
+    if (kw) parts.push(`${SEARCH_SCOPE_LABELS[searchState.scope] || "关键词"} "${kw}"`);
+    if (state.domain === "works") {
+      if (searchState.sort !== "saved") parts.push(SEARCH_SORT_LABELS[searchState.sort]);
+    } else if (searchState.followingsSort !== "followers") {
+      parts.push(SEARCH_FOLLOWINGS_SORT_LABELS[searchState.followingsSort]);
+    }
+    if (searchState.reverse) parts.push("逆序");
+    // 搜索栏展开期间控件状态自可见，摘要条隐藏避免两行重复
+    if (!parts.length || !this.isFilterActive() || this.#isSearchBarOpen()) {
+      dom.filterBar.classList.add("hidden");
+      return;
+    }
+    dom.filterBarText.textContent = parts.join(" · ");
+    dom.filterBar.classList.remove("hidden");
+  }
+
+  // 域切换后搜索栏的域相关联动：排序段显隐（两域各有排序维度）/范围段文案/占位符/分段选中
+  syncForDomain() {
+    const isWorks = state.domain === "works";
+    dom.sbWorkFilters.classList.toggle("hidden", !isWorks);
+    dom.sbFollowFilters.classList.toggle("hidden", isWorks);
+    this.syncScopeUIForDomain();
+    this.#updateSearchPlaceholder();
+    this.syncSegUI();
+  }
+
+  // store.on("domain") 的搜索栏联动入口：摘要条常刷；搜索栏展开期间才同步域差异
+  onDomainChanged() {
+    this.updateFilterBar();
+    if (this.#isSearchBarOpen()) this.syncForDomain();
+  }
+
+  // 筛选变化后的统一入口：重渲当前域网格 + 同步筛选条
+  refreshGridView() {
+    if (state.domain === "works") worksGrid.renderCards();
+    else followingsGrid.renderFollowingCards();
+    this.updateFilterBar();
+  }
+
+  syncSegUI() {
+    dom.sbScope.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.scope === searchState.scope);
+    });
+    dom.sbSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.sort === searchState.sort);
+    });
+    dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.fsort === searchState.followingsSort);
+    });
+    dom.sbReverse.checked = searchState.reverse;
+  }
+
+  // 范围段的域差异：「标题」仅作品域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
+  syncScopeUIForDomain() {
+    const isWorks = state.domain === "works";
+    dom.sbScopeTitle.classList.toggle("hidden", !isWorks);
+    dom.sbScopeAuthor.textContent = isWorks ? "作者" : "昵称";
+    if (!isWorks && searchState.scope === "title") searchState.scope = "all";
+  }
+
+  #updateSearchPlaceholder() {
+    const placeholders = state.domain === "works"
+      ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
+      : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
+    dom.searchInput.placeholder = placeholders[searchState.scope] || placeholders.all;
+  }
+
+  #isSearchBarOpen() {
+    return !dom.searchBar.classList.contains("hidden");
+  }
+
+  #updateSearchMenuLabel() {
+    dom.btnSearchMenu.textContent = this.#isSearchBarOpen() ? "收起搜索" : "搜索";
+  }
+
+  // ---------- 展开 / 收起 ----------
+  openSearchBar() {
+    if (this.#isSearchBarOpen()) return;
+    dom.searchBar.classList.remove("hidden");
+    // 排序段随域显隐；逆序复选框两域共用
+    this.syncForDomain();
+    dom.searchInput.value = searchState.keyword;
+    this.updateFilterBar();
+    this.#updateSearchMenuLabel();
+    dom.searchInput.focus();
+    dom.searchInput.select();
+  }
+
+  closeSearchBar() {
+    if (!this.#isSearchBarOpen()) return;
+    dom.searchBar.classList.add("hidden");
+    this.updateFilterBar();
+    this.#updateSearchMenuLabel();
+  }
+
+  toggleSearchBar() {
+    if (this.#isSearchBarOpen()) this.closeSearchBar();
+    else this.openSearchBar();
+  }
+
+  applySearchInput() {
+    clearTimeout(this.#debounceTimer);
+    this.#debounceTimer = setTimeout(() => {
+      searchState.keyword = dom.searchInput.value;
+      this.refreshGridView();
+    }, config.SEARCH_DEBOUNCE);
+  }
+
+  clearSearchFilters() {
+    searchState.keyword = "";
+    searchState.scope = "all";
+    searchState.sort = "saved";
+    searchState.followingsSort = "followers";
+    searchState.reverse = false;
+    dom.searchInput.value = "";
+    this.syncScopeUIForDomain();
+    this.#updateSearchPlaceholder();
+    this.syncSegUI();
+    this.refreshGridView();
+  }
+
+  // ---------- 事件绑定 ----------
+  #bindEvents() {
+    dom.searchInput.addEventListener("input", () => this.applySearchInput());
+    dom.sbScope.addEventListener("click", (e) => {
+      const btn = e.target.closest(".sb-seg-btn");
+      if (!btn) return;
+      searchState.scope = btn.dataset.scope;
+      this.syncSegUI();
+      this.#updateSearchPlaceholder();
+      this.refreshGridView();
+    });
+    dom.sbSort.addEventListener("click", (e) => {
+      const btn = e.target.closest(".sb-seg-btn");
+      if (!btn) return;
+      searchState.sort = btn.dataset.sort;
+      this.syncSegUI();
+      this.refreshGridView();
+    });
+    dom.sbFollowSort.addEventListener("click", (e) => {
+      const btn = e.target.closest(".sb-seg-btn");
+      if (!btn) return;
+      searchState.followingsSort = btn.dataset.fsort;
+      this.syncSegUI();
+      this.refreshGridView();
+    });
+    dom.sbReverse.addEventListener("change", () => {
+      searchState.reverse = dom.sbReverse.checked;
+      this.refreshGridView();
+    });
+    dom.btnClearInBar.addEventListener("click", () => this.clearSearchFilters());
+    dom.btnCloseSearch.addEventListener("click", () => this.closeSearchBar());
+    dom.btnClearFilter.addEventListener("click", () => this.clearSearchFilters());
+    dom.btnSearchMenu.addEventListener("click", () => this.toggleSearchBar());
+  }
 }
 
-// 筛选变化后的统一入口：重渲当前域网格 + 同步筛选条
-function refreshGridView() {
-  if (state.domain === "works") worksGrid.renderCards();
-  else followingsGrid.renderFollowingCards();
-  updateFilterBar();
-}
-
-let __searchDebounceTimer = 0;
-
-function syncSegUI() {
-  dom.sbScope.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.scope === searchState.scope);
-  });
-  dom.sbSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.sort === searchState.sort);
-  });
-  dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.fsort === searchState.followingsSort);
-  });
-  dom.sbReverse.checked = searchState.reverse;
-}
-
-// 范围段的域差异：「标题」仅作品域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
-function syncScopeUIForDomain() {
-  const isWorks = state.domain === "works";
-  dom.sbScopeTitle.classList.toggle("hidden", !isWorks);
-  dom.sbScopeAuthor.textContent = isWorks ? "作者" : "昵称";
-  if (!isWorks && searchState.scope === "title") searchState.scope = "all";
-}
-
-function updateSearchPlaceholder() {
-  const placeholders = state.domain === "works"
-    ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
-    : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
-  dom.searchInput.placeholder = placeholders[searchState.scope] || placeholders.all;
-}
-
-function isSearchBarOpen() {
-  return !dom.searchBar.classList.contains("hidden");
-}
-
-function updateSearchMenuLabel() {
-  dom.btnSearchMenu.textContent = isSearchBarOpen() ? "收起搜索" : "搜索";
-}
-
-function openSearchBar() {
-  if (isSearchBarOpen()) return;
-  dom.searchBar.classList.remove("hidden");
-  // 排序段随域显隐（两域各有排序维度）；逆序复选框两域共用
-  const isWorks = state.domain === "works";
-  dom.sbWorkFilters.classList.toggle("hidden", !isWorks);
-  dom.sbFollowFilters.classList.toggle("hidden", isWorks);
-  syncScopeUIForDomain();
-  updateSearchPlaceholder();
-  dom.searchInput.value = searchState.keyword;
-  syncSegUI();
-  updateFilterBar();
-  updateSearchMenuLabel();
-  dom.searchInput.focus();
-  dom.searchInput.select();
-}
-
-function closeSearchBar() {
-  if (!isSearchBarOpen()) return;
-  dom.searchBar.classList.add("hidden");
-  updateFilterBar();
-  updateSearchMenuLabel();
-}
-
-function toggleSearchBar() {
-  if (isSearchBarOpen()) closeSearchBar();
-  else openSearchBar();
-}
-
-function applySearchInput() {
-  clearTimeout(__searchDebounceTimer);
-  __searchDebounceTimer = setTimeout(() => {
-    searchState.keyword = dom.searchInput.value;
-    refreshGridView();
-  }, config.SEARCH_DEBOUNCE);
-}
-
-function clearSearchFilters() {
-  searchState.keyword = "";
-  searchState.scope = "all";
-  searchState.sort = "saved";
-  searchState.followingsSort = "followers";
-  searchState.reverse = false;
-  dom.searchInput.value = "";
-  syncScopeUIForDomain();
-  updateSearchPlaceholder();
-  syncSegUI();
-  refreshGridView();
-}
+const search = new SearchBar();
 
 // ---------- runtimeConfig ----------
 const runtimeConfig = {
@@ -1146,8 +1202,8 @@ class FollowingsGrid extends VirtualGrid {
   }
 
   renderFollowingCards() {
-    const view = getFollowingsView();
-    if (isFilterActive()) {
+    const view = search.getFollowingsView();
+    if (search.isFilterActive()) {
       this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试");
     } else {
       this.render(view, "还没有保存的关注者", "点击菜单「同步关注」获取你的关注列表");
@@ -1485,7 +1541,7 @@ class Batch {
 
   selectAll() {
     // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
-    const items = state.domain === "works" ? getWorksView() : state.followings;
+    const items = state.domain === "works" ? search.getWorksView() : state.followings;
     const idKey = state.domain === "works" ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
     if (allSelected) {
@@ -3231,8 +3287,8 @@ class WorksGrid extends VirtualGrid {
 
   renderCards() {
     // 渲染取过滤后的视图列表（建议5）；筛选生效时空态文案区分"无数据"与"无匹配"
-    const view = getWorksView();
-    if (isFilterActive()) {
+    const view = search.getWorksView();
+    if (search.isFilterActive()) {
       this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试");
     } else {
       this.render(view, "还没有保存的作品", "浏览抖音时，作品会自动被捕获");
@@ -3402,7 +3458,7 @@ class WorksGrid extends VirtualGrid {
 
   restoreGridScroll() {
     const idx = detail.getDetailIndex();
-    const view = getWorksView();
+    const view = search.getWorksView();
     if (idx < 0 || idx >= view.length) return;
     requestAnimationFrame(() => {
       const grid = dom.mainGrid;
@@ -3710,7 +3766,7 @@ class Detail {
 
   // Detail 导航与网格共用同一过滤视图（建议5）：详情内翻页只在可见条目间进行
   openDetailIndex(awemeId) {
-    const list = getWorksView();
+    const list = search.getWorksView();
     const idx = list.findIndex((w) => w.awemeId === awemeId);
     if (idx === -1) return null;
     this.#index = idx;
@@ -3718,7 +3774,7 @@ class Detail {
   }
 
   getCurrentWork() {
-    return getWorksView()[this.#index] || null;
+    return search.getWorksView()[this.#index] || null;
   }
 
   closeDetailIndex() {
@@ -3727,7 +3783,7 @@ class Detail {
   }
 
   nextDetailIndex() {
-    if (this.#index < getWorksView().length - 1) {
+    if (this.#index < search.getWorksView().length - 1) {
       this.#index++;
       return this.getCurrentWork();
     }
@@ -3771,7 +3827,7 @@ class Detail {
 
   nextOnEnd() {
     if (this.#loopMode === "single") return "single";
-    const total = getWorksView().length;
+    const total = search.getWorksView().length;
     if (this.#loopMode === "group" && total > 1) {
       if (this.#index < total - 1) {
         this.#index++;
@@ -3812,7 +3868,7 @@ class Detail {
 
   // 计数展示（建议12 修订版）：图集页数保留右上徽章，作品序号回归底栏最右端
   #updateCounters(work) {
-    const total = getWorksView().length;
+    const total = search.getWorksView().length;
     // 右上：仅多图图集显示页数
     const isMultiNote = work.type === "note" && work.images?.length > 1;
     dom.detailImgCounter.textContent = isMultiNote ? `${this.#noteImgIndex + 1}/${work.images.length}` : "";
@@ -4212,10 +4268,10 @@ class Detail {
             state.preventDialogClose = true;
             try {
               await this.removeWork(work.awemeId);
-              if (getWorksView().length === 0) {
+              if (search.getWorksView().length === 0) {
                 this.closeDetail();
               } else {
-                if (this.getDetailIndex() >= getWorksView().length) this.#index = getWorksView().length - 1;
+                if (this.getDetailIndex() >= search.getWorksView().length) this.#index = search.getWorksView().length - 1;
                 this.renderDetail();
               }
               store.refreshGroups();
@@ -4537,77 +4593,119 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-// ---------- 顶层函数 ----------
-function updateDomainSlider(domain) {
-  const btn = document.querySelector(`.ds-btn[data-domain="${domain}"]`);
-  if (!btn || !dom.dsSlider || !dom.domainSwitch) return;
-  const parentRect = dom.domainSwitch.getBoundingClientRect();
-  const btnRect = btn.getBoundingClientRect();
-  const left = btnRect.left - parentRect.left;
-  const width = btnRect.width;
-  dom.dsSlider.style.transform = `translateX(${left}px)`;
-  dom.dsSlider.style.width = `${width}px`;
-}
-
-function switchDomain(domain) {
-  if (domain === state.domain) return;
-
-  // 先中止两个网格未完成的分块渲染，防止旧域骨架卡在下一帧追加进共享容器
-  worksGrid.abortRender();
-  followingsGrid.abortRender();
-  dom.mainContainer.innerHTML = "";
-
-  state.selectedIds.clear();
-  store.set("batchMode", false);
-
-  detail.closeDetail();
-  if (dom.sidebar) {
-    const isExpanded = !dom.sidebar.classList.contains("sidebar-zero");
-    if (isExpanded) {
-      sidebar.setSidebarWidth(0);
-      sidebar.saveSidebarWidth(0);
-    }
+// ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 ----------
+class AppShell {
+  constructor() {
+    this.#bindEvents();
   }
-  sidebar.clearSidebarActive();
-  state.currentFollowingSecUid = null;
 
-  document.body.classList.remove("domain-works", "domain-followings");
-  document.body.classList.add("domain-" + domain);
+  updateDomainSlider(domain) {
+    const btn = document.querySelector(`.ds-btn[data-domain="${domain}"]`);
+    if (!btn || !dom.dsSlider || !dom.domainSwitch) return;
+    const parentRect = dom.domainSwitch.getBoundingClientRect();
+    const btnRect = btn.getBoundingClientRect();
+    const left = btnRect.left - parentRect.left;
+    const width = btnRect.width;
+    dom.dsSlider.style.transform = `translateX(${left}px)`;
+    dom.dsSlider.style.width = `${width}px`;
+  }
 
-  document.querySelectorAll(".ds-btn").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.domain === domain);
-  });
-  updateDomainSlider(domain);
+  switchDomain(domain) {
+    if (domain === state.domain) return;
 
-  store.set("domain", domain);
-  state.currentGroupId = "all";
+    // 先中止两个网格未完成的分块渲染，防止旧域骨架卡在下一帧追加进共享容器
+    worksGrid.abortRender();
+    followingsGrid.abortRender();
+    dom.mainContainer.innerHTML = "";
+
+    state.selectedIds.clear();
+    store.set("batchMode", false);
+
+    detail.closeDetail();
+    if (dom.sidebar) {
+      const isExpanded = !dom.sidebar.classList.contains("sidebar-zero");
+      if (isExpanded) {
+        sidebar.setSidebarWidth(0);
+        sidebar.saveSidebarWidth(0);
+      }
+    }
+    sidebar.clearSidebarActive();
+    state.currentFollowingSecUid = null;
+
+    document.body.classList.remove("domain-works", "domain-followings");
+    document.body.classList.add("domain-" + domain);
+
+    document.querySelectorAll(".ds-btn").forEach((tab) => {
+      tab.classList.toggle("active", tab.dataset.domain === domain);
+    });
+    this.updateDomainSlider(domain);
+
+    store.set("domain", domain);
+    state.currentGroupId = "all";
+  }
+
+  renderErrorState(msg, detail) {
+    dom.emptyState.classList.add("hidden");
+    dom.mainContainer.classList.add("hidden");
+    dom.errorState.querySelector("p").textContent = msg;
+    const hint = dom.errorState.querySelector(".error-hint");
+    if (hint) hint.textContent = detail || "请检查网络后重试";
+    dom.errorState.classList.remove("hidden");
+  }
+
+  // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3）。
+  // 短操作锁 preventDialogClose 期间不响应；长操作经 activeDialog 发取消信号
+  async requestDialogClose() {
+    if (state.preventDialogClose) return;
+    if (state.activeDialog) {
+      state.activeDialog();
+      chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
+    }
+    // 设置面板在关闭前保存运行参数；校验失败则保持打开
+    if (!(await settings.saveBeforeClose())) return;
+    dialog.closeDialog();
+  }
+
+  #bindEvents() {
+    document.querySelectorAll(".ds-btn").forEach((tab) => {
+      tab.addEventListener("click", () => this.switchDomain(tab.dataset.domain));
+    });
+    window.addEventListener(
+      "resize",
+      () => {
+        this.updateDomainSlider(state.domain);
+      },
+      { passive: true },
+    );
+    dom.btnRetry.addEventListener("click", async () => {
+      dom.errorState.classList.add("hidden");
+      try {
+        const groupId = state.currentGroupId;
+        const works = await services.loadWorks(groupId);
+        if (state.currentGroupId !== groupId) return;
+        store.set("works", works);
+      } catch (err) {
+        console.error("[DY] load works failed:", err);
+        this.renderErrorState("数据加载失败", err.message);
+      }
+    });
+  }
 }
 
-function renderErrorState(msg, detail) {
-  dom.emptyState.classList.add("hidden");
-  dom.mainContainer.classList.add("hidden");
-  dom.errorState.querySelector("p").textContent = msg;
-  const hint = dom.errorState.querySelector(".error-hint");
-  if (hint) hint.textContent = detail || "请检查网络后重试";
-  dom.errorState.classList.remove("hidden");
-}
+const appShell = new AppShell();
 
 // ---------- DOM 事件绑定 ----------
-// 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3）。
-// 短操作锁 preventDialogClose 期间不响应；长操作经 activeDialog 发取消信号
-async function requestDialogClose() {
-  if (state.preventDialogClose) return;
-  if (state.activeDialog) {
-    state.activeDialog();
-    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-  }
-  // 设置面板在关闭前保存运行参数；校验失败则保持打开
-  if (!(await settings.saveBeforeClose())) return;
-  dialog.closeDialog();
-}
+dom.dialogClose.addEventListener("click", () => appShell.requestDialogClose());
 
-document.querySelectorAll(".ds-btn").forEach((tab) => {
-  tab.addEventListener("click", () => switchDomain(tab.dataset.domain));
+// Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余收起搜索栏
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!dom.dialogOverlay.classList.contains("hidden")) {
+    appShell.requestDialogClose();
+    return;
+  }
+  if (!dom.detailOverlay.classList.contains("hidden")) return;
+  search.closeSearchBar();
 });
 
 dom.btnBatch.addEventListener("click", () => batch.handleBatchToggle());
@@ -4625,51 +4723,6 @@ document.addEventListener("click", () => {
 dom.menuDropdown.addEventListener("click", () => {
   dom.menuDropdown.classList.add("hidden");
 });
-
-dom.dialogClose.addEventListener("click", () => requestDialogClose());
-
-// Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余收起搜索栏
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
-  if (!dom.dialogOverlay.classList.contains("hidden")) {
-    requestDialogClose();
-    return;
-  }
-  if (!dom.detailOverlay.classList.contains("hidden")) return;
-  closeSearchBar();
-});
-
-dom.searchInput.addEventListener("input", applySearchInput);
-dom.sbScope.addEventListener("click", (e) => {
-  const btn = e.target.closest(".sb-seg-btn");
-  if (!btn) return;
-  searchState.scope = btn.dataset.scope;
-  syncSegUI();
-  updateSearchPlaceholder();
-  refreshGridView();
-});
-dom.sbSort.addEventListener("click", (e) => {
-  const btn = e.target.closest(".sb-seg-btn");
-  if (!btn) return;
-  searchState.sort = btn.dataset.sort;
-  syncSegUI();
-  refreshGridView();
-});
-dom.sbFollowSort.addEventListener("click", (e) => {
-  const btn = e.target.closest(".sb-seg-btn");
-  if (!btn) return;
-  searchState.followingsSort = btn.dataset.fsort;
-  syncSegUI();
-  refreshGridView();
-});
-dom.sbReverse.addEventListener("change", () => {
-  searchState.reverse = dom.sbReverse.checked;
-  refreshGridView();
-});
-dom.btnClearInBar.addEventListener("click", () => clearSearchFilters());
-dom.btnCloseSearch.addEventListener("click", () => closeSearchBar());
-dom.btnClearFilter.addEventListener("click", () => clearSearchFilters());
-dom.btnSearchMenu.addEventListener("click", () => toggleSearchBar());
 
 dom.btnGroupManage.addEventListener("click", () => groups.showGroupManage());
 
@@ -4763,7 +4816,7 @@ dom.btnSync.addEventListener("click", async () => {
 // ---------- init IIFE ----------
 (async function init() {
   // 构建标记：用于确认页面运行的是最新构建（头像探针预载版）
-  console.info("[DDM] options build 2026-08-24 ui-improvements-detail-bg");
+  console.info("[DDM] options build 2026-08-25 searchbar-appshell-refactor");
   document.body.classList.remove("batch-mode");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
@@ -4783,44 +4836,16 @@ dom.btnSync.addEventListener("click", async () => {
     { passive: true },
   );
   window.addEventListener("resize", groups.updateTabMask, { passive: true });
-  window.addEventListener(
-    "resize",
-    () => {
-      updateDomainSlider(state.domain);
-    },
-    { passive: true },
-  );
-  dom.btnRetry.addEventListener("click", async () => {
-    document.getElementById("errorState").classList.add("hidden");
-    try {
-      const groupId = state.currentGroupId;
-      const works = await services.loadWorks(groupId);
-      if (state.currentGroupId !== groupId) return;
-      store.set("works", works);
-    } catch (err) {
-      console.error("[DY] load works failed:", err);
-      renderErrorState("数据加载失败", err.message);
-    }
-  });
 
   store.on("domain", async () => {
     sync.updateSyncBtnLabel();
     await groups.renderGroupTabs();
-    updateFilterBar();
-    // 搜索栏展开期间切换域：两域排序段随域显隐；范围段随域调整显隐与文案
-    if (isSearchBarOpen()) {
-      const isWorks = state.domain === "works";
-      dom.sbWorkFilters.classList.toggle("hidden", !isWorks);
-      dom.sbFollowFilters.classList.toggle("hidden", isWorks);
-      syncScopeUIForDomain();
-      updateSearchPlaceholder();
-      syncSegUI();
-    }
+    search.onDomainChanged();
     try {
       await services.loadDomainData();
     } catch (err) {
       console.error("[DY] load domain data failed:", err);
-      renderErrorState("数据加载失败", err.message);
+      appShell.renderErrorState("数据加载失败", err.message);
     }
   });
 
@@ -4837,7 +4862,7 @@ dom.btnSync.addEventListener("click", async () => {
       await services.loadDomainData();
     } catch (err) {
       console.error("[DY] load domain data failed:", err);
-      renderErrorState("数据加载失败", err.message);
+      appShell.renderErrorState("数据加载失败", err.message);
     }
   });
   store.on("batchMode", (v) => {
@@ -4852,13 +4877,13 @@ dom.btnSync.addEventListener("click", async () => {
   });
 
   document.body.classList.add("domain-works");
-  updateDomainSlider("works");
+  appShell.updateDomainSlider("works");
   sync.updateSyncBtnLabel();
   await groups.renderGroupTabs();
   try {
     await services.loadDomainData();
   } catch (err) {
     console.error("[DY] load domain data failed:", err);
-    renderErrorState("数据加载失败", err.message);
+    appShell.renderErrorState("数据加载失败", err.message);
   }
 })();

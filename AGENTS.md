@@ -93,6 +93,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
+| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；元素事件在构造器内自绑定） |
 | `VirtualGrid`    | 网格渲染基类（骨架 + 双向虚拟化：填充/卸载双 observer + 分时间预算填充 + 事件委托） |
 | `Dialog`         | 弹窗管理                                                          |
 | `FollowingsGrid` | 关注卡片网格                                                      |
@@ -104,6 +105,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | `Favorites`      | 点赞/收藏扫描、未关注作品批量入库（添加按钮）与取消               |
 | `WorksGrid`      | 作品卡片网格                                                      |
 | `Detail`         | 详情播放器                                                        |
+| `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；ds-btn/resize/btnRetry 事件构造器内自绑定） |
 
 ## 设计约定与知识点陷阱
 
