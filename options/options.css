@@ -951,8 +951,8 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
-/* 分割条即分割缝线：贯穿全高 1px 描边（收起后仍可见，作为展开入口），
-   悬停/拖动时加粗变主色提示可点（点击切换显隐 / 拖拽调宽） */
+/* 分割条：加粗缝线贯穿全高（收起后仍可见，作为展开入口），
+   悬停/拖动时进一步加粗变主色。点击切换显隐 / 拖拽调宽 */
 .sidebar-resize-handle::before {
   content: "";
   position: absolute;
@@ -960,9 +960,26 @@ body.domain-works #sidebarResizeHandle {
   top: 0;
   bottom: 0;
   transform: translateX(-50%);
-  width: 1px;
+  width: 2px;
   background: var(--dy-border);
   transition: width 0.15s, background 0.15s;
+}
+
+/* 把手徽章：页面底色圆角片承载 2×4 竖点阵，骑在缝线上形成「线上串珠」结构 */
+.sidebar-resize-handle::after {
+  --grip-color: var(--dy-border);
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px;
+  height: 24px;
+  border-radius: 8px;
+  background-color: var(--dy-bg);
+  box-shadow: inset 0 0 0 1px var(--dy-border);
+  background-image: radial-gradient(circle, var(--grip-color) 1.5px, transparent 1.9px);
+  background-size: 8px 6px;
 }
 
 .sidebar-resize-handle:hover,
@@ -972,8 +989,14 @@ body.domain-works #sidebarResizeHandle {
 
 .sidebar-resize-handle:hover::before,
 .sidebar-resize-handle.active::before {
-  width: 3px;
+  width: 4px;
   background: var(--dy-primary);
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.active::after {
+  --grip-color: var(--dy-primary);
+  box-shadow: inset 0 0 0 1px var(--dy-primary);
 }
 
 /* ===== 按钮系统 ===== */
