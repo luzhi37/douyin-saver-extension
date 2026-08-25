@@ -26,6 +26,7 @@ const config = {
   SIDEBAR_SCROLL_THRESHOLD: 100,
   SIDEBAR_FILL_THRESHOLD: 50,
   SIDEBAR_IMG_PER_FRAME: 6,
+  SIDEBAR_DRAG_THRESHOLD: 4,
 
   // 卡片
   CARD_SIZE_FALLBACK: 261,
@@ -1820,6 +1821,7 @@ class Sidebar {
   static STORAGE_KEY = "douyin_sidebar_width";
   #dragStartX = 0;
   #dragStartW = 0;
+  #dragMoved = false;
   #pendingSidebarWidth = 0;
   #pendingSidebarWidthDirty = false;
   #pendingSidebarWidthRafId = 0;
@@ -1832,12 +1834,16 @@ class Sidebar {
   #onResizeDown = (e) => {
     this.#dragStartX = e.clientX;
     this.#dragStartW = dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width;
+    this.#dragMoved = false;
     dom.sidebarResizeHandle.classList.add("active");
     document.addEventListener("mousemove", this.#onResizeMove);
     document.addEventListener("mouseup", this.#onResizeUp);
     e.preventDefault();
   };
   #onResizeMove = (e) => {
+    if (!this.#dragMoved && Math.abs(e.clientX - this.#dragStartX) >= config.SIDEBAR_DRAG_THRESHOLD) {
+      this.#dragMoved = true;
+    }
     const snapped = this.#snapTo(this.#dragStartW - (e.clientX - this.#dragStartX));
     this.#pendingSidebarWidth = snapped;
     this.#pendingSidebarWidthDirty = true;
@@ -1851,15 +1857,32 @@ class Sidebar {
     });
   };
   #onResizeUp = () => {
+    dom.sidebarResizeHandle.classList.remove("active");
+    document.removeEventListener("mousemove", this.#onResizeMove);
+    document.removeEventListener("mouseup", this.#onResizeUp);
+    // 未越过拖拽位移阈值按点击处理：切换侧边栏显隐而非吸附宽度
+    if (!this.#dragMoved) {
+      this.toggleSidebar();
+      return;
+    }
     const finalWidth = this.#snapTo(
       dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width,
     );
     this.setSidebarWidth(finalWidth);
     this.saveSidebarWidth(finalWidth);
-    dom.sidebarResizeHandle.classList.remove("active");
-    document.removeEventListener("mousemove", this.#onResizeMove);
-    document.removeEventListener("mouseup", this.#onResizeUp);
   };
+
+  // 点击分割条：收起（落盘 0，与拖拽收起语义一致）；展开恢复上次保存的宽度
+  toggleSidebar() {
+    if (dom.sidebar.classList.contains("sidebar-zero")) {
+      const target = this.#loadWidth() || Sidebar.SNAP_POINTS[0];
+      this.setSidebarWidth(target);
+      this.saveSidebarWidth(target);
+    } else {
+      this.setSidebarWidth(0);
+      this.saveSidebarWidth(0);
+    }
+  }
 
   initSidebar() {
     const savedWidth = this.#loadWidth();
@@ -1886,10 +1909,13 @@ class Sidebar {
       dom.sidebar.classList.add("sidebar-zero");
       dom.sidebar.style.width = "";
       document.body.classList.remove("sidebar-open");
+      // 分割条仅在侧边栏展开时可见、可交互
+      dom.sidebarResizeHandle.classList.add("hidden");
     } else {
       dom.sidebar.classList.remove("sidebar-zero");
       dom.sidebar.style.width = w + "px";
       document.body.classList.add("sidebar-open");
+      dom.sidebarResizeHandle.classList.remove("hidden");
     }
   }
 
