@@ -965,22 +965,24 @@ body.domain-works #sidebarResizeHandle {
   transition: width 0.15s, background 0.15s;
 }
 
-/* 把手：底色圆角徽章承载双向箭头 ❮❯（横向伸缩语义，兼指点击切换与拖拽调宽） */
+/* 把手：主色实心圆角徽章 + 白色双向箭头，任何背景下高对比可见
+   （侧边栏收起后仍是显眼入口）；悬停放大反馈 */
 .sidebar-resize-handle::after {
-  --grip-color: var(--dy-border);
   content: "❮❯";
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  padding: 4px 5px;
-  border-radius: 9px;
-  background-color: var(--dy-bg);
+  padding: 5px 6px;
+  border-radius: 10px;
+  background-color: var(--dy-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
   font-size: 10px;
   line-height: 1;
-  color: var(--grip-color);
-  transition: color 0.15s;
+  letter-spacing: 1px;
+  color: #fff;
+  transition: transform 0.15s, filter 0.15s;
 }
 
 .sidebar-resize-handle:hover,
@@ -988,15 +990,10 @@ body.domain-works #sidebarResizeHandle {
   background: transparent;
 }
 
-.sidebar-resize-handle:hover::before,
-.sidebar-resize-handle.active::before {
-  width: 8px;
-  background: var(--dy-primary);
-}
-
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle.active::after {
-  --grip-color: var(--dy-primary);
+  transform: translate(-50%, -50%) scale(1.12);
+  filter: brightness(1.15);
 }
 
 /* ===== 按钮系统 ===== */
