@@ -869,7 +869,6 @@ body.domain-works #sidebarResizeHandle {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--dy-border);
   background: var(--dy-bg);
   overflow: hidden;
   contain: layout style paint;
@@ -878,7 +877,6 @@ body.domain-works #sidebarResizeHandle {
 .sidebar.sidebar-zero {
   width: 0 !important;
   min-width: 0 !important;
-  border-left: none;
   padding: 0;
 }
 
@@ -953,19 +951,18 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
-/* 分割条抓握纹理：竖点阵 2×4（braille ⣿ 式把手，避免误读为滚动条滑块）。
-   点击切换显隐 / 拖拽调宽；收起后仍可见作为展开入口 */
+/* 分割条即分割缝线：贯穿全高 1px 描边（收起后仍可见，作为展开入口），
+   悬停/拖动时加粗变主色提示可点（点击切换显隐 / 拖拽调宽） */
 .sidebar-resize-handle::before {
-  --grip-color: var(--dy-border);
   content: "";
   position: absolute;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 14px;
-  height: 20px;
-  background-image: radial-gradient(circle, var(--grip-color) 1.5px, transparent 1.9px);
-  background-size: 7px 5px;
+  top: 0;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 1px;
+  background: var(--dy-border);
+  transition: width 0.15s, background 0.15s;
 }
 
 .sidebar-resize-handle:hover,
@@ -975,7 +972,8 @@ body.domain-works #sidebarResizeHandle {
 
 .sidebar-resize-handle:hover::before,
 .sidebar-resize-handle.active::before {
-  --grip-color: var(--dy-primary);
+  width: 3px;
+  background: var(--dy-primary);
 }
 
 /* ===== 按钮系统 ===== */
