@@ -73,7 +73,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 - `sendToTabAsync`：`sendToTab` 的 Promise 封装，用于 background 循环 handler 中逐条/逐页请求（`SYNC_WORKS`、`FETCH_FOLLOWING`、`FETCH_FAVORITES`、`FETCH_COLLECTION` 的 background 循环均使用此模式；独立模式下 `CANCEL_LIKE`/`CANCEL_COLLECTION` 由 `handleIndependentCancel` 在 background 内直接循环，不走此路径）。
 - `requestResponse`：content.js **先 `addEventListener(resultEvent)` 再 `dispatchEvent(requestEvent)`**，消除同步 handler 的 `setTimeout(0)` workaround 需求。
 
-> 同步/扫描/取消的完整链路、时序差异、分页参数见 [docs/SYNC_AND_SCAN.md](./docs/SYNC_AND_SCAN.md)。
+> 同步/扫描/取消的完整链路、时序差异、分页参数见 docs/02–09 各分册（索引见文末「文档索引」）。
 
 ## 响应式状态管理
 
@@ -109,31 +109,32 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 ## 设计约定与知识点陷阱
 
+> 本节只保留规则红线；机制原理、历史踩坑与实测数据见各条目指向的分册。
+
 - **所有变量定义在 options.js 顶层** — `config` / `dom` / `state` / `store` / `utils` / `services` 在文件顶部定义，所有 class 直接引用这些全局变量。
 - **私有方法使用 `#` 语法** — 类外部不可访问。
 - **class field 箭头仅用于 add/remove 对称的事件回调** — 如 `Sidebar.#onResizeDown/Move/Up`、`Detail.#noteKeyHandler`。
 - **自引用用 `this.xxx()` 而非单例名** — class 内部调用自身方法必须用 `this`，不要用模块级单例变量。
 - **批量勾选必须用 `Batch.updateCheckboxDOM`** — 手动设置 `checkbox.innerHTML` 只能显示图标，必须同时添加/移除 `checked` 类（默认 `color: transparent`）。
 - **`handleBatchSelectAll` 必须按域选择 checkbox** — 作品域 `.work-checkbox`，关注域 `.following-checkbox`。
-- **取消信号必须发到抖音 document** — `DY_CANCEL_ACTIVE_TASK` 通过 background→content 路径送达 inject.js，不能直接在 options 页 dispatch。
-- **同步 requestId 时序差异** — `SYNC_WORKS` 立即返回 requestId；`FETCH_FOLLOWING` 等 fetch 完成后才返回。关注进度过滤必须兼容 `#followingsRequestId === null`。
-- **同步 handler 已无需延迟派发结果** — `requestResponse` 先 `addEventListener` 再 `dispatchEvent`，同步 handler 不再需要 `setTimeout(0)` workaround。
-- **签名展开/收起 selector 必须兼容两种状态** — 用 `row.querySelector('.sec-truncate, .sec-expanded')`。
-- **安全面板值截断依赖 CSS** — JS 不截断文本，靠 `.sec-truncate` 做视觉截断。
-- **取消点赞/收藏用 XHR 而非 fetch** — 抖音的 a_bogus 签名与 XHR 原型链深度绑定。注意：独立模式下取消由 background 直接用 `fetch()` POST，不经过 XHR（因为无页面上下文），但需 DNR rules 5/6（取消收藏/取消点赞）注入 Referer。
-- **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先：长效（各档 playApi）作为整体类目优先于 CDN，只在同类内部比分辨率；无 playApi 时用最高清档 `play_addr.uri` 合成长效链；CDN 兜底先取最高清档再档内比 `expire` 取最长。禁止改回"混池按最高分辨率挑选"——最高清档恰好缺 playApi 时会把短效直链存进库且 `videoExpireAt` 失真。fiber 源分支有意不同（只认 playApi、仅留最高一档），勿混改。
-- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名返回 403 `Blocked by ArgusSecurityPlugin Signature Not Found`。`independentRequest` 的 `options.webSign` 分支复刻页面 `window.use("webSignUrl")` 算法（query 追加 `timestamp` 与 md5 签名，并带 uifid/expire 头）。盐变更会复发，算法与风险详见 [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md)。
-- **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；长操作 X 按钮始终可点以发送 `CANCEL_ACTIVE_TASK`。为避免短操作误发，`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
-- **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject.js 的 6 个 API 请求函数全部使用 `window.fetch`（经 Fetch Hook），通过 `_dyInternal: true` 避免被 Hook 再次捕获，而非 `origFetch.call(window, ...)`（绕 Hook）。因为 Douyin 可能通过覆盖 `window.fetch` 注入签名参数，走 `origFetch` 会错过注入。详见 [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)。
-- **媒体加载有全局熔断** — `Detail.markMediaFail / markMediaOk / mediaRetryBlocked` 维护滑动窗口失败计数：视频/封面失败密集超阈值（`MEDIA_FAIL_*`）即进入冷却期，期间跳过重试直接降级；任何媒体成功加载即复位。新增媒体重试逻辑必须接入该机制，不要自行计数。
-- **侧边栏封面必须走"视口门控 + 分帧队列"** — Sidebar 的条目创建（`#createWorkItem`）只把 `{url, cover, placeholder}` 挂进 `#workMeta`（WeakMap），**不发探针**；条目进入视口由 `#promoteItem` 经 `#enqueueCover` 入队（每帧 `SIDEBAR_IMG_PER_FRAME` 张 rAF 分帧）。禁止改回"创建即全量急切加载"——那会让翻页风暴期每页 20 张探针全部立即发起。整页 DOM 用单个 fragment 追加。
-- **侧边栏是升降级式轻量虚拟化，且不用 `content-visibility:auto`** — Sidebar 有自己的填充/卸载 observer 对（root 必须显式传 `dom.sidebarBody`：rootMargin 相对滚动容器自身矩形展开，用 null root 会被祖先裁剪抵消导致预填失效），`#promoteItem` 发探针+绘制、`#demoteItem` 原地清背景图/恢复占位层/代际自增作废在途探针（根节点不换，尺寸由 aspect-ratio 保持）。`.sidebar-work-item` 上不要加 `content-visibility: auto`：媒体生命周期已由显式升降级管理，降级后子树为空，CV 只剩相关状态切换的每帧 Layerize 抖动（实测占滚动风暴 CPU 约三成）。
-- **VirtualGrid 填充观察者是分圈观察，不是全量 observe** — 新骨架进 `#pendingSkeletons` 队列，每次只把最靠前 `OBSERVE_CHUNK_SIZE` 个交给 IO，圈尾哨兵（`#sentinelCard`）进入 `OBSERVER_ROOT_MARGIN` 时才放下一批（`#extendObservation`）。原因：`computeIntersections` 成本随已观察目标数线性，全量 observe 2000 卡时滚动期每帧重算 O(全部卡) 次几何（trace 实测 1.2s/5s）。注意三点：哨兵被删（`removeItems`）会断链，必须立刻续接；`render()`/`abortRender()` 重置时要同时清 `#pendingSkeletons`/`#sentinelCard`；`#demote` 重 observe 走直连路径不经队列。
-- **网格卡片是双向虚拟化的** — VirtualGrid 有两个 IntersectionObserver：填充 observer（`OBSERVER_ROOT_MARGIN`，骨架进入视口即经 `#enqueueFill` 重填；观察范围按上条分圈扩展）与卸载 observer（`UNLOAD_ROOT_MARGIN`，完整卡滚出后由 `#demote` 降级回骨架）。卡片填充分时间预算制（每帧最多 `FILL_FRAME_BUDGET_MS`），不要改回固定张数/帧。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardDOM` 已兼容骨架态。卸载圈远大于填充圈形成滞回，勿把两者调近。
-- **填充/降级必须在骨架根节点上原地切换（禁止换根节点）** — 子类实现 `fillCard`/`clearCard`，只允许改类名与增删根节点的后代；grid 容器任一直接子节点被 `replaceChild`/`replaceWith` 都会触发 Blink 全量重排，成本随卡片总数线性增长（3000 卡单次 >10ms）。因此骨架模板必须与完整卡在根层同构（`.work-card > .work-media + .work-checkbox + .work-title`、`.following-card > .following-checkbox + .following-main(.following-avatar/.following-avatar-fallback + .following-nickname) + .following-stats`），媒体子树/操作按钮等可从完整模板取新节点移入。unloadObserver 因此持续观察同一根节点无需重挂，fill observer 在 `#demote` 时重新 observe。
-- **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，挂在 grid 容器上的监听器只有 target 是容器自身时才触发，卡片上的进入事件永远收不到（功能静默失效）。 WorksGrid 的 `#bindMediaEvents` 用冒泡的 pointerover/out + `relatedTarget && media.contains(relatedTarget)` 判断实现"跨 `.work-media` 边界只触发一次"。
-- **网格媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — `.following-avatar`/`.work-thumb`/`.sidebar-work-cover`/`.fav-work-thumb` 四个槽位全是 `<div role="img">`（详情大图 `#detailImage` 因依赖 object-fit:contain 与淡入过渡保留 `<img>`+探针）：背景图加载失败时浏览器不绘制任何占位图标，原生断裂图在元素层面失去载体（历史三轮"切换/滚动时瞬态裂图"报告的根治手段，`grep '<img'` 模板应只剩详情大图与图标 `<use>`）。加载统一走离屏 `new Image()` 探针先行，成功才提交 `style.backgroundImage`；死链在探针阶段终结。各槽位失败语义：关注头像（`#scheduleAvatarDrain`）切首字回退并退出 media-loading；作品缩略图（`#scheduleCoverDrain`）原样重试一次（`dataset.retry` 挂可见节点、随重填换新自然复位，熔断冷却中不重试），仍失败停留透明渐变占位态；侧边栏封面（`#scheduleImgDrain`，仅升级态才发探针）成功后直接隐藏 `.sidebar-work-cover-placeholder`，失败由条目底色兜底；收藏弹窗 fav-work-thumb 无熔断联动，直赋背景图即可。代际防乱序：关注头像用 `dataset.fillGen`+`#avatarTargetAlive`（骨架原地重填会复用根节点）；作品缩略图用 `dataset.coverGen`（`updateCardDOM` 复用同一节点再次入队）；Detail 大图用 `#imgProbeToken`（快速切换作品时作废在途探针）；侧边栏封面用 `cover.dataset.gen`（`#demoteItem` 自增作废在途探针，重升级再入新代）；在途探针回调必须先校验代际再提交，否则旧 URL 会提交到已换人的槽位。`#showAvatarFallback`/`clearCard` 必须清空 `backgroundImage` 防止旧图残留。options.js 启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建的情况。
-- **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 通用 `.hidden` 在 options.css 前部（约 66 行），同特异性（0,1,0）下会被文件后部组件规则里的 `display: flex/…` 覆盖，`hidden` 类静默失效、占位层常显（曾导致作品卡中央 emoji 常显、关注卡头像旁多出一个空占位圆）。既有先例：`.work-type-badge.hidden`、`.following-avatar-fallback.hidden`。
+- **取消信号必须发到抖音 document** — `DY_CANCEL_ACTIVE_TASK` 经 background→content→inject 路径送达，不能直接在 options 页 dispatch（路径差异见 [docs/01](./docs/01-project-architecture.md) / [docs/09](./docs/09-inject-tab-mode.md)）。
+- **同步 requestId 时序差异** — `SYNC_WORKS` 立即返回 requestId；`FETCH_FOLLOWING` 等 fetch 完成才返回，关注进度过滤必须兼容 `Sync.#followingsRequestId === null`（见 [docs/03](./docs/03-independent-sync-followings.md) / [docs/11](./docs/11-options-ui.md)）。
+- **同步 handler 已无需延迟派发结果** — `requestResponse` 先 `addEventListener` 再 `dispatchEvent`，`setTimeout(0)` workaround 已废除（见 [docs/09](./docs/09-inject-tab-mode.md)）。
+- **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — JS 不截断文本，靠 `.sec-truncate` 视觉截断；selector 用 `row.querySelector('.sec-truncate, .sec-expanded')`（见 [docs/09](./docs/09-inject-tab-mode.md)）。
+- **取消点赞/收藏用 XHR 而非 fetch（Tab模式）** — a_bogus 签名与 XHR 原型链深度绑定，fetch 发不出有效签名；独立模式由 background 直接 `fetch()` POST（无页面上下文），Referer / Sec-Fetch-* 靠 DNR 规则网络层注入（见 [docs/06](./docs/06-independent-cancel-collection.md) / [docs/08](./docs/08-dnr-rules.md) / [docs/09](./docs/09-inject-tab-mode.md)）。
+- **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）见 [docs/02](./docs/02-independent-sync-works.md) / [docs/09](./docs/09-inject-tab-mode.md)。
+- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名 403 `Signature Not Found`；算法、线格式与盐轮换处置见 [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md)。
+- **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送（长操作 X 恒可点）。机制见 [docs/11](./docs/11-options-ui.md)。
+- **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject 六个 API 请求函数经 Fetch Hook 但不被捕获；走 `origFetch.call(window, ...)` 绕过 Hook 会错过页面包装器注入的签名参数（见 [docs/09](./docs/09-inject-tab-mode.md)）。
+- **媒体加载有全局熔断** — 视频/封面失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`，不要自行计数（见 [docs/11](./docs/11-options-ui.md)）。
+- **侧边栏封面必须走"视口门控 + 分帧队列"** — 条目创建只挂 meta 不发探针，进视口由 `#promoteItem` 经 `#enqueueCover` 每帧限量 rAF 发出；整页 DOM 用单个 fragment 追加。禁止改回创建即全量急切加载（见 [docs/11](./docs/11-options-ui.md)）。
+- **侧边栏是升降级式轻量虚拟化，且不用 `content-visibility:auto`** — observer root 必须显式传 `dom.sidebarBody`（null root 被祖先裁剪抵消致预填失效）；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；`.sidebar-work-item` 加 CV 只剩每帧 Layerize 抖动（详见 [docs/11](./docs/11-options-ui.md)）。
+- **VirtualGrid 填充观察者是分圈观察，不是全量 observe** — 新骨架进 `#pendingSkeletons` 队列逐批交给 IO，圈尾哨兵触发续批；哨兵被删须立刻续接，`render()`/`abortRender()` 重置须同清队列状态（成本依据与细则见 [docs/11](./docs/11-options-ui.md)）。
+- **网格卡片是双向虚拟化的** — 填充/卸载双 observer + 时间预算制分帧填充（勿改回固定张数/帧）；卸载圈远大于填充圈形成滞回勿调近；`populateItem` 负责 observe 完整卡的交接，`updateCardDOM` 已兼容骨架态（见 [docs/11](./docs/11-options-ui.md)）。
+- **填充/降级必须在骨架根节点上原地切换（禁止换根节点）** — grid 容器任一直接子节点被替换都触发 Blink 全量重排，成本随卡片总数线性；子类只允许改类名与增删根节点后代，骨架模板必须与完整卡根层同构（见 [docs/11](./docs/11-options-ui.md)）。
+- **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件（静默失效）；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断（见 [docs/11](./docs/11-options-ui.md)）。
+- **网格媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 四个槽位全是 `<div role="img">`（唯一例外详情大图 `<img>`+探针）；离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际再提交。各槽位失败语义、代际机制与清背景要求全文见 [docs/11](./docs/11-options-ui.md)。
+- **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被文件后部组件规则覆盖，hidden 静默失效、占位层常显（见 [docs/11](./docs/11-options-ui.md)）。
 
 ## config 分组速查
 
@@ -156,13 +157,19 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 ## 文档索引
 
-| 文档                                                     | 阅读场景                                                                       |
-|----------------------------------------------------------|--------------------------------------------------------------------------------|
-| [docs/SYNC_AND_SCAN.md](./docs/SYNC_AND_SCAN.md)         | 作品同步、关注同步、点赞/收藏扫描、取消点赞/收藏、作者主页分页的完整链路与时序 |
-| [docs/INJECT_INTERNALS.md](./docs/INJECT_INTERNALS.md)   | inject.js 数据提取、签名捕获与缓存、fetch/XHR Hook、安全密钥获取               |
-| [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)     | window.fetch 与 origFetch 的抉择、save/restore 缓存保护机制、六类 API 请求对比 |
-| [docs/STORAGE_AND_MERGE.md](./docs/STORAGE_AND_MERGE.md) | IndexedDB 结构、作品合并、关注丢失检测、导入分组去重合并                       |
-| [docs/SECURITY_AND_DNR.md](./docs/SECURITY_AND_DNR.md)   | declarativeNetRequest 规则、安全状态查询链路、安全风险                         |
-| [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md)   | 独立模式架构 + msToken/webId/Cookie/浏览器特征缓存模型与存储键表               |
+技术文档已按单一职责拆分为编号分册（术语规范见 01：**Tab模式**=页面注入脚本方式；**独立模式**=纯后台逆向请求流程）：
+
+| 文档 | 阅读场景 |
+|------|----------|
+| [docs/01-project-architecture.md](./docs/01-project-architecture.md) | 项目架构：双模运行与路由隔离、代码布局约束、双域存储模型、通信协议、全局配置 |
+| [docs/02-independent-sync-works.md](./docs/02-independent-sync-works.md) | 独立模式同步作品（SYNC_WORKS / formatWork 三级取链） |
+| [docs/03-independent-sync-followings.md](./docs/03-independent-sync-followings.md) | 独立模式同步关注（FETCH_FOLLOWING 分页采集） |
+| [docs/04-independent-calibrate-followings.md](./docs/04-independent-calibrate-followings.md) | 关注计数校准（批量 calibrateFollowingStats + 侧边栏单用户 CALIBRATE_FOLLOWING） |
+| [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md) | 独立模式扫描收藏（listcollection 线格式 + Argus webSign 定案、绑定域实验、盐轮换处置） |
+| [docs/06-independent-cancel-collection.md](./docs/06-independent-cancel-collection.md) | 独立模式取消收藏（background 直连 POST 循环） |
+| [docs/07-independent-fetch-user-works.md](./docs/07-independent-fetch-user-works.md) | 作者主页作品分页（FETCH_WORKS_PAGE 双模分支） |
+| [docs/08-dnr-rules.md](./docs/08-dnr-rules.md) | 全部 DNR 动态规则（7 条）、优先级关系与排障 |
+| [docs/09-inject-tab-mode.md](./docs/09-inject-tab-mode.md) | Tab模式注入侧技术方案：签名捕获/三种签名策略/_dyInternal、事件桥、按钮注入、取消信号 |
+| [docs/10-storage-write-and-import.md](./docs/10-storage-write-and-import.md) | 存储写入与导入合并：mergeWork/计数保护/丢失检测/reconcileImportGroups 三级对账 |
+| [docs/11-options-ui.md](./docs/11-options-ui.md) | 管理页渲染与交互：VirtualGrid/Sidebar 虚拟化与分圈观察、媒体探针体系与全局熔断、勾选 DOM 约定、弹窗锁定与取消门控、CSS 协同约定 |
 | [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md)   | 参考项目 TikTokDownloader 算法/凭据模块 + Douyin API 端点总表                  |
-| [docs/COLLECTION_SCAN_REVERSE.md](./docs/COLLECTION_SCAN_REVERSE.md) | 独立模式扫描收藏全链路实录：请求要素、线格式、webSign 逆向过程与盐变更处置 |

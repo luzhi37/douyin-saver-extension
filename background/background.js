@@ -1,6 +1,5 @@
 import { storage } from "./storage.js";
-import { ABogus, parseCookieToPairs, generateRandomMsToken, md5Hex } from "./crypto.js";
-import { MSSDK_STR_DATA } from "./mssdk_strdata.js";
+import { ABogus, parseCookieToPairs, generateRandomMsToken, md5Hex, MSSDK_STR_DATA } from "./crypto.js";
 
 // ===== 抖音数据管理 - Background Service Worker =====
 

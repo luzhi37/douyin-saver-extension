@@ -50,14 +50,18 @@ options.js (管理 UI)        — 响应式 store、虚拟网格、播放器
 
 ## 文档
 
-| 文档                                                     | 阅读场景                                  |
-|----------------------------------------------------------|-------------------------------------------|
-| [docs/SYNC_AND_SCAN.md](./docs/SYNC_AND_SCAN.md)         | 同步/扫描/取消的完整链路与时序            |
-| [docs/FETCH_AND_CACHE.md](./docs/FETCH_AND_CACHE.md)     | fetch 与 origFetch 的抉择、缓存机制       |
-| [docs/STORAGE_AND_MERGE.md](./docs/STORAGE_AND_MERGE.md) | IndexedDB 结构、合并策略、导入还原        |
-| [docs/INJECT_INTERNALS.md](./docs/INJECT_INTERNALS.md)   | inject.js 数据提取、签名捕获              |
-| [docs/SECURITY_AND_DNR.md](./docs/SECURITY_AND_DNR.md)   | declarativeNetRequest 规则与安全          |
-| [docs/INDEPENDENT_MODE.md](./docs/INDEPENDENT_MODE.md)   | 独立模式架构与凭据缓存                    |
+| 文档 | 阅读场景 |
+|------|----------|
+| [docs/01-project-architecture.md](./docs/01-project-architecture.md) | 项目架构：双模运行、代码约束、存储、通信 |
+| [docs/02-independent-sync-works.md](./docs/02-independent-sync-works.md) | 独立模式：同步作品 |
+| [docs/03-independent-sync-followings.md](./docs/03-independent-sync-followings.md) | 独立模式：同步关注 |
+| [docs/04-independent-calibrate-followings.md](./docs/04-independent-calibrate-followings.md) | 独立模式：校准关注 |
+| [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md) | 独立模式：扫描收藏（含 webSign 逆向定案） |
+| [docs/06-independent-cancel-collection.md](./docs/06-independent-cancel-collection.md) | 独立模式：取消收藏 |
+| [docs/07-independent-fetch-user-works.md](./docs/07-independent-fetch-user-works.md) | 独立模式：获取用户作品列表 |
+| [docs/08-dnr-rules.md](./docs/08-dnr-rules.md) | DNR 规则全表与排障 |
+| [docs/09-inject-tab-mode.md](./docs/09-inject-tab-mode.md) | Inject.js Tab模式技术方案 |
+| [docs/10-storage-write-and-import.md](./docs/10-storage-write-and-import.md) | 存储写入与导入合并 |
 | [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md)   | TikTokDownloader 参考 + API 端点总表      |
 | [AGENTS.md](./AGENTS.md)                                 | AI Agent 技术参考（架构、协议、设计陷阱） |
 
