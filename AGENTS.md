@@ -93,7 +93,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
-| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；元素事件在构造器内自绑定） |
+| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；检索状态封装为 `#searchState` 私有实例字段，标签常量为类静态字段；元素事件在构造器内自绑定） |
 | `VirtualGrid`    | 网格渲染基类（骨架 + 双向虚拟化：填充/卸载双 observer + 分时间预算填充 + 事件委托） |
 | `Dialog`         | 弹窗管理                                                          |
 | `FollowingsGrid` | 关注卡片网格                                                      |
