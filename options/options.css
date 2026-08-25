@@ -965,7 +965,8 @@ body.domain-works #sidebarResizeHandle {
   transition: width 0.15s, background 0.15s;
 }
 
-/* 把手徽章：页面底色圆角片承载 2×4 竖点阵，骑在缝线上形成「线上串珠」结构 */
+/* 把手：缝线中央的窄底色片承载单列密排点阵，宽度与缝线相当，
+   把线断成一截「虚线把手」，无多余留白 */
 .sidebar-resize-handle::after {
   --grip-color: var(--dy-border);
   content: "";
@@ -973,13 +974,12 @@ body.domain-works #sidebarResizeHandle {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 16px;
-  height: 24px;
-  border-radius: 8px;
+  width: 6px;
+  height: 30px;
+  border-radius: 3px;
   background-color: var(--dy-bg);
-  box-shadow: inset 0 0 0 1px var(--dy-border);
   background-image: radial-gradient(circle, var(--grip-color) 1.5px, transparent 1.9px);
-  background-size: 8px 6px;
+  background-size: 6px 5px;
 }
 
 .sidebar-resize-handle:hover,
@@ -996,7 +996,6 @@ body.domain-works #sidebarResizeHandle {
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle.active::after {
   --grip-color: var(--dy-primary);
-  box-shadow: inset 0 0 0 1px var(--dy-primary);
 }
 
 /* ===== 按钮系统 ===== */
