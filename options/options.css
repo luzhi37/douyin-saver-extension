@@ -960,7 +960,7 @@ body.domain-works #sidebarResizeHandle {
   top: 0;
   bottom: 0;
   transform: translateX(-50%);
-  width: 3px;
+  width: 5px;
   background: var(--dy-border);
   transition: width 0.15s, background 0.15s;
 }
@@ -989,7 +989,7 @@ body.domain-works #sidebarResizeHandle {
 
 .sidebar-resize-handle:hover::before,
 .sidebar-resize-handle.active::before {
-  width: 5px;
+  width: 8px;
   background: var(--dy-primary);
 }
 
