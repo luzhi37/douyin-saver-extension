@@ -951,8 +951,8 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
-/* 分割条：加粗缝线贯穿全高（收起后仍可见，作为展开入口），
-   悬停/拖动时进一步加粗变主色。点击切换显隐 / 拖拽调宽 */
+/* 分割条：缝线贯穿全高（收起后仍可见，作为展开入口），
+   悬停/拖动时加粗变主色。点击切换显隐 / 拖拽调宽 */
 .sidebar-resize-handle::before {
   content: "";
   position: absolute;
@@ -960,13 +960,13 @@ body.domain-works #sidebarResizeHandle {
   top: 0;
   bottom: 0;
   transform: translateX(-50%);
-  width: 2px;
+  width: 3px;
   background: var(--dy-border);
   transition: width 0.15s, background 0.15s;
 }
 
-/* 把手：缝线中央的窄底色片承载单列密排点阵，宽度与缝线相当，
-   把线断成一截「虚线把手」，无多余留白 */
+/* 把手：底色圆角胶囊承载完整 ⣿ 双列点阵（列距 4px，密排），
+   骑在缝线上形成「线上串珠」结构 */
 .sidebar-resize-handle::after {
   --grip-color: var(--dy-border);
   content: "";
@@ -974,12 +974,12 @@ body.domain-works #sidebarResizeHandle {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 6px;
-  height: 30px;
-  border-radius: 3px;
+  width: 8px;
+  height: 24px;
+  border-radius: 4px;
   background-color: var(--dy-bg);
-  background-image: radial-gradient(circle, var(--grip-color) 1.5px, transparent 1.9px);
-  background-size: 6px 5px;
+  background-image: radial-gradient(circle, var(--grip-color) 1.1px, transparent 1.4px);
+  background-size: 4px 4px;
 }
 
 .sidebar-resize-handle:hover,
@@ -989,7 +989,7 @@ body.domain-works #sidebarResizeHandle {
 
 .sidebar-resize-handle:hover::before,
 .sidebar-resize-handle.active::before {
-  width: 4px;
+  width: 5px;
   background: var(--dy-primary);
 }
 
