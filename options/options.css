@@ -951,7 +951,7 @@ body.domain-works #sidebarResizeHandle {
   z-index: 10;
 }
 
-/* 分割条：缝线贯穿全高（收起后仍可见，作为展开入口），
+/* 分割条：缝线贯穿全高（仅侧边栏展开时可见、可交互），
    悬停/拖动时加粗变主色。点击切换显隐 / 拖拽调宽 */
 .sidebar-resize-handle::before {
   content: "";
@@ -965,21 +965,17 @@ body.domain-works #sidebarResizeHandle {
   transition: width 0.15s, background 0.15s;
 }
 
-/* 把手：底色圆角胶囊承载完整 ⣿ 双列点阵（列距 4px，密排），
-   骑在缝线上形成「线上串珠」结构 */
+/* 把手：与缝线同宽的小长块（可抓取段），悬停/拖动随缝线一起变主色 */
 .sidebar-resize-handle::after {
-  --grip-color: var(--dy-border);
   content: "";
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 8px;
-  height: 24px;
-  border-radius: 4px;
-  background-color: var(--dy-bg);
-  background-image: radial-gradient(circle, var(--grip-color) 1.1px, transparent 1.4px);
-  background-size: 4px 4px;
+  width: 5px;
+  height: 48px;
+  border-radius: 2.5px;
+  background-color: rgba(255, 255, 255, 0.35);
 }
 
 .sidebar-resize-handle:hover,
@@ -995,7 +991,10 @@ body.domain-works #sidebarResizeHandle {
 
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle.active::after {
-  --grip-color: var(--dy-primary);
+  width: 8px;
+  height: 64px;
+  border-radius: 4px;
+  background-color: var(--dy-primary);
 }
 
 /* ===== 按钮系统 ===== */

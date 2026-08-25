@@ -1909,10 +1909,13 @@ class Sidebar {
       dom.sidebar.classList.add("sidebar-zero");
       dom.sidebar.style.width = "";
       document.body.classList.remove("sidebar-open");
+      // 分割条仅在侧边栏展开时可见、可交互
+      dom.sidebarResizeHandle.classList.add("hidden");
     } else {
       dom.sidebar.classList.remove("sidebar-zero");
       dom.sidebar.style.width = w + "px";
       document.body.classList.add("sidebar-open");
+      dom.sidebarResizeHandle.classList.remove("hidden");
     }
   }
 
