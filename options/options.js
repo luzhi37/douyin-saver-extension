@@ -19,6 +19,7 @@ const config = {
   HOVER_PREVIEW_DELAY: 200,
   BLOB_REVOKE_DELAY: 10000,
   NOTE_AUTO_PLAY_INTERVAL: 3000,
+  SEARCH_DEBOUNCE: 200,
 
   // 侧边栏
   SIDEBAR_SNAP_POINTS: [650, 0],
@@ -35,6 +36,7 @@ const config = {
   // 详情页
   DETAIL_TITLE_MAX_LEN: 40,
   TOAST_DURATION: 2000,
+  TOAST_ERROR_DURATION: 4500,
   DOWNLOAD_MAX_RETRY: 1,
 
   // 分块渲染
@@ -85,6 +87,7 @@ const dom = {
   detailImgCounter: document.querySelector("#detailImgCounter"),
   detailNavLeft: document.querySelector("#detailNavLeft"),
   detailNavRight: document.querySelector("#detailNavRight"),
+  detailLoader: document.querySelector("#detailLoader"),
   detailProgressSlider: document.querySelector("#detailProgressSlider"),
   detailPlayBtn: document.querySelector("#detailPlayBtn"),
   detailTime: document.querySelector("#detailTime"),
@@ -123,6 +126,23 @@ const dom = {
   sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
   btnFavorites: document.querySelector("#btnFavorites"),
   btnCollections: document.querySelector("#btnCollections"),
+  batchCount: document.querySelector("#batchCount"),
+  filterBar: document.querySelector("#filterBar"),
+  filterBarText: document.querySelector("#filterBarText"),
+  btnClearFilter: document.querySelector("#btnClearFilter"),
+  searchBar: document.querySelector("#searchBar"),
+  searchInput: document.querySelector("#searchInput"),
+  sbScope: document.querySelector("#sbScope"),
+  sbScopeAuthor: document.querySelector("#sbScopeAuthor"),
+  sbScopeTitle: document.querySelector("#sbScopeTitle"),
+  sbWorkFilters: document.querySelector("#sbWorkFilters"),
+  sbSort: document.querySelector("#sbSort"),
+  sbFollowFilters: document.querySelector("#sbFollowFilters"),
+  sbFollowSort: document.querySelector("#sbFollowSort"),
+  sbReverse: document.querySelector("#sbReverse"),
+  btnCloseSearch: document.querySelector("#btnCloseSearch"),
+  btnClearInBar: document.querySelector("#btnClearInBar"),
+  btnSearchMenu: document.querySelector("#btnSearch"),
 };
 
 // ---------- state ----------
@@ -236,6 +256,209 @@ const utils = {
     return month + "/" + day + " " + hour + ":" + min;
   },
 };
+
+// ---------- 检索：搜索/排序 ----------
+// 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
+// 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响
+const searchState = {
+  keyword: "",
+  scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID
+  sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品域）
+  followingsSort: "followers", // followers 粉丝数 | works 作品数（仅关注域）
+  reverse: false, // 逆序（翻转最终顺序，两域共用）
+};
+
+const SEARCH_SCOPE_LABELS = { author: "作者", title: "标题", id: "ID" };
+const SEARCH_SORT_LABELS = { authorCount: "作者作品数" };
+const SEARCH_FOLLOWINGS_SORT_LABELS = { works: "作品数" };
+
+function isFilterActive() {
+  if (!searchState.keyword.trim() && !searchState.reverse) return false;
+  return state.domain === "works"
+    ? searchState.sort !== "saved"
+    : searchState.followingsSort !== "followers";
+}
+
+// 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
+function matchWork(work, kw) {
+  switch (searchState.scope) {
+    case "author":
+      return (work.nickname || "").toLowerCase().includes(kw) || String(work.uid || "").toLowerCase().includes(kw);
+    case "title":
+      return (work.desc || "").toLowerCase().includes(kw);
+    case "id":
+      return String(work.awemeId).toLowerCase().includes(kw);
+    default:
+      return (
+        (work.desc || "").toLowerCase().includes(kw) ||
+        (work.nickname || "").toLowerCase().includes(kw) ||
+        String(work.awemeId).toLowerCase().includes(kw)
+      );
+  }
+}
+
+function getWorksView() {
+  const kw = searchState.keyword.trim().toLowerCase();
+  let list = state.works;
+  if (kw) list = list.filter((w) => matchWork(w, kw));
+  if (searchState.sort === "authorCount") {
+    // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
+    // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
+    const counts = new Map();
+    for (const w of state.works) {
+      const key = w.uid || w.nickname || "";
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const rank = new Map(
+      [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : 1)).map((k, i) => [k, i]),
+    );
+    const authorKey = (w) => w.uid || w.nickname || "";
+    list = [...list].sort((a, b) => (rank.get(authorKey(a)) ?? 0) - (rank.get(authorKey(b)) ?? 0) || (b.savedAt || 0) - (a.savedAt || 0));
+  } else {
+    // 保存时间（savedAt）降序为基准，与 storage 层默认返回顺序一致
+    list = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  }
+  if (searchState.reverse) list.reverse();
+  return list;
+}
+
+function getFollowingsView() {
+  const kw = searchState.keyword.trim().toLowerCase();
+  // 关注域无标题维度：title 范围（域切换残留）按昵称处理。
+  // 无关键词也须拷贝后再排序，不得原地改动 state.followings
+  let list = kw
+    ? state.followings.filter((f) => {
+        switch (searchState.scope) {
+          case "author":
+          case "title":
+            return (f.nickname || "").toLowerCase().includes(kw);
+          case "id":
+            return String(f.uid).toLowerCase().includes(kw);
+          default:
+            return (f.nickname || "").toLowerCase().includes(kw) || String(f.uid).toLowerCase().includes(kw);
+        }
+      })
+    : [...state.followings];
+  // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定
+  const field = searchState.followingsSort === "works" ? "awemeCount" : "followerCount";
+  list.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
+  if (searchState.reverse) list.reverse();
+  return list;
+}
+
+function updateFilterBar() {
+  const parts = [];
+  const kw = searchState.keyword.trim();
+  if (kw) parts.push(`${SEARCH_SCOPE_LABELS[searchState.scope] || "关键词"} "${kw}"`);
+  if (state.domain === "works") {
+    if (searchState.sort !== "saved") parts.push(SEARCH_SORT_LABELS[searchState.sort]);
+  } else if (searchState.followingsSort !== "followers") {
+    parts.push(SEARCH_FOLLOWINGS_SORT_LABELS[searchState.followingsSort]);
+  }
+  if (searchState.reverse) parts.push("逆序");
+  // 搜索栏展开期间控件状态自可见，摘要条隐藏避免两行重复
+  if (!parts.length || !isFilterActive() || isSearchBarOpen()) {
+    dom.filterBar.classList.add("hidden");
+    return;
+  }
+  dom.filterBarText.textContent = parts.join(" · ");
+  dom.filterBar.classList.remove("hidden");
+}
+
+// 筛选变化后的统一入口：重渲当前域网格 + 同步筛选条
+function refreshGridView() {
+  if (state.domain === "works") worksGrid.renderCards();
+  else followingsGrid.renderFollowingCards();
+  updateFilterBar();
+}
+
+let __searchDebounceTimer = 0;
+
+function syncSegUI() {
+  dom.sbScope.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.scope === searchState.scope);
+  });
+  dom.sbSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.sort === searchState.sort);
+  });
+  dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.fsort === searchState.followingsSort);
+  });
+  dom.sbReverse.checked = searchState.reverse;
+}
+
+// 范围段的域差异：「标题」仅作品域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
+function syncScopeUIForDomain() {
+  const isWorks = state.domain === "works";
+  dom.sbScopeTitle.classList.toggle("hidden", !isWorks);
+  dom.sbScopeAuthor.textContent = isWorks ? "作者" : "昵称";
+  if (!isWorks && searchState.scope === "title") searchState.scope = "all";
+}
+
+function updateSearchPlaceholder() {
+  const placeholders = state.domain === "works"
+    ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
+    : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
+  dom.searchInput.placeholder = placeholders[searchState.scope] || placeholders.all;
+}
+
+function isSearchBarOpen() {
+  return !dom.searchBar.classList.contains("hidden");
+}
+
+function updateSearchMenuLabel() {
+  dom.btnSearchMenu.textContent = isSearchBarOpen() ? "收起搜索" : "搜索";
+}
+
+function openSearchBar() {
+  if (isSearchBarOpen()) return;
+  dom.searchBar.classList.remove("hidden");
+  // 排序段随域显隐（两域各有排序维度）；逆序复选框两域共用
+  const isWorks = state.domain === "works";
+  dom.sbWorkFilters.classList.toggle("hidden", !isWorks);
+  dom.sbFollowFilters.classList.toggle("hidden", isWorks);
+  syncScopeUIForDomain();
+  updateSearchPlaceholder();
+  dom.searchInput.value = searchState.keyword;
+  syncSegUI();
+  updateFilterBar();
+  updateSearchMenuLabel();
+  dom.searchInput.focus();
+  dom.searchInput.select();
+}
+
+function closeSearchBar() {
+  if (!isSearchBarOpen()) return;
+  dom.searchBar.classList.add("hidden");
+  updateFilterBar();
+  updateSearchMenuLabel();
+}
+
+function toggleSearchBar() {
+  if (isSearchBarOpen()) closeSearchBar();
+  else openSearchBar();
+}
+
+function applySearchInput() {
+  clearTimeout(__searchDebounceTimer);
+  __searchDebounceTimer = setTimeout(() => {
+    searchState.keyword = dom.searchInput.value;
+    refreshGridView();
+  }, config.SEARCH_DEBOUNCE);
+}
+
+function clearSearchFilters() {
+  searchState.keyword = "";
+  searchState.scope = "all";
+  searchState.sort = "saved";
+  searchState.followingsSort = "followers";
+  searchState.reverse = false;
+  dom.searchInput.value = "";
+  syncScopeUIForDomain();
+  updateSearchPlaceholder();
+  syncSegUI();
+  refreshGridView();
+}
 
 // ---------- runtimeConfig ----------
 const runtimeConfig = {
@@ -433,6 +656,9 @@ class VirtualGrid {
     this.#emptyHint = emptyHint || "";
     this.#boundClickHandler = this.#onClick.bind(this);
     this.#container.addEventListener("click", this.#boundClickHandler);
+    // 键盘激活与点击共用同一条 handleClick 路径（docs/UI_IMPROVEMENTS.md 建议7）：
+    // 勾选圆 Enter/Space 切换选中；卡片根节点 Enter 等价整卡点击
+    this.#container.addEventListener("keydown", (e) => this.#onKeydown(e));
     dom.mainGrid.addEventListener("scroll", () => this.#scheduleCatchUp(), { passive: true });
   }
 
@@ -726,6 +952,31 @@ class VirtualGrid {
   }
 
   #onClick(event) {
+    this.#activate(event);
+  }
+
+  // 键盘激活：勾选圆上的 Enter/Space 切换选中；卡片根节点直接持有焦点时 Enter
+  // 等价整卡点击（打开详情/侧边栏）。焦点在卡内按钮/输入框上时不拦截，走原生行为
+  #onKeydown(event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const isCheckbox = !!target.closest(".work-checkbox, .following-checkbox");
+    const itemEl = target.closest("." + this.#itemClass);
+    if (!itemEl) return;
+    if (isCheckbox) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.#activate(event);
+      return;
+    }
+    if (event.key === "Enter" && target === itemEl && !target.closest("button, input")) {
+      event.preventDefault();
+      this.#activate(event);
+    }
+  }
+
+  #activate(event) {
     const itemEl = event.target.closest("." + this.#itemClass);
     if (!itemEl) return;
     const key = itemEl.dataset[this.#itemKey];
@@ -751,6 +1002,7 @@ class VirtualGrid {
 class Dialog {
   constructor() {
     this.__toastTimer = null;
+    this.__lastFocused = null;
   }
 
   showDialog(title, body, footerBtns, onClose) {
@@ -775,6 +1027,17 @@ class Dialog {
         dom.dialogFooter.appendChild(el);
       }
     }
+
+    // 焦点管理：打开时移入弹窗、关闭后还原到触发元素（docs/UI_IMPROVEMENTS.md 建议3）
+    this.__lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.focusFirstControl();
+  }
+
+  focusFirstControl() {
+    const focusable = dom.dialogBody.querySelector(
+      "button, input:not([type='hidden']), select, textarea, [tabindex]:not([tabindex='-1'])",
+    );
+    (focusable || dom.dialogClose).focus();
   }
 
   closeDialog() {
@@ -785,6 +1048,8 @@ class Dialog {
     }
     state.activeDialog = null;
     dom.dialogOverlay.classList.add("hidden");
+    if (this.__lastFocused?.isConnected) this.__lastFocused.focus();
+    this.__lastFocused = null;
   }
 
   updateDialog(title, bodyHtml) {
@@ -805,16 +1070,17 @@ class Dialog {
     this.addDialogBtn("好的", "primary", () => this.closeDialog());
   }
 
-  showToast(message) {
+  // 分型 toast（建议1）：info 默认；success/error 带左色条，error 加长驻留
+  showToast(message, type = "info") {
     const toast = document.getElementById("dy-options-toast");
     toast.textContent = message;
-    toast.classList.remove("hide");
-    toast.classList.add("show");
+    toast.classList.remove("hide", "toast-info", "toast-success", "toast-error");
+    toast.classList.add("show", `toast-${type}`);
     if (this.__toastTimer) clearTimeout(this.__toastTimer);
     this.__toastTimer = setTimeout(() => {
       toast.classList.remove("show");
       toast.classList.add("hide");
-    }, config.TOAST_DURATION);
+    }, type === "error" ? config.TOAST_ERROR_DURATION : config.TOAST_DURATION);
   }
 
   showGroupSelectDialog(title, groups, onSelect) {
@@ -880,7 +1146,12 @@ class FollowingsGrid extends VirtualGrid {
   }
 
   renderFollowingCards() {
-    this.render(state.followings, "还没有保存的关注者", "点击菜单「同步关注」获取你的关注列表");
+    const view = getFollowingsView();
+    if (isFilterActive()) {
+      this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试");
+    } else {
+      this.render(view, "还没有保存的关注者", "点击菜单「同步关注」获取你的关注列表");
+    }
   }
 
   fillCard(card, following) {
@@ -1213,7 +1484,8 @@ class Batch {
   }
 
   selectAll() {
-    const items = state.domain === "works" ? state.works : state.followings;
+    // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
+    const items = state.domain === "works" ? getWorksView() : state.followings;
     const idKey = state.domain === "works" ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
     if (allSelected) {
@@ -1222,6 +1494,15 @@ class Batch {
     }
     for (const w of items) state.selectedIds.add(w[idKey]);
     return "all";
+  }
+
+  // 已选计数与按钮可用性统一在此刷新（docs/UI_IMPROVEMENTS.md 建议4）
+  syncSelectionUI() {
+    const count = state.selectedIds.size;
+    if (dom.batchCount) dom.batchCount.textContent = `已选 ${count}`;
+    const noneSelected = count === 0;
+    dom.batchMove.disabled = noneSelected;
+    dom.batchDelete.disabled = noneSelected;
   }
 
   #clearAllCheckboxes() {
@@ -1247,6 +1528,7 @@ class Batch {
     this.#clearAllCheckboxes();
     dom.batchSelectAll.innerHTML = "全选";
     store.refreshGroups();
+    this.syncSelectionUI();
     return { count: ids.length, isFollowings };
   }
 
@@ -1282,11 +1564,13 @@ class Batch {
       checkboxEl.classList.remove("checked");
       checkboxEl.textContent = "";
     }
+    checkboxEl.setAttribute("aria-checked", isSelected ? "true" : "false");
   }
 
   toggleBatchSelect(id, checkboxEl) {
     const selected = this.toggleSelect(id);
     this.updateCheckboxDOM(checkboxEl, selected);
+    this.syncSelectionUI();
   }
 
   handleBatchToggle() {
@@ -1308,6 +1592,7 @@ class Batch {
       document.querySelectorAll(".work-checkbox").forEach((el) => (el.style.display = ""));
       document.querySelectorAll(".following-checkbox").forEach((el) => (el.style.display = ""));
     }
+    this.syncSelectionUI();
   }
 
   handleBatchSelectAll() {
@@ -1318,6 +1603,7 @@ class Batch {
       const id = el.closest("[data-aweme-id]")?.dataset?.awemeId || el.closest("[data-uid]")?.dataset?.uid;
       this.updateCheckboxDOM(el, this.isSelected(id));
     });
+    this.syncSelectionUI();
   }
 
   async handleBatchDelete() {
@@ -1327,11 +1613,11 @@ class Batch {
     const name = isFollowings ? "关注者" : "作品";
     const delBody = document.createElement("p");
     delBody.className = "confirm-delete-msg";
-    delBody.textContent = `确定删除选中的 ${count} 个${name}？此操作不可撤销。`;
-    dialog.showDialog("确认删除", delBody, [
+    delBody.textContent = `确定移除选中的 ${count} 个${name}？此操作不可撤销。`;
+    dialog.showDialog("确认移除", delBody, [
       { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
       {
-        text: "删除",
+        text: "移除",
         danger: true,
         callback: async () => {
           dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个${name}…</p>${utils.SPINNER_HTML}`);
@@ -1339,9 +1625,9 @@ class Batch {
           try {
             const result = await this.deleteSelected();
             if (result) {
-              dom.dialogTitle.textContent = "移除完成";
-              dom.dialogBody.innerHTML = `<p>已移除 ${count} 个${name}</p>`;
-              dialog.showOkDialog();
+              // 执行期弹窗已挡住 UI 变更，成功后不再要求"好的"确认（建议2）
+              dialog.closeDialog();
+              dialog.showToast(`已移除 ${count} 个${name}`, "success");
             }
           } finally {
             state.preventDialogClose = false;
@@ -1361,9 +1647,8 @@ class Batch {
       try {
         const result = await this.moveSelected(groupId);
         if (result) {
-          dom.dialogTitle.textContent = "移动完成";
-          dom.dialogBody.innerHTML = `<p>已移动 ${count} 个${name}</p>`;
-          dialog.showOkDialog();
+          dialog.closeDialog();
+          dialog.showToast(`已移动 ${count} 个${name}`, "success");
         }
       } finally {
         state.preventDialogClose = false;
@@ -2437,7 +2722,7 @@ class Settings {
         const text = el?.textContent || "";
         if (!text || text === "\u2014") return;
         navigator.clipboard.writeText(text).then(
-          () => dialog.showToast("\u5df2\u590d\u5236")
+          () => dialog.showToast("\u5df2\u590d\u5236", "success")
         );
       });
     });
@@ -2483,6 +2768,21 @@ class Settings {
     }
   }
 
+  // min/max 成对即时校验：两端同亮同灭，避免只标一端造成误读
+  #validateDelayPair(section, key) {
+    if (!section || !key || !(key.endsWith("Min") || key.endsWith("Max"))) return;
+    const base = key.slice(0, -3);
+    const minInput = section.querySelector(`.config-input[data-key="${base}Min"]`);
+    const maxInput = section.querySelector(`.config-input[data-key="${base}Max"]`);
+    if (!minInput || !maxInput) return;
+    const min = Number(minInput.value);
+    const max = Number(maxInput.value);
+    const filled = minInput.value.trim() !== "" && maxInput.value.trim() !== "";
+    const invalid = filled && Number.isFinite(min) && Number.isFinite(max) && min > max;
+    minInput.classList.toggle("input-invalid", invalid);
+    maxInput.classList.toggle("input-invalid", invalid);
+  }
+
   _bind() {
     const $ = (id) => this._dialogBody.querySelector("#" + id);
     // ponytail: section titles toggle a .collapsed class; CSS grid-template-rows handles the animation
@@ -2490,6 +2790,24 @@ class Settings {
       h3.addEventListener("click", () => {
         h3.closest(".settings-section").classList.toggle("collapsed");
       });
+    });
+    // 恢复默认（建议9）：仅回填输入框，持久化仍统一走关闭面板时的 saveBeforeClose
+    const cfgSection = $("settingsConfigSection");
+    $("btnResetConfig")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!cfgSection) return;
+      cfgSection.querySelectorAll(".config-input").forEach((inp) => {
+        const key = inp.dataset.key;
+        if (key && runtimeConfig.DEFAULTS[key] != null) inp.value = runtimeConfig.DEFAULTS[key];
+        inp.classList.remove("input-invalid");
+      });
+      dialog.showToast("已填入默认参数，关闭面板时保存", "info");
+    });
+    // min/max 即时校验（建议9）：输入期红框提示，保存拦截仍由 saveBeforeClose 兜底
+    cfgSection?.addEventListener("input", (e) => {
+      const input = e.target.closest?.(".config-input");
+      if (!input) return;
+      this.#validateDelayPair(cfgSection, input.dataset.key);
     });
     const modeSwitch = $("settingsModeSwitch");
     if (modeSwitch) {
@@ -2541,7 +2859,7 @@ class Settings {
             const text = await fn();
             if (text) {
               navigator.clipboard.writeText(text).then(
-                () => dialog.showToast("已复制")
+                () => dialog.showToast("已复制", "success")
               );
             }
           }
@@ -2558,10 +2876,10 @@ class Settings {
           if (res?.ok) {
             await this._refresh();
           } else {
-            dialog.showToast(res?.hint || res?.error || "刷新失败");
+            dialog.showToast(res?.hint || res?.error || "刷新失败", "error");
           }
         } catch {
-          dialog.showToast("刷新失败");
+          dialog.showToast("刷新失败", "error");
         } finally {
           btn.classList.remove("loading");
           btn.textContent = "刷新";
@@ -2601,20 +2919,20 @@ class Settings {
       const raw = input?.value.trim();
       const num = Number(raw);
       if (!raw || !Number.isFinite(num) || num <= 0) {
-        dialog.showToast(`"${key}" 请输入有效的正数`);
+        dialog.showToast(`"${key}" 请输入有效的正数`, "error");
         return false;
       }
       values[key] = num;
     }
     for (const [minKey, maxKey, label] of DELAY_PAIRS) {
       if (values[minKey] > values[maxKey]) {
-        dialog.showToast(`${label}延迟最小值不能大于最大值`);
+        dialog.showToast(`${label}延迟最小值不能大于最大值`, "error");
         return false;
       }
     }
     values.calibrateFollowings = this._pendingCalibrate ?? (section.querySelector("#settingsCalibrateSwitch .mode-btn.active")?.dataset.mode === "on");
     if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
-      dialog.showToast("批次暂停最小值不能大于最大值");
+      dialog.showToast("批次暂停最小值不能大于最大值", "error");
       return false;
     }
     try {
@@ -2622,7 +2940,7 @@ class Settings {
       const secUidInput = this._dialogBody.querySelector("#settingsSecUid");
       await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
     } catch {
-      dialog.showToast("保存失败");
+      dialog.showToast("保存失败", "error");
     }
     // 独立模式：与运行参数同走关闭通道；与存储值有变化才下发 SET_MODE（写存储+background 运行态+a-bogus 初始化）
     const modeOn = this._pendingIndependent ?? (section.querySelector("#settingsModeSwitch .mode-btn.active")?.dataset.mode === "on");
@@ -2632,7 +2950,7 @@ class Settings {
         await services.bgMsg({ type: "SET_MODE", enabled: modeOn });
         this._pendingIndependent = null;
       } catch {
-        dialog.showToast("独立模式切换失败");
+        dialog.showToast("独立模式切换失败", "error");
         return false;
       }
     }
@@ -2694,7 +3012,7 @@ class Favorites {
 
     if (msg.failed > 0 && msg.failed === msg.refreshed + msg.failed) {
       // all failed - likely auth issue
-      dialog.showToast("取消失败: 可能是密钥已过期,请刷新抖音页面后重试");
+      dialog.showToast("取消失败: 可能是密钥已过期,请刷新抖音页面后重试", "error");
       cancelBtn.disabled = false;
       ctx.syncAddBtn?.();
       return;
@@ -2716,6 +3034,7 @@ class Favorites {
       msg.failed > 0
         ? `已取消 ${successCount} 个${cfg.cancelLabel},${msg.failed} 个失败`
         : `已取消 ${successCount} 个${cfg.cancelLabel}`,
+      msg.failed > 0 ? "error" : "success",
     );
   }
 
@@ -2791,12 +3110,12 @@ class Favorites {
             typeof res?.error === "string" && res.error.includes("AUTH_FAILED")
               ? "密钥已过期，请刷新抖音页面后重试"
               : "添加失败: " + (res?.error || "未知错误");
-          dialog.showToast(errHint);
+          dialog.showToast(errHint, "error");
           return;
         }
         for (const w of targets) addedIds.add(w.awemeId);
         syncAddBtn();
-        dialog.showToast(`已添加 ${targets.length} 个作品（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`);
+        dialog.showToast(`已添加 ${targets.length} 个作品（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`, "success");
       });
       dom.dialogFooter.appendChild(addBtn);
 
@@ -2823,7 +3142,7 @@ class Favorites {
           const errHint = cancelRes.error?.includes("AUTH_FAILED")
             ? "密钥已过期，请刷新抖音页面后重试"
             : "取消失败: " + (cancelRes.error || "未知错误");
-          dialog.showToast(errHint);
+          dialog.showToast(errHint, "error");
           return;
         }
         // 记录活动 cancel 上下文,供 onCancelProgress / onCancelDone 使用
@@ -2911,7 +3230,13 @@ class WorksGrid extends VirtualGrid {
   }
 
   renderCards() {
-    this.render(state.works, "还没有保存的作品", "浏览抖音时，作品会自动被捕获");
+    // 渲染取过滤后的视图列表（建议5）；筛选生效时空态文案区分"无数据"与"无匹配"
+    const view = getWorksView();
+    if (isFilterActive()) {
+      this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试");
+    } else {
+      this.render(view, "还没有保存的作品", "浏览抖音时，作品会自动被捕获");
+    }
   }
 
   // 原地填充：骨架根节点保留，媒体区/操作按钮从完整模板取新节点移入
@@ -3077,7 +3402,8 @@ class WorksGrid extends VirtualGrid {
 
   restoreGridScroll() {
     const idx = detail.getDetailIndex();
-    if (idx < 0 || idx >= state.works.length) return;
+    const view = getWorksView();
+    if (idx < 0 || idx >= view.length) return;
     requestAnimationFrame(() => {
       const grid = dom.mainGrid;
       if (!grid) return;
@@ -3274,6 +3600,8 @@ class Detail {
   #mediaLastFailAt = 0;
   #mediaBreakUntil = 0;
   #imgProbeToken = 0;
+  #bgProbeToken = 0;
+  #lastGoodBg = null;
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
@@ -3303,8 +3631,7 @@ class Detail {
       };
       probe.src = url;
     });
-    dom.detailImgCounter.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
-    dom.detailTime.textContent = `${this.#noteImgIndex + 1} / ${this.#noteWork.images.length}`;
+    this.#updateCounters(this.#noteWork);
   }
   #noteStartAutoPlay() {
     const AUTO_PLAY_INTERVAL = config.NOTE_AUTO_PLAY_INTERVAL;
@@ -3339,10 +3666,14 @@ class Detail {
   #noteUpdatePlayBtn() {
     if (this.#noteIsPlaying) {
       dom.detailPlayBtn.innerHTML = config.icons.pause;
-      dom.detailPlayBtn.title = "暂停";
+      const label = "暂停轮播";
+      dom.detailPlayBtn.title = label;
+      dom.detailPlayBtn.setAttribute("aria-label", label);
     } else {
       dom.detailPlayBtn.innerHTML = config.icons.play;
-      dom.detailPlayBtn.title = "自动播放";
+      const label = "自动播放";
+      dom.detailPlayBtn.title = label;
+      dom.detailPlayBtn.setAttribute("aria-label", label);
     }
   }
   #toggleNoteAutoPlay() {
@@ -3364,7 +3695,9 @@ class Detail {
     if (!audio) return;
     audio.muted = !audio.muted;
     dom.detailMuteBtn.innerHTML = audio.muted ? config.icons.mute : config.icons.unmute;
-    dom.detailMuteBtn.title = audio.muted ? "取消静音" : "静音";
+    const label = audio.muted ? "取消静音" : "静音";
+    dom.detailMuteBtn.title = label;
+    dom.detailMuteBtn.setAttribute("aria-label", label);
   }
 
   static MIME_EXT = {
@@ -3375,15 +3708,17 @@ class Detail {
     "video/mp4": "mp4",
   };
 
+  // Detail 导航与网格共用同一过滤视图（建议5）：详情内翻页只在可见条目间进行
   openDetailIndex(awemeId) {
-    const idx = state.works.findIndex((w) => w.awemeId === awemeId);
+    const list = getWorksView();
+    const idx = list.findIndex((w) => w.awemeId === awemeId);
     if (idx === -1) return null;
     this.#index = idx;
-    return state.works[idx];
+    return list[idx];
   }
 
   getCurrentWork() {
-    return state.works[this.#index] || null;
+    return getWorksView()[this.#index] || null;
   }
 
   closeDetailIndex() {
@@ -3392,7 +3727,7 @@ class Detail {
   }
 
   nextDetailIndex() {
-    if (this.#index < state.works.length - 1) {
+    if (this.#index < getWorksView().length - 1) {
       this.#index++;
       return this.getCurrentWork();
     }
@@ -3436,8 +3771,9 @@ class Detail {
 
   nextOnEnd() {
     if (this.#loopMode === "single") return "single";
-    if (this.#loopMode === "group" && state.works.length > 1) {
-      if (this.#index < state.works.length - 1) {
+    const total = getWorksView().length;
+    if (this.#loopMode === "group" && total > 1) {
+      if (this.#index < total - 1) {
         this.#index++;
       } else {
         this.#index = 0;
@@ -3469,6 +3805,85 @@ class Detail {
       dom.detailLoopBtn.innerHTML = config.icons.noLoop;
       dom.detailLoopBtn.title = "不循环";
     }
+    dom.detailLoopBtn.setAttribute("aria-label", dom.detailLoopBtn.title);
+  }
+
+  // ===== 详情层 UI 增强（docs/UI_IMPROVEMENTS.md 建议10-21）=====
+
+  // 计数展示（建议12 修订版）：图集页数保留右上徽章，作品序号回归底栏最右端
+  #updateCounters(work) {
+    const total = getWorksView().length;
+    // 右上：仅多图图集显示页数
+    const isMultiNote = work.type === "note" && work.images?.length > 1;
+    dom.detailImgCounter.textContent = isMultiNote ? `${this.#noteImgIndex + 1}/${work.images.length}` : "";
+    dom.detailImgCounter.classList.toggle("hidden", !isMultiNote);
+    // 底栏右侧：作品序号
+    if (total > 1) {
+      dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${total}`;
+      dom.detailCounter.classList.remove("hidden");
+    } else {
+      dom.detailCounter.classList.add("hidden");
+    }
+  }
+
+  // 加载指示复位（建议17）
+  #resetMediaStatus(isVideo) {
+    dom.detailLoader.classList.toggle("hidden", !isVideo);
+  }
+
+  // 背景虚化的健壮提交：候选 URL 逐个探针，成功才写入 --bg-url（带引号转义）；
+  // 全部失效时回退到上一张成功背景（#lastGoodBg），首次打开无历史则落到深色底。
+  // 直接给 CSS 背景塞失效链接会静默变成纯黑——note 类型"虚化丢失"的根源即此。
+  #applyDetailBg(candidates) {
+    const urls = [...new Set(candidates.map((u) => utils.pickHttpsUrl(u || "")).filter(Boolean))];
+    if (!urls.length) return;
+    const token = ++this.#bgProbeToken;
+    const commit = (u) => {
+      const escaped = u.replace(/["\\]/g, "\\$&");
+      const newUrl = `url("${escaped}")`;
+      if (dom.detailOverlay.style.getPropertyValue("--bg-url") !== newUrl) {
+        dom.detailOverlay.style.setProperty("--bg-url", newUrl);
+      }
+    };
+    const tryNext = (i) => {
+      if (token !== this.#bgProbeToken) return;
+      if (i >= urls.length) {
+        if (this.#lastGoodBg) commit(this.#lastGoodBg);
+        return;
+      }
+      const probe = new Image();
+      probe.onload = () => {
+        if (token !== this.#bgProbeToken) return;
+        this.markMediaOk();
+        this.#lastGoodBg = urls[i];
+        commit(urls[i]);
+      };
+      probe.onerror = () => {
+        if (token !== this.#bgProbeToken) return;
+        tryNext(i + 1);
+      };
+      probe.src = urls[i];
+    };
+    tryNext(0);
+  }
+
+  // Tab 焦点圈定（建议21）：焦点在 overlay 内循环。
+  // 可见性用 rects 判断而非 offsetParent——fixed 定位元素（如右上关闭钮）的 offsetParent 恒为 null
+  #trapFocus(e) {
+    const focusables = [...dom.detailOverlay.querySelectorAll("button, input, a[href]")]
+      .filter((el) => el.getClientRects().length > 0);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    const inside = dom.detailOverlay.contains(active);
+    if (e.shiftKey && (!inside || active === first)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (!inside || active === last)) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   async openDetail(awemeId) {
@@ -3479,12 +3894,21 @@ class Detail {
     this.renderDetail();
   }
 
-  renderDetail() {
+  // dir: 1 下一作品 / -1 上一作品 / 0 无方向（首次打开或循环回跳），驱动建议15的方向感过渡
+  renderDetail(dir = 0) {
     const isSwitch = !dom.detailOverlay.classList.contains("hidden");
     const body = dom.detailBody || document.querySelector(".detail-body");
-    // 如果不是首次打开，执行淡出过渡
     if (isSwitch) {
       body.classList.add("detail-transitioning");
+    }
+    // 方向感入场（建议15）：先清旧类再强制 reflow，保证同向连续切换也能重放动画
+    body.classList.remove("enter-down", "enter-up");
+    if (dir > 0) {
+      void body.offsetWidth;
+      body.classList.add("enter-down");
+    } else if (dir < 0) {
+      void body.offsetWidth;
+      body.classList.add("enter-up");
     }
     this.#transitionToNext(body, isSwitch);
   }
@@ -3505,16 +3929,10 @@ class Detail {
 
       const bgUrl = work.cover || work.images?.[0] || "";
       if (bgUrl) {
-        const absBg = utils.pickHttpsUrl(bgUrl);
-        const newUrl = `url(${absBg})`;
-        if (dom.detailOverlay.style.getPropertyValue("--bg-url") !== newUrl) {
-          dom.detailOverlay.style.setProperty("--bg-url", newUrl);
-        }
+        // 候选链探测：封面优先、图集各帧兜底；全部失效时保留上一张成功背景（见 #applyDetailBg）
+        this.#applyDetailBg([work.cover, ...(work.images || [])]);
       }
 
-      const typePath = work.type === "note" ? "note" : "video";
-      const fullLink = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
-      const totalWorks = state.works.length;
       const isNote = work.type === "note" && work.images?.length > 0;
 
       dom.detailPlayBtn.style.display = "";
@@ -3524,33 +3942,37 @@ class Detail {
       dom.detailImageContainer.classList.toggle("hidden", !isNote && (isVideo || !work.cover));
       dom.detailProgressSlider.classList.toggle("hidden", !isVideo);
 
+      // 导航箭头已上移至 .detail-body 直下（不随媒体容器切换动效），可见性须在此显式管理：
+      // 仅多图图集出现，视频/单图路径不再依赖容器 hidden 连带隐藏
+      const hasNoteNav = isNote && work.images.length > 1;
+      dom.detailNavLeft.classList.toggle("hidden", !hasNoteNav);
+      dom.detailNavRight.classList.toggle("hidden", !hasNoteNav);
+
       if (isVideo) {
         dom.detailTime.textContent = "0:00 / 0:00";
-      } else if (isNote) {
-        dom.detailTime.textContent = `1 / ${work.images.length}`;
       } else {
+        // 图集/纯图计数统一走右上徽章（建议12），时间位不再复用
         dom.detailTime.textContent = "";
       }
 
       if (work.authorHomeUrl) {
         dom.detailAuthor.textContent = `@${work.nickname || "未知作者"}`;
-        dom.detailAuthor.title = work.authorHomeUrl;
+        dom.detailAuthor.href = work.authorHomeUrl;
+        dom.detailAuthor.title = "打开作者主页";
         dom.detailAuthor.classList.remove("hidden");
       } else {
         dom.detailAuthor.classList.add("hidden");
       }
 
+      const typePath = work.type === "note" ? "note" : "video";
+      dom.detailTitle.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
       dom.detailTitle.textContent = (work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN);
-      dom.detailTitle.title = fullLink;
+      dom.detailTitle.title = "在抖音打开作品页";
 
       this.updateLoopBtn(isVideo);
 
-      if (totalWorks > 1) {
-        dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${totalWorks}`;
-        dom.detailCounter.classList.remove("hidden");
-      } else {
-        dom.detailCounter.classList.add("hidden");
-      }
+      this.#updateCounters(work);
+      this.#resetMediaStatus(isVideo);
 
       const onReady = () => {
         body.classList.remove("detail-transitioning");
@@ -3563,9 +3985,6 @@ class Detail {
       } else if (work.cover) {
         dom.detailPlayBtn.style.display = "none";
         dom.detailMuteBtn.style.display = "none";
-        dom.detailImgCounter.classList.add("hidden");
-        dom.detailNavLeft.classList.add("hidden");
-        dom.detailNavRight.classList.add("hidden");
         // 探针先行：失败不落可见节点；onReady 在探针落定后触发，不再先于加载结束过渡
         const token = ++this.#imgProbeToken;
         const probe = new Image();
@@ -3607,6 +4026,9 @@ class Detail {
     const readyFn = () => { if (onReady) onReady(); };
     video.src = utils.getVideoUrl(work);
 
+    // 加载指示（建议17）：canplay 前亮 spinner
+    dom.detailLoader.classList.remove("hidden");
+
     dom.detailMuteBtn.innerHTML = video.muted ? config.icons.mute : config.icons.unmute;
 
     // 视频可播放时结束过渡
@@ -3619,6 +4041,7 @@ class Detail {
     // 仅在真实加载成功时复位熔断；error 路径也会调 fireReady，不能顺带 markMediaOk
     const fireLoaded = () => {
       this.markMediaOk();
+      dom.detailLoader.classList.add("hidden");
       fireReady();
     };
     video.addEventListener("canplay", fireLoaded, { once: true });
@@ -3638,8 +4061,10 @@ class Detail {
       fireReady();
       this.handleVideoError(video, {
         onMax: () => {
+          dom.detailLoader.classList.add("hidden");
           dom.detailPlayBtn.innerHTML = config.icons.play;
           dom.detailPlayBtn.title = "链接失效";
+          dom.detailPlayBtn.setAttribute("aria-label", "链接失效");
         },
         onRetry: (retries, delay) => {
           dom.detailPlayBtn.innerHTML = config.icons.play;
@@ -3695,8 +4120,8 @@ class Detail {
       probe.src = firstUrl;
     }
 
-    dom.detailImgCounter.textContent = `1 / ${work.images.length}`;
-    dom.detailImgCounter.classList.toggle("hidden", work.images.length <= 1);
+    // 图集/作品计数统一走计数展示逻辑（右上页数徽章 + 底栏作品序号）
+    this.#updateCounters(work);
 
     if (work.music) {
       audio.src = utils.pickHttpsUrl(work.music);
@@ -3718,9 +4143,6 @@ class Detail {
     this.#noteStartAutoPlay();
     this.#noteUpdatePlayBtn();
 
-    dom.detailNavLeft.classList.toggle("hidden", work.images.length <= 1);
-    dom.detailNavRight.classList.toggle("hidden", work.images.length <= 1);
-
     this.addCleanup(() => this.#noteStopAutoPlay());
   }
 
@@ -3739,10 +4161,24 @@ class Detail {
 
     document.addEventListener("keydown", (e) => {
       if (dom.detailOverlay.classList.contains("hidden")) return;
+      // Tab 焦点圈定（建议21）
+      if (e.key === "Tab") {
+        this.#trapFocus(e);
+        return;
+      }
+      if (e.key === "Escape") {
+        this.closeDetail();
+        return;
+      }
       const work = this.getCurrentWork();
-      if (e.key === "Escape") this.closeDetail();
-      if (e.key === "ArrowUp") this.prevDetail();
-      if (e.key === "ArrowDown") this.nextDetail();
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        this.prevDetail(-1);
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        this.nextDetail(1);
+      }
       if (work?.type === "note" && work.images?.length > 1) {
         if (e.key === "ArrowLeft" && this.#noteImgIndex > 0) {
           e.preventDefault();
@@ -3757,17 +4193,7 @@ class Detail {
 
     dom.detailClose.addEventListener("click", () => this.closeDetail());
 
-    dom.detailAuthor.addEventListener("click", () => {
-      const work = this.getCurrentWork();
-      if (work?.authorHomeUrl) window.open(work.authorHomeUrl, "_blank");
-    });
-
-    dom.detailTitle.addEventListener("click", () => {
-      const work = this.getCurrentWork();
-      if (!work) return;
-      const typePath = work.type === "note" ? "note" : "video";
-      window.open(`${config.URL_BASE}/${typePath}/${work.awemeId}`, "_blank");
-    });
+    // 底栏作者/标题为真实链接（新标签页打开），无需额外点击逻辑
 
     dom.detailRemoveBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -3786,16 +4212,16 @@ class Detail {
             state.preventDialogClose = true;
             try {
               await this.removeWork(work.awemeId);
-              if (state.works.length === 0) {
+              if (getWorksView().length === 0) {
                 this.closeDetail();
               } else {
-                if (this.getDetailIndex() >= state.works.length) this.#index = state.works.length - 1;
+                if (this.getDetailIndex() >= getWorksView().length) this.#index = getWorksView().length - 1;
                 this.renderDetail();
               }
               store.refreshGroups();
-              dom.dialogTitle.textContent = "移除完成";
-              dom.dialogBody.innerHTML = "<p>已移除该作品</p>";
-              dialog.showOkDialog();
+              // 成功终态不再要求"好的"确认（建议2）
+              dialog.closeDialog();
+              dialog.showToast("已移除该作品", "success");
             } finally {
               state.preventDialogClose = false;
             }
@@ -3816,12 +4242,15 @@ class Detail {
       const work = this.getCurrentWork();
       if (!work) return;
       dom.detailSyncBtn.disabled = true;
+      dom.detailSyncBtn.classList.add("work-syncing");
       try {
         const newWork = await this.syncWork(work.awemeId);
         if (newWork) {
           store.updateWork(work.awemeId, newWork);
         }
       } catch {}
+      // 旋转态（建议20）：复用网格卡 .work-syncing 的图标自转样式
+      dom.detailSyncBtn.classList.remove("work-syncing");
       dom.detailSyncBtn.disabled = false;
     });
 
@@ -3887,24 +4316,30 @@ class Detail {
     });
 
     const noteContainer = dom.detailImageContainer.querySelector(".detail-image-container");
-    noteContainer.addEventListener("click", (e) => {
-      if (e.target.closest(".detail-nav-btn")) return;
+    noteContainer.addEventListener("click", () => {
       this.#toggleNoteAutoPlay();
     });
   }
 
-  nextDetail() {
-    if (this.nextDetailIndex()) this.renderDetail();
+  // dir 透传给 renderDetail 驱动方向感过渡（建议15）
+  nextDetail(dir = 1) {
+    if (this.nextDetailIndex()) this.renderDetail(dir);
   }
 
-  prevDetail() {
-    if (this.prevDetailIndex()) this.renderDetail();
+  prevDetail(dir = -1) {
+    if (this.prevDetailIndex()) this.renderDetail(dir);
   }
 
   closeDetail() {
     this.closeDetailIndex();
     this.resetMediaElements();
+    // 复位增强态 UI：加载指示隐藏，下次打开从干净状态开始
+    dom.detailLoader.classList.add("hidden");
     dom.detailProgressSlider.classList.add("hidden");
+    // 导航箭头/计数徽章已不在媒体容器内，须随关闭显式隐藏
+    dom.detailNavLeft.classList.add("hidden");
+    dom.detailNavRight.classList.add("hidden");
+    dom.detailImgCounter.classList.add("hidden");
     dom.detailVideoContainer.classList.add("hidden");
     dom.detailImageContainer.classList.add("hidden");
     dom.detailOverlay.style.removeProperty("--bg-url");
@@ -3947,8 +4382,13 @@ class Detail {
   updateVideoProgress(video, slider, timeSpan, opacity) {
     if (video.duration) {
       const pct = (video.currentTime / video.duration) * 100;
+      // 缓冲段可视化（建议16）：已播放实白、缓冲半透明白、未缓冲底色
+      let bufferedPct = pct;
+      try {
+        if (video.buffered.length) bufferedPct = (video.buffered.end(video.buffered.length - 1) / video.duration) * 100;
+      } catch (_) {}
       slider.value = pct;
-      slider.style.background = `linear-gradient(to right, #fff ${pct}%, rgba(255,255,255,${opacity}) ${pct}%)`;
+      slider.style.background = `linear-gradient(to right, #fff ${pct}%, rgba(255,255,255,0.45) ${pct}%, rgba(255,255,255,0.45) ${bufferedPct}%, rgba(255,255,255,${opacity}) ${bufferedPct}%)`;
       timeSpan.textContent = `${this.formatTime(video.currentTime)} / ${this.formatTime(video.duration)}`;
     }
   }
@@ -3996,12 +4436,16 @@ class Detail {
 
   toggleDetailVideoPlay() {
     this.toggleVideoPlay(dom.detailVideo, dom.detailPlayBtn);
-    dom.detailPlayBtn.title = dom.detailVideo.paused ? "播放" : "暂停";
+    const label = dom.detailVideo.paused ? "播放" : "暂停";
+    dom.detailPlayBtn.title = label;
+    dom.detailPlayBtn.setAttribute("aria-label", label);
   }
 
   toggleDetailVideoMute() {
     this.toggleVideoMute(dom.detailVideo, dom.detailMuteBtn);
-    dom.detailMuteBtn.title = dom.detailVideo.muted ? "取消静音" : "静音";
+    const label = dom.detailVideo.muted ? "取消静音" : "静音";
+    dom.detailMuteBtn.title = label;
+    dom.detailMuteBtn.setAttribute("aria-label", label);
   }
 
   formatTime(seconds) {
@@ -4054,7 +4498,7 @@ class Detail {
     } catch (err) {
       console.error("[DY] download failed:", err);
       if (attempt >= config.DOWNLOAD_MAX_RETRY) {
-        dialog.showToast("下载失败: " + (err.message || "未知错误"));
+        dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
         return;
       }
       await new Promise((r) => setTimeout(r, config.FETCH_RETRY_DELAY));
@@ -4149,6 +4593,19 @@ function renderErrorState(msg, detail) {
 }
 
 // ---------- DOM 事件绑定 ----------
+// 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3）。
+// 短操作锁 preventDialogClose 期间不响应；长操作经 activeDialog 发取消信号
+async function requestDialogClose() {
+  if (state.preventDialogClose) return;
+  if (state.activeDialog) {
+    state.activeDialog();
+    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
+  }
+  // 设置面板在关闭前保存运行参数；校验失败则保持打开
+  if (!(await settings.saveBeforeClose())) return;
+  dialog.closeDialog();
+}
+
 document.querySelectorAll(".ds-btn").forEach((tab) => {
   tab.addEventListener("click", () => switchDomain(tab.dataset.domain));
 });
@@ -4169,16 +4626,50 @@ dom.menuDropdown.addEventListener("click", () => {
   dom.menuDropdown.classList.add("hidden");
 });
 
-dom.dialogClose.addEventListener("click", async () => {
-  if (state.preventDialogClose) return;
-  if (state.activeDialog) {
-    state.activeDialog();
-    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
+dom.dialogClose.addEventListener("click", () => requestDialogClose());
+
+// Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余收起搜索栏
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!dom.dialogOverlay.classList.contains("hidden")) {
+    requestDialogClose();
+    return;
   }
-  // 设置面板在关闭前保存运行参数；校验失败则保持打开
-  if (!(await settings.saveBeforeClose())) return;
-  dialog.closeDialog();
+  if (!dom.detailOverlay.classList.contains("hidden")) return;
+  closeSearchBar();
 });
+
+dom.searchInput.addEventListener("input", applySearchInput);
+dom.sbScope.addEventListener("click", (e) => {
+  const btn = e.target.closest(".sb-seg-btn");
+  if (!btn) return;
+  searchState.scope = btn.dataset.scope;
+  syncSegUI();
+  updateSearchPlaceholder();
+  refreshGridView();
+});
+dom.sbSort.addEventListener("click", (e) => {
+  const btn = e.target.closest(".sb-seg-btn");
+  if (!btn) return;
+  searchState.sort = btn.dataset.sort;
+  syncSegUI();
+  refreshGridView();
+});
+dom.sbFollowSort.addEventListener("click", (e) => {
+  const btn = e.target.closest(".sb-seg-btn");
+  if (!btn) return;
+  searchState.followingsSort = btn.dataset.fsort;
+  syncSegUI();
+  refreshGridView();
+});
+dom.sbReverse.addEventListener("change", () => {
+  searchState.reverse = dom.sbReverse.checked;
+  refreshGridView();
+});
+dom.btnClearInBar.addEventListener("click", () => clearSearchFilters());
+dom.btnCloseSearch.addEventListener("click", () => closeSearchBar());
+dom.btnClearFilter.addEventListener("click", () => clearSearchFilters());
+dom.btnSearchMenu.addEventListener("click", () => toggleSearchBar());
 
 dom.btnGroupManage.addEventListener("click", () => groups.showGroupManage());
 
@@ -4272,7 +4763,7 @@ dom.btnSync.addEventListener("click", async () => {
 // ---------- init IIFE ----------
 (async function init() {
   // 构建标记：用于确认页面运行的是最新构建（头像探针预载版）
-  console.info("[DDM] options build 2026-08-24 sidebar-virtualize");
+  console.info("[DDM] options build 2026-08-24 ui-improvements-detail-bg");
   document.body.classList.remove("batch-mode");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
@@ -4315,6 +4806,16 @@ dom.btnSync.addEventListener("click", async () => {
   store.on("domain", async () => {
     sync.updateSyncBtnLabel();
     await groups.renderGroupTabs();
+    updateFilterBar();
+    // 搜索栏展开期间切换域：两域排序段随域显隐；范围段随域调整显隐与文案
+    if (isSearchBarOpen()) {
+      const isWorks = state.domain === "works";
+      dom.sbWorkFilters.classList.toggle("hidden", !isWorks);
+      dom.sbFollowFilters.classList.toggle("hidden", isWorks);
+      syncScopeUIForDomain();
+      updateSearchPlaceholder();
+      syncSegUI();
+    }
     try {
       await services.loadDomainData();
     } catch (err) {
@@ -4339,7 +4840,10 @@ dom.btnSync.addEventListener("click", async () => {
       renderErrorState("数据加载失败", err.message);
     }
   });
-  store.on("batchMode", (v) => document.body.classList.toggle("batch-mode", v));
+  store.on("batchMode", (v) => {
+    document.body.classList.toggle("batch-mode", v);
+    batch.syncSelectionUI();
+  });
   store.on("work-updated", (awemeId) => {
     worksGrid.updateCardDOM(awemeId);
     if (detail.getDetailIndex() !== -1 && detail.getCurrentWork()?.awemeId === awemeId) {

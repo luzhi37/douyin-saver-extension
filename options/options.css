@@ -298,6 +298,20 @@ optgroup {
   display: inline-flex;
 }
 
+/* 批量已选计数（建议4）：仅批量模式显示 */
+.batch-count {
+  display: none;
+  align-items: center;
+  font-size: 12px;
+  color: var(--dy-text-secondary);
+  white-space: nowrap;
+  padding: 0 2px;
+}
+
+.batch-mode .batch-count {
+  display: inline-flex;
+}
+
 .menu-container {
   position: relative;
 }
@@ -636,7 +650,7 @@ body.domain-works #sidebarResizeHandle {
 }
 
 .video-progress,
-#detailOverlay>.detail-progress-slider {
+.detail-progress-slider {
   width: 100%;
   height: 3px;
   appearance: none;
@@ -647,7 +661,7 @@ body.domain-works #sidebarResizeHandle {
 }
 
 .video-progress::-webkit-slider-thumb,
-#detailOverlay>.detail-progress-slider::-webkit-slider-thumb {
+.detail-progress-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 10px;
   height: 10px;
@@ -1051,7 +1065,8 @@ body.domain-works #sidebarResizeHandle {
   left: 0;
   right: 0;
   bottom: 0;
-  background: #000;
+  /* 不透明底色兜底：背景图全部失效时降级为纯深色而非透出底层页面 */
+  background: #101120;
   z-index: 200;
   color: #fff;
   --bg-url:none;
@@ -1135,6 +1150,8 @@ body.domain-works #sidebarResizeHandle {
   overflow: hidden;
 }
 
+/* 计数徽章与导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，
+   保证切换作品时位置与透明度恒定；几何上媒体容器填满 body，两者坐标系一致 */
 #detailImgCounter {
   position: absolute;
   top: 16px;
@@ -1151,7 +1168,8 @@ body.domain-works #sidebarResizeHandle {
   position: absolute;
   left: 16px;
   top: 50%;
-  /* transform: translateY(-50%); */
+  /* 垂直居中修复（建议14）：此前 translateY 被注释导致箭头顶边对齐中线 */
+  transform: translateY(-50%);
   width: 40px;
   height: 40px;
   border-radius: var(--dy-radius);
@@ -1169,9 +1187,9 @@ body.domain-works #sidebarResizeHandle {
   background: rgba(255, 255, 255, 0.2);
 }
 
-.detail-nav-btn:last-child {
+.detail-nav-btn.detail-nav-right {
   left: auto;
-  right: 12px;
+  right: 16px;
 }
 
 .detail-nav-btn.hidden {
@@ -1200,6 +1218,7 @@ body.domain-works #sidebarResizeHandle {
   position: relative;
 }
 
+/* 关闭按钮（建议14 修订版）：保持左上角与抖音一致，仅做 SVG 化与 aria 补齐 */
 #detailClose {
   position: fixed;
   top: 16px;
@@ -1210,11 +1229,14 @@ body.domain-works #sidebarResizeHandle {
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(8px);
   cursor: pointer;
-  font-size: 20px;
   border: none;
   color: #fff;
   z-index: 30;
   transition: background var(--dy-transition);
+}
+
+#detailClose svg {
+  display: block;
 }
 
 #detailClose:hover {
@@ -1222,14 +1244,65 @@ body.domain-works #sidebarResizeHandle {
 }
 
 #detailBottomBar {
+  /* 三段式底栏（建议11）：进度条绝对定位于顶缘（建议16），分组由 .bar-group 承担 */
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(12px);
   padding: 0 12px;
-  gap: 6px;
   flex-shrink: 0;
   z-index: 30;
-  height: 48px;
+  height: 52px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.bar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bar-controls {
+  flex-shrink: 0;
+}
+
+.bar-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.bar-actions {
+  flex-shrink: 0;
+}
+
+.bar-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.14);
+  flex-shrink: 0;
+}
+
+/* 进度条并入底栏（建议16）：通栏贴顶缘，hover 加粗放大热区 */
+.detail-progress-slider {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -3px;
+  margin: 0;
+  z-index: 31;
+  transition: height 0.15s ease, top 0.15s ease;
+}
+
+#detailBottomBar:hover .detail-progress-slider {
+  top: -5px;
+  height: 6px;
+}
+
+#detailBottomBar:hover .detail-progress-slider::-webkit-slider-thumb {
+  transform: scale(1.4);
 }
 
 .detail-bar-btn {
@@ -1252,6 +1325,7 @@ body.domain-works #sidebarResizeHandle {
 
 .detail-bar-author {
   color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
   cursor: pointer;
   transition: color var(--dy-transition);
 }
@@ -1264,6 +1338,7 @@ body.domain-works #sidebarResizeHandle {
   color: #fff;
   flex: 1;
   min-width: 0;
+  text-decoration: none;
   cursor: pointer;
   transition: color var(--dy-transition);
 }
@@ -1272,15 +1347,50 @@ body.domain-works #sidebarResizeHandle {
   color: var(--dy-primary);
 }
 
+/* 作品序号（建议12 修订版）：底栏最右端 */
 .detail-bar-counter {
   color: rgba(255, 255, 255, 0.5);
   padding: 0 4px;
 }
 
-#detailOverlay>.detail-progress-slider {
-  position: relative;
-  z-index: 31;
-  flex-shrink: 0;
+/* ===== 加载指示（建议17） ===== */
+.detail-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.detail-loader.hidden {
+  display: none;
+}
+
+.detail-loader .spinner {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+
+/* ===== 方向感过渡（建议15）：入场方向随切换方向变化，仅合成属性。
+   动画只作用于媒体本体（视频区/大图）；导航箭头与图集计数徽章挂 .detail-body 直下，
+   不参与切换动效，也不随媒体容器的 detail-transitioning 淡入淡出。
+   keyframes 不含 opacity：淡入由容器过渡承担，且大图行内 opacity 淡入不可被动画覆盖 */
+@keyframes detailSlideDown {
+  from { transform: translateY(26px); }
+  to   { transform: none; }
+}
+
+@keyframes detailSlideUp {
+  from { transform: translateY(-26px); }
+  to   { transform: none; }
+}
+
+.detail-body.enter-down :is(#detailVideoWrap, #detailImage) {
+  animation: detailSlideDown 0.3s var(--dy-ease-out);
+}
+
+.detail-body.enter-up :is(#detailVideoWrap, #detailImage) {
+  animation: detailSlideUp 0.3s var(--dy-ease-out);
 }
 
 /* ===== 弹窗系统 ===== */
@@ -1410,7 +1520,11 @@ body.domain-works #sidebarResizeHandle {
   z-index: 999999;
   pointer-events: none;
   opacity: 0;
-  white-space: nowrap;
+  /* 分型左色条（见 docs/UI_IMPROVEMENTS.md 建议1）；允许换行防长错误文本横向溢出 */
+  border-left: 3px solid transparent;
+  max-width: 80vw;
+  white-space: normal;
+  text-align: center;
   animation: none;
 }
 
@@ -1420,6 +1534,18 @@ body.domain-works #sidebarResizeHandle {
 
 .toast.hide {
   animation: toastOut 0.35s ease both;
+}
+
+.toast-info {
+  border-left-color: #60a5fa;
+}
+
+.toast-success {
+  border-left-color: #4ade80;
+}
+
+.toast-error {
+  border-left-color: var(--dy-danger);
 }
 
 /* ===== 空状态 ===== */
@@ -2002,6 +2128,11 @@ body.domain-works #sidebarResizeHandle {
   color: var(--dy-text-muted);
 }
 
+/* min/max 即时校验红框（建议9） */
+.bf-input.input-invalid {
+  border-color: var(--dy-danger);
+}
+
 #settingsConfigSection input[type="number"] {
   -moz-appearance: textfield;
 }
@@ -2067,4 +2198,164 @@ body.domain-works #sidebarResizeHandle {
 .cache-refresh-btn.loading {
   opacity: 0.6;
   pointer-events: none;
+}
+
+/* ====== 键盘焦点可见性（建议7） ====== */
+:focus-visible {
+  outline: 2px solid rgba(254, 44, 85, 0.7);
+  outline-offset: 2px;
+}
+
+.work-card:focus-visible,
+.following-card:focus-visible {
+  border-color: rgba(254, 44, 85, 0.45);
+}
+
+/* ====== 筛选状态条（建议5）：仅筛选生效期间存在 ====== */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: var(--dy-surface);
+  border-bottom: 1px solid var(--dy-border);
+  font-size: 12px;
+  color: var(--dy-text-secondary);
+  flex-shrink: 0;
+}
+
+.filter-bar.hidden {
+  display: none;
+}
+
+.filter-bar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-clear-btn {
+  font-size: 11px;
+  background: none;
+  border: 1px solid var(--dy-border-light);
+  color: var(--dy-text-secondary);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--dy-transition);
+}
+
+.filter-clear-btn:hover {
+  color: var(--dy-text);
+  border-color: var(--dy-border);
+}
+
+/* ====== 搜索栏（建议5）：菜单「搜索」在顶栏下方展开的内联工具条，无快捷键；
+   收起但筛选仍生效时由 .filter-bar 显示摘要 ====== */
+.search-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--dy-surface);
+  border-bottom: 1px solid var(--dy-border);
+  flex-shrink: 0;
+}
+
+.search-bar.hidden {
+  display: none;
+}
+
+.search-bar > svg {
+  color: var(--dy-text-muted);
+  flex-shrink: 0;
+}
+
+#searchInput {
+  flex: 1;
+  min-width: 160px;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--dy-text);
+  font-size: 14px;
+}
+
+#searchInput::placeholder {
+  color: var(--dy-text-muted);
+}
+
+.sb-domain-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sb-domain-filters.hidden {
+  display: none;
+}
+
+.sb-filter-label {
+  font-size: 12px;
+  color: var(--dy-text-muted);
+}
+
+.sb-reverse {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dy-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.sb-reverse input {
+  /* 中性白勾选，不用主题红（--dy-primary） */
+  accent-color: var(--dy-text);
+  margin: 0;
+  cursor: pointer;
+}
+
+.sb-seg {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--dy-radius);
+  padding: 2px;
+  gap: 2px;
+}
+
+.sb-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--dy-text-secondary);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: calc(var(--dy-radius) - 2px);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dy-transition), color var(--dy-transition);
+}
+
+.sb-seg-btn:hover {
+  color: var(--dy-text);
+}
+
+.sb-seg-btn.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.sb-close {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--dy-radius);
+  color: var(--dy-text-secondary);
+  font-size: 14px;
+  flex-shrink: 0;
 }
