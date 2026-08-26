@@ -59,6 +59,15 @@ const config = {
   URL_COLLECTION_TAB: "?showTab=favorite_collection",
   URL_FOLLOWING_TAB: "?showTab=following",
 
+  // 域元数据：作品型三域（works/likes/favorites）同构 Work 记录，followings 独立结构
+  WORK_LIKE_DOMAINS: ["works", "likes", "favorites"],
+  DOMAINS_META: {
+    works: { label: "作品", itemKey: "works", idKey: "awemeId", isFollowings: false },
+    followings: { label: "关注", itemKey: "followings", idKey: "uid", isFollowings: true },
+    likes: { label: "点赞", itemKey: "likes", idKey: "awemeId", isFollowings: false },
+    favorites: { label: "收藏", itemKey: "favorites", idKey: "awemeId", isFollowings: false },
+  },
+
   // 正则
   SEC_UID_REGEX: /^\/user\/([^/?]+)/,
 
@@ -125,8 +134,7 @@ const dom = {
   sidebarLoader: document.querySelector("#sidebarLoader"),
   sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
   sidebarWorkTemplate: document.querySelector("#sidebarWorkTemplate"),
-  btnFavorites: document.querySelector("#btnFavorites"),
-  btnCollections: document.querySelector("#btnCollections"),
+  batchSaveToWorks: document.querySelector("#btnBatchSaveToWorks"),
   batchCount: document.querySelector("#batchCount"),
   filterBar: document.querySelector("#filterBar"),
   filterBarText: document.querySelector("#filterBarText"),
@@ -151,6 +159,8 @@ const state = {
   domain: "works",
   works: [],
   followings: [],
+  likes: [],
+  favorites: [],
   currentGroupId: "all",
   batchMode: false,
   selectedIds: new Set(),
@@ -158,13 +168,6 @@ const state = {
   currentFollowingSecUid: null,
   sidebarCursor: null,
   sidebarLoading: false,
-  // Favorites 内部状态：仅 Favorites class 读写，不需 store.set() 响应式通知
-  favoriteWorks: [],
-  favoriteFetching: false,
-  cancelingFavorites: false,
-  collectionWorks: [],
-  collectionFetching: false,
-  cancelingCollections: false,
   // 短操作弹窗锁：为 true 时禁止点击 X 关闭，待操作完成才解锁
   preventDialogClose: false,
 };
@@ -208,6 +211,11 @@ const store = {
 
   removeWorksSilent(idSet) {
     state.works = state.works.filter((w) => !idSet.has(w.awemeId));
+  },
+
+  // 作品型三域通用的静默移除（按当前域数据源过滤）
+  removeWorkLikeSilent(domain, idSet) {
+    state[domain] = state[domain].filter((w) => !idSet.has(w.awemeId));
   },
 
   removeFollowingsSilent(idSet) {
@@ -280,10 +288,15 @@ class SearchBar {
     this.#bindEvents();
   }
 
+  // 作品型三域（works/likes/favorites）共用作品视图；followings 独立
+  #isWorkLikeDomain() {
+    return config.WORK_LIKE_DOMAINS.includes(state.domain);
+  }
+
   // ---------- 数据层：过滤与排序视图 ----------
   isFilterActive() {
     if (!this.#searchState.keyword.trim() && !this.#searchState.reverse) return false;
-    return state.domain === "works"
+    return this.#isWorkLikeDomain()
       ? this.#searchState.sort !== "saved"
       : this.#searchState.followingsSort !== "followers";
   }
@@ -308,13 +321,14 @@ class SearchBar {
 
   getWorksView() {
     const kw = this.#searchState.keyword.trim().toLowerCase();
-    let list = state.works;
+    const source = state[state.domain]; // 作品型三域：数据源即当前域数组
+    let list = source;
     if (kw) list = list.filter((w) => this.#matchWork(w, kw));
     if (this.#searchState.sort === "authorCount") {
       // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
       // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
       const counts = new Map();
-      for (const w of state.works) {
+      for (const w of source) {
         const key = w.uid || w.nickname || "";
         counts.set(key, (counts.get(key) || 0) + 1);
       }
@@ -360,7 +374,7 @@ class SearchBar {
     const parts = [];
     const kw = this.#searchState.keyword.trim();
     if (kw) parts.push(`${SearchBar.SEARCH_SCOPE_LABELS[this.#searchState.scope] || "关键词"} "${kw}"`);
-    if (state.domain === "works") {
+    if (this.#isWorkLikeDomain()) {
       if (this.#searchState.sort !== "saved") parts.push(SearchBar.SEARCH_SORT_LABELS[this.#searchState.sort]);
     } else if (this.#searchState.followingsSort !== "followers") {
       parts.push(SearchBar.SEARCH_FOLLOWINGS_SORT_LABELS[this.#searchState.followingsSort]);
@@ -375,11 +389,11 @@ class SearchBar {
     dom.filterBar.classList.remove("hidden");
   }
 
-  // 域切换后搜索栏的域相关联动：排序段显隐（两域各有排序维度）/范围段文案/占位符/分段选中
+  // 域切换后搜索栏的域相关联动：排序段显隐（作品型 vs 关注域各有排序维度）/范围段文案/占位符/分段选中
   syncForDomain() {
-    const isWorks = state.domain === "works";
-    dom.sbWorkFilters.classList.toggle("hidden", !isWorks);
-    dom.sbFollowFilters.classList.toggle("hidden", isWorks);
+    const isWorkLike = this.#isWorkLikeDomain();
+    dom.sbWorkFilters.classList.toggle("hidden", !isWorkLike);
+    dom.sbFollowFilters.classList.toggle("hidden", isWorkLike);
     this.syncScopeUIForDomain();
     this.#updateSearchPlaceholder();
     this.syncSegUI();
@@ -393,9 +407,16 @@ class SearchBar {
 
   // 筛选变化后的统一入口：重渲当前域网格 + 同步筛选条
   refreshGridView() {
-    if (state.domain === "works") worksGrid.renderCards();
+    if (this.#isWorkLikeDomain()) this.activeWorkLikeGrid().renderCards();
     else followingsGrid.renderFollowingCards();
     this.updateFilterBar();
+  }
+
+  // 作品型三域 → 对应网格实例（Batch 等外部类也需要按域取网格，公开）
+  activeWorkLikeGrid() {
+    if (state.domain === "works") return worksGrid;
+    if (state.domain === "likes") return likesGrid;
+    return favoritesGrid;
   }
 
   syncSegUI() {
@@ -411,16 +432,16 @@ class SearchBar {
     dom.sbReverse.checked = this.#searchState.reverse;
   }
 
-  // 范围段的域差异：「标题」仅作品域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
+  // 范围段的域差异：「标题」仅作品型三域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
   syncScopeUIForDomain() {
-    const isWorks = state.domain === "works";
-    dom.sbScopeTitle.classList.toggle("hidden", !isWorks);
-    dom.sbScopeAuthor.textContent = isWorks ? "作者" : "昵称";
-    if (!isWorks && this.#searchState.scope === "title") this.#searchState.scope = "all";
+    const isWorkLike = this.#isWorkLikeDomain();
+    dom.sbScopeTitle.classList.toggle("hidden", !isWorkLike);
+    dom.sbScopeAuthor.textContent = isWorkLike ? "作者" : "昵称";
+    if (!isWorkLike && this.#searchState.scope === "title") this.#searchState.scope = "all";
   }
 
   #updateSearchPlaceholder() {
-    const placeholders = state.domain === "works"
+    const placeholders = this.#isWorkLikeDomain()
       ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
       : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
     dom.searchInput.placeholder = placeholders[this.#searchState.scope] || placeholders.all;
@@ -610,16 +631,24 @@ const services = {
     return {
       works: s.works || { total: 0, groupCounts: {} },
       followings: s.followings || { total: 0, groupCounts: {} },
+      likes: s.likes || { total: 0, groupCounts: {} },
+      favorites: s.favorites || { total: 0, groupCounts: {} },
       bytes: s.bytes || 0,
     };
   },
 
-  async loadWorks(groupId) {
-    // IDB 主键读取天然无重复；主键已统一为 string 存储，仅在遇到历史 number 主键时才拷贝归一化
-    const res = await this.bgMsg({ type: "GET_WORKS", groupId });
-    return (res.works || [])
+  // 作品型三域通用读取（works/likes/favorites 响应形状一致，仅 itemKey 不同）
+  async loadWorkLikeItems(domain, groupId) {
+    const meta = config.DOMAINS_META[domain];
+    const res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId });
+    return (res[meta.itemKey] || [])
       .filter((w) => w && w.awemeId)
       .map((w) => (typeof w.awemeId === "string" ? w : { ...w, awemeId: String(w.awemeId) }));
+  },
+
+  async loadWorks(groupId) {
+    // IDB 主键读取天然无重复；主键已统一为 string 存储，仅在遇到历史 number 主键时才拷贝归一化
+    return this.loadWorkLikeItems("works", groupId);
   },
 
   async loadFollowings(groupId) {
@@ -637,11 +666,12 @@ const services = {
   async loadDomainData() {
     const groupId = state.currentGroupId;
     const domain = state.domain;
-    const data = domain === "works"
-      ? await this.loadWorks(groupId)
-      : await this.loadFollowings(groupId);
+    let data;
+    if (domain === "works") data = await this.loadWorks(groupId);
+    else if (domain === "followings") data = await this.loadFollowings(groupId);
+    else data = await this.loadWorkLikeItems(domain, groupId);
     if (state.currentGroupId !== groupId || state.domain !== domain) return;
-    store.set(domain === "works" ? "works" : "followings", data);
+    store.set(domain, data);
   },
 
   async deleteFollowings(uids) {
@@ -650,6 +680,15 @@ const services = {
 
   async moveFollowings(uids, targetGroupId) {
     return this.bgMsg({ type: "MOVE_FOLLOWINGS", uids, targetGroupId });
+  },
+
+  // 作品型三域通用删除/移动（DELETE_/MOVE_ + 域名大写）
+  deleteWorkLike(domain, awemeIds) {
+    return this.bgMsg({ type: "DELETE_" + domain.toUpperCase(), awemeIds });
+  },
+
+  moveWorkLike(domain, awemeIds, targetGroupId) {
+    return this.bgMsg({ type: "MOVE_" + domain.toUpperCase(), awemeIds, targetGroupId });
   },
 
   async refreshSingleWork(awemeId) {
@@ -681,6 +720,12 @@ const services = {
   isFollowingsData(data) {
     if (data.followings && Array.isArray(data.followings)) return data.followings.length > 0;
     return false;
+  },
+
+  // 四域通用导入校验：按域 itemKey 检查条目数组
+  isDomainData(data, domain) {
+    const key = config.DOMAINS_META[domain].itemKey;
+    return Boolean(data[key] && Array.isArray(data[key]) && data[key].length > 0);
   },
 };
 
@@ -789,6 +834,15 @@ class VirtualGrid {
     };
 
     renderChunk();
+  }
+
+  // 清除容器内全部勾选态（跨域保存后调用；不触碰 state.selectedIds）
+  clearSelectionUI() {
+    this.#container.querySelectorAll(".work-checkbox.checked, .following-checkbox.checked").forEach((el) => {
+      el.classList.remove("checked");
+      el.textContent = "";
+      el.setAttribute("aria-checked", "false");
+    });
   }
 
   removeItems(idSet) {
@@ -1216,7 +1270,17 @@ class FollowingsGrid extends VirtualGrid {
     card.classList.remove(this.skeletonClass);
     card.dataset.uid = following.uid;
 
-    const checkbox = card.querySelector(".following-checkbox");
+    let checkbox = card.querySelector(".following-checkbox");
+    if (!checkbox) {
+      // 骨架模板不含勾选框：避免批量模式一次性对上千个骨架做样式重排/重绘，仅在卡片填充时创建
+      checkbox = document.createElement("div");
+      checkbox.className = "following-checkbox";
+      checkbox.setAttribute("role", "checkbox");
+      checkbox.tabIndex = 0;
+      checkbox.setAttribute("aria-checked", "false");
+      checkbox.setAttribute("aria-label", "选择关注者");
+      card.prepend(checkbox);
+    }
     batch.updateCheckboxDOM(checkbox, state.selectedIds.has(following.uid));
     checkbox.style.display = state.batchMode ? "" : "none";
 
@@ -1342,7 +1406,7 @@ class Groups {
   async renderGroupTabs() {
     const [stats, groupList] = await Promise.all([services.loadStats(), services.loadGroups()]);
     this.#updateStorageIndicator(stats);
-    const domainStats = state.domain === "works" ? stats.works : stats.followings;
+    const domainStats = stats[state.domain] || { total: 0, groupCounts: {} };
     dom.groupTabs.innerHTML = "";
     for (const g of groupList) {
       const count = domainStats.groupCounts?.[g.id] ?? 0;
@@ -1543,8 +1607,9 @@ class Batch {
 
   selectAll() {
     // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
-    const items = state.domain === "works" ? search.getWorksView() : state.followings;
-    const idKey = state.domain === "works" ? "awemeId" : "uid";
+    const isWorkLike = config.WORK_LIKE_DOMAINS.includes(state.domain);
+    const items = isWorkLike ? search.getWorksView() : state.followings;
+    const idKey = isWorkLike ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
     if (allSelected) {
       state.selectedIds.clear();
@@ -1561,23 +1626,34 @@ class Batch {
     const noneSelected = count === 0;
     dom.batchMove.disabled = noneSelected;
     dom.batchDelete.disabled = noneSelected;
+    this.syncSaveToWorksBtn();
   }
 
+  #workLikeCheckboxSelector() {
+    return ".work-checkbox";
+  }
+
+
   #clearAllCheckboxes() {
-    const selector = state.domain === "works" ? ".work-checkbox" : ".following-checkbox";
+    const selector = config.WORK_LIKE_DOMAINS.includes(state.domain)
+      ? this.#workLikeCheckboxSelector()
+      : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => this.updateCheckboxDOM(el, false));
   }
 
   async #executeBatchOp(serviceFn, { conditionallyRemove = false } = {}) {
     if (state.selectedIds.size === 0) return null;
     const ids = Array.from(state.selectedIds);
-    const isFollowings = state.domain === "followings";
+    const domain = state.domain;
+    const isFollowings = domain === "followings";
 
     await serviceFn(ids, isFollowings);
     state.selectedIds.clear();
 
-    const grid = isFollowings ? followingsGrid : worksGrid;
-    const removeSilent = isFollowings ? store.removeFollowingsSilent : store.removeWorksSilent;
+    const grid = isFollowings ? followingsGrid : search.activeWorkLikeGrid();
+    const removeSilent = isFollowings
+      ? store.removeFollowingsSilent
+      : (idSet) => store.removeWorkLikeSilent(domain, idSet);
     if (!conditionallyRemove || state.currentGroupId !== "all") {
       removeSilent.call(store, new Set(ids));
       grid.removeItems(new Set(ids));
@@ -1592,7 +1668,7 @@ class Batch {
 
   deleteSelected() {
     return this.#executeBatchOp((ids, isFollowings) =>
-      isFollowings ? services.deleteFollowings(ids) : services.bgMsg({ type: "DELETE_WORKS", awemeIds: ids }),
+      isFollowings ? services.deleteFollowings(ids) : services.deleteWorkLike(state.domain, ids),
     );
   }
 
@@ -1601,7 +1677,7 @@ class Batch {
       (ids, isFollowings) =>
         isFollowings
           ? services.moveFollowings(ids, targetGroupId)
-          : services.bgMsg({ type: "MOVE_WORKS", awemeIds: ids, targetGroupId }),
+          : services.moveWorkLike(state.domain, ids, targetGroupId),
       { conditionallyRemove: true },
     );
   }
@@ -1646,9 +1722,11 @@ class Batch {
         el.classList.remove("checked");
       });
       dom.batchSelectAll.innerHTML = `全选`;
+      this.syncSaveToWorksBtn();
     } else {
       document.querySelectorAll(".work-checkbox").forEach((el) => (el.style.display = ""));
       document.querySelectorAll(".following-checkbox").forEach((el) => (el.style.display = ""));
+      this.syncSaveToWorksBtn();
     }
     this.syncSelectionUI();
   }
@@ -1667,6 +1745,11 @@ class Batch {
   async handleBatchDelete() {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
+    // 点赞/收藏域：移除 = 取消远端点赞/收藏 + 删本地（长任务链路）
+    if (config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works") {
+      await this.cancelAndRemoveSelected();
+      return;
+    }
     const isFollowings = state.domain === "followings";
     const name = isFollowings ? "关注者" : "作品";
     const delBody = document.createElement("p");
@@ -1695,10 +1778,81 @@ class Batch {
     ]);
   }
 
+  // 点赞/收藏域批量「取消并移除」：CANCEL_LIKE/CANCEL_COLLECTION { awemeIds, domain }
+  // → background 逐条取消远端并对成功条目删本地 → CANCEL_DONE { deletedIds } 驱动 UI 刷新
+  async cancelAndRemoveSelected() {
+    const domain = state.domain;
+    const isLikes = domain === "likes";
+    const count = this.selectedCount();
+    const ids = Array.from(state.selectedIds);
+    const cancelType = isLikes ? "CANCEL_LIKE" : "CANCEL_COLLECTION";
+    const actionLabel = isLikes ? "取消点赞" : "取消收藏";
+
+    if (isLikes && (await this.#isIndependentMode())) {
+      dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
+      return;
+    }
+
+    const confirmBody = document.createElement("p");
+    confirmBody.className = "confirm-delete-msg";
+    confirmBody.textContent = `确定对选中的 ${count} 个作品执行${actionLabel}并从本域移除？远端${actionLabel}后不可恢复。`;
+    dialog.showDialog(`确认${actionLabel}`, confirmBody, [
+      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
+      {
+        text: actionLabel,
+        danger: true,
+        callback: async () => {
+          dialog.updateDialog(`正在${actionLabel}…`, `<p>正在${actionLabel} 0 / ${count}…</p>${utils.SPINNER_HTML}`);
+          state.preventDialogClose = true;
+          try {
+            const res = await services.bgMsg({ type: cancelType, awemeIds: ids, domain });
+            if (!res || res.ok !== true) {
+              dialog.showToast(`${actionLabel}失败: ${res?.error || "未知错误"}`, "error");
+              return;
+            }
+            const done = await new Promise((resolve) => {
+              const handler = (msg) => {
+                if (msg.type === "CANCEL_DONE" && msg.requestId === res.requestId) {
+                  chrome.runtime.onMessage.removeListener(handler);
+                  resolve(msg);
+                }
+              };
+              chrome.runtime.onMessage.addListener(handler);
+              setTimeout(() => {
+                chrome.runtime.onMessage.removeListener(handler);
+                resolve(null);
+              }, Math.max(30000, ids.length * 3000));
+            });
+            const deletedIds = new Set(done?.deletedIds || []);
+            state.selectedIds.clear();
+            store.removeWorkLikeSilent(domain, deletedIds);
+            search.activeWorkLikeGrid().removeItems(deletedIds);
+            store.refreshGroups();
+            dialog.closeDialog();
+            const failedCount = done ? done.failed : count - deletedIds.size;
+            dialog.showToast(
+              failedCount > 0
+                ? `已${actionLabel} ${deletedIds.size} 个，${failedCount} 个失败保留`
+                : `已${actionLabel}并移除 ${deletedIds.size} 个作品`,
+              failedCount > 0 ? "error" : "success",
+            );
+          } finally {
+            state.preventDialogClose = false;
+          }
+        },
+      },
+    ]);
+  }
+
+  async #isIndependentMode() {
+    const { independentMode } = await chrome.storage.local.get("independentMode");
+    return independentMode === true;
+  }
+
   async handleBatchMove() {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
-    const name = state.domain === "followings" ? "关注者" : "作品";
+    const name = state.domain === "followings" ? "关注者" : config.DOMAINS_META[state.domain].label;
     dialog.showGroupSelectDialog(`移动到分组...`, await services.loadGroups(), async (groupId) => {
       dialog.updateDialog("正在移动…", `<p>正在移动 ${count} 个${name}…</p>${utils.SPINNER_HTML}`);
       state.preventDialogClose = true;
@@ -1712,6 +1866,37 @@ class Batch {
         state.preventDialogClose = false;
       }
     });
+  }
+
+  // 跨域保存：点赞/收藏域勾选条目经 SAVE_WORKS 入作品域（mergeWork 去重合并）
+  async saveSelectedToWorks() {
+    if (this.selectedCount() === 0) return;
+    const domain = state.domain;
+    const targets = state[domain].filter((w) => state.selectedIds.has(w.awemeId));
+    if (targets.length === 0) return;
+    dom.batchSaveToWorks.disabled = true;
+    try {
+      const res = await services.bgMsg({ type: "SAVE_WORKS", works: targets });
+      if (!res || res.ok !== true) {
+        dialog.showToast("存入作品域失败: " + (res?.error || "未知错误"), "error");
+        return;
+      }
+      state.selectedIds.clear();
+      search.activeWorkLikeGrid().clearSelectionUI();
+      this.syncSelectionUI();
+      dialog.showToast(`已存入作品域（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`, "success");
+    } finally {
+      this.syncSaveToWorksBtn();
+    }
+  }
+
+  // 「存入作品」按钮显隐与可用态：仅点赞/收藏域且批量模式下显示
+  syncSaveToWorksBtn() {
+    if (!dom.batchSaveToWorks) return;
+    const show =
+      config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works" && state.batchMode;
+    dom.batchSaveToWorks.classList.toggle("hidden", !show);
+    if (show) dom.batchSaveToWorks.disabled = state.selectedIds.size === 0;
   }
 }
 
@@ -1730,8 +1915,8 @@ class ImportExport {
       const data = JSON.parse(raw);
       const domain = state.domain;
 
-      if (domain === "followings" ? !services.isFollowingsData(data) : !services.isWorksData(data)) {
-        const expected = domain === "followings" ? "关注数据" : "作品数据";
+      if (config.WORK_LIKE_DOMAINS.includes(domain) && domain !== "works" ? !services.isDomainData(data, domain) : domain === "followings" ? !services.isFollowingsData(data) : !services.isWorksData(data)) {
+        const expected = config.DOMAINS_META[domain].label + "数据";
         dom.dialogTitle.textContent = "导入失败";
         dom.dialogBody.innerHTML = `<p class="dy-text-danger">文件内容不是${expected}</p>`;
         dialog.showOkDialog();
@@ -1742,15 +1927,7 @@ class ImportExport {
       dom.dialogBody.innerHTML = "<p>正在保存数据…</p>";
       const res = await services.bgMsg({ type: "IMPORT_DATA", data, domain });
 
-      if (domain === "works") {
-        const works = await services.loadWorks(state.currentGroupId);
-        if (state.domain !== "works") return;
-        store.set("works", works);
-      } else {
-        const followings = await services.loadFollowings(state.currentGroupId);
-        if (state.domain !== "followings") return;
-        store.set("followings", followings);
-      }
+      await services.loadDomainData();
 
       await groups.renderGroupTabs();
       dom.dialogBody.innerHTML = "";
@@ -2474,11 +2651,156 @@ class Sync {
   updateSyncBtnLabel() {
     const btn = dom.btnSync;
     if (!btn) return;
-    btn.textContent = state.domain === "followings" ? "同步关注" : "同步作品";
+    const labels = { works: "同步作品", followings: "同步关注", likes: "同步点赞", favorites: "同步收藏" };
+    btn.textContent = labels[state.domain] || "同步作品";
   }
 }
 
 const sync = new Sync();
+
+// ---------- 点赞/收藏域同步（DomainScanSync） ----------
+// 与 Sync 的差异：扫描结果由 background 直接合并落库 + 丢失检测，本类只驱动进度弹窗与 UI 刷新
+class DomainScanSync {
+  #running = false;
+  #requestId = null;
+  #domain = null;
+  #countEl = null;
+  #summaryEl = null;
+  #statusEl = null;
+
+  isRunning() {
+    return this.#running;
+  }
+
+  async syncDomain(domain) {
+    if (this.#running || sync.isRunning()) return;
+    if (!config.WORK_LIKE_DOMAINS.includes(domain) || domain === "works") return;
+
+    // 独立模式不支持点赞列表拉取（favorite 端点 Turing 风控），收藏不受限
+    if (domain === "likes") {
+      const { independentMode } = await chrome.storage.local.get("independentMode");
+      if (independentMode) {
+        dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
+        return;
+      }
+    }
+
+    this.#running = true;
+    this.#domain = domain;
+    this.#openDialog(domain);
+
+    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
+
+    try {
+      // 点赞列表仅 Tab 模式；收藏双模均通。persist 让 background 直接落库并做丢失检测
+      const fetchType = domain === "likes" ? "FETCH_FAVORITES" : "FETCH_COLLECTION";
+      const res = await services.bgMsg({
+        type: fetchType,
+        persist: domain,
+        ...(domain === "likes" ? { secUid: await services.findSecUid() } : {}),
+      });
+      if (!this.#running) return; // 弹窗已关闭（取消）
+      if (!res || !res.ok) throw new Error(res?.error || "FETCH_FAILED");
+
+      this.#requestId = null;
+      await services.loadDomainData();
+      await groups.renderGroupTabs();
+
+      const saved = res.saved || { added: 0, updated: 0 };
+      const lostUids = res.lostUids || [];
+      this.#setSummary(`新增 ${saved.added} · 更新 ${saved.updated}${lostUids.length > 0 ? ` · 已取消 ${lostUids.length} 个` : ""}`);
+      if (this.#statusEl) this.#statusEl.textContent = res.timedOut ? "PARTIAL" : "DONE";
+
+      if (res.timedOut && dom.dialogBody.querySelector(".sync-timeout-hint") === null) {
+        const hint = document.createElement("p");
+        hint.className = "dy-text-danger sync-timeout-hint";
+        hint.textContent = "已中途取消，仅保留部分数据";
+        dom.dialogBody.appendChild(hint);
+      }
+      if (lostUids.length > 0) {
+        this.#addTrashButton(domain, lostUids);
+      }
+    } catch (err) {
+      if (!this.#running) return;
+      const msg = err.message || String(err);
+      if (msg.includes("NO_SIGNATURE")) {
+        this.closeDialog();
+        const url = config.URL_USER_SELF + (domain === "likes" ? config.URL_LIKE_TAB : config.URL_COLLECTION_TAB);
+        dialog.showNoSignatureDialog(url, config.DOMAINS_META[domain].label, `同步${config.DOMAINS_META[domain].label}列表`);
+        return;
+      }
+      this.#setSummary("");
+      if (this.#statusEl) this.#statusEl.textContent = msg;
+    } finally {
+      this.#running = false;
+      this.#domain = null;
+    }
+  }
+
+  #openDialog(domain) {
+    const label = config.DOMAINS_META[domain].label;
+    const tmpl = document.getElementById("syncDialogBodyTemplate");
+    const body = tmpl.content.cloneNode(true);
+    this.#countEl = body.querySelector(".sync-count");
+    this.#summaryEl = body.querySelector(".sync-summary");
+    this.#statusEl = body.querySelector(".sync-status");
+    this.#countEl.textContent = `已扫描作品 0`;
+    this.#summaryEl.textContent = `正在获取${label}…`;
+    this.#statusEl.textContent = "SYNCING";
+    dialog.showDialog(`同步${label}`, body, [], () => this.closeDialog());
+  }
+
+  closeDialog() {
+    dialog.closeDialog();
+    this.#running = false;
+    this.#requestId = null;
+    this.#domain = null;
+  }
+
+  // 进度消息入口（options 全局 listener 分发）
+  onScanProgress(msg) {
+    if (!this.#running) return;
+    if (this.#requestId !== null && msg.requestId !== this.#requestId) return;
+    if (msg.type === "FAVORITES_PROGRESS" || msg.type === "COLLECTION_PROGRESS") {
+      if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected}`;
+    }
+  }
+
+  #setSummary(text) {
+    if (this.#summaryEl) this.#summaryEl.textContent = text || "";
+  }
+
+  #addTrashButton(domain, lostIds) {
+    const btn = document.createElement("button");
+    btn.className = "dy-btn flex-inline-center dy-btn-ghost";
+    btn.textContent = "稍后删除";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      await this.moveLostToTrash(domain, lostIds);
+      dialog.closeDialog();
+    });
+    dom.dialogFooter.appendChild(btn);
+  }
+
+  // 丢失条目移入本域「稍后删除」分组（分组按需创建，与关注域 moveLostFollowings 同款）
+  async moveLostToTrash(domain, lostIds) {
+    const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain });
+    const list = groupsRes.groups || [];
+    let trashGroup = list.find((g) => g.name === config.TRASH_GROUP_NAME);
+    if (!trashGroup) {
+      const addRes = await services.bgMsg({ type: "ADD_GROUP", domain, name: config.TRASH_GROUP_NAME });
+      if (addRes.ok) trashGroup = addRes.group;
+    }
+    if (trashGroup) {
+      await services.moveWorkLike(domain, lostIds, trashGroup.id);
+      await services.loadDomainData();
+      store.refreshGroups();
+    }
+    return trashGroup;
+  }
+}
+
+const domainScanSync = new DomainScanSync();
 
 // ---------- Settings ----------
 class Settings {
@@ -3041,251 +3363,6 @@ class Settings {
 
 const settings = new Settings();
 
-// ---------- Favorites ----------
-class Favorites {
-  #activeCancel = null;
-
-  onFavProgress(msg) {
-    if (!state.favoriteFetching) return;
-    const { collected, unfollowedCount } = msg;
-    const statsEl = dom.dialogBody?.querySelector(".fav-stats");
-    if (statsEl) {
-      statsEl.textContent = `已扫描 ${collected} 个点赞作品，发现 ${unfollowedCount} 个未关注作者作品`;
-    }
-  }
-
-  onCollectionProgress(msg) {
-    if (!state.collectionFetching) return;
-    const { collected, unfollowedCount } = msg;
-    const statsEl = dom.dialogBody?.querySelector(".fav-stats");
-    if (statsEl) {
-      statsEl.textContent = `已扫描 ${collected} 个收藏作品，发现 ${unfollowedCount} 个未关注作者作品`;
-    }
-  }
-
-  onCancelProgress(msg) {
-    const ctx = this.#activeCancel;
-    if (!ctx) return;
-    if (msg.requestId !== ctx.requestId) return;
-    if (!state[ctx.cfg.cancelingKey]) return;
-    const { index, total } = msg;
-    ctx.btn.textContent = `取消中... (${index + 1}/${total})`;
-  }
-
-  onCancelDone(msg) {
-    const ctx = this.#activeCancel;
-    if (!ctx || msg.requestId !== ctx.requestId) return;
-    this.#activeCancel = null;
-
-    const cfg = ctx.cfg;
-    const cancelBtn = ctx.btn;
-    if (!state[cfg.cancelingKey]) return;
-    state[cfg.cancelingKey] = false;
-    cancelBtn.classList.remove("dy-btn-loading");
-
-    if (msg.cancelled) {
-      cancelBtn.disabled = false;
-      ctx.syncAddBtn?.();
-      return;
-    }
-
-    const failedIds = new Set(msg.failedAwemeIds || []);
-
-    if (msg.failed > 0 && msg.failed === msg.refreshed + msg.failed) {
-      // all failed - likely auth issue
-      dialog.showToast("取消失败: 可能是密钥已过期,请刷新抖音页面后重试", "error");
-      cancelBtn.disabled = false;
-      ctx.syncAddBtn?.();
-      return;
-    }
-
-    const removedIds = new Set();
-    state[cfg.stateKey].forEach((w) => {
-      if (!failedIds.has(w.awemeId)) removedIds.add(w.awemeId);
-    });
-    state[cfg.stateKey] = state[cfg.stateKey].filter((w) => removedIds.has(w.awemeId));
-    const remaining = state[cfg.stateKey].filter((w) => w.authorFollowed === false);
-    this.#renderGrid("favGrid", state[cfg.stateKey], cfg.formatStats);
-    dom.dialogTitle.textContent = `${cfg.title} (${remaining.length}/${state[cfg.stateKey].length})`;
-    cancelBtn.textContent = cfg.cancelLabel;
-    cancelBtn.disabled = remaining.length === 0;
-    ctx.syncAddBtn?.();
-    const successCount = msg.refreshed;
-    dialog.showToast(
-      msg.failed > 0
-        ? `已取消 ${successCount} 个${cfg.cancelLabel},${msg.failed} 个失败`
-        : `已取消 ${successCount} 个${cfg.cancelLabel}`,
-      msg.failed > 0 ? "error" : "success",
-    );
-  }
-
-  async openScanDialog(cfg) {
-    if (state[cfg.fetchingKey]) return;
-    state[cfg.fetchingKey] = true;
-
-    let fetchArgs = cfg.buildFetchArgs();
-    if (cfg.needSecUid) {
-      const secUid = await services.findSecUid();
-      if (!secUid) {
-        dialog.showDialog("需要打开抖音用户页面", `<p>请先在浏览器中打开一个抖音用户页面，然后重试。</p>`, [
-          { text: "好的", primary: true, callback: () => dialog.closeDialog() },
-        ]);
-        state[cfg.fetchingKey] = false;
-        return;
-      }
-      fetchArgs.secUid = secUid;
-    }
-
-    const tmpl = document.getElementById("favDialogTemplate");
-    const body = tmpl.content.cloneNode(true);
-    dialog.showDialog(cfg.title, body, [], () => {
-      // 重置状态标志(远端抓取由通用 dialog close handler 发 CANCEL_ACTIVE_TASK 信号杀灭)
-      state[cfg.fetchingKey] = false;
-      state[cfg.cancelingKey] = false;
-      this.#activeCancel = null;
-    });
-
-    try {
-      const res = await services.bgMsg(fetchArgs);
-      if (!state[cfg.fetchingKey]) return;
-      if (!res.ok) throw new Error(res.error || "FETCH_FAILED");
-
-      state[cfg.stateKey] = res.works || [];
-
-      const unfollowed = state[cfg.stateKey].filter((w) => w.authorFollowed === false);
-      this.#renderGrid("favGrid", state[cfg.stateKey], cfg.formatStats);
-      dom.dialogTitle.textContent = `${cfg.title} (${unfollowed.length}/${state[cfg.stateKey].length})`;
-
-      if (res.timedOut) {
-        const timeoutHint = document.createElement("p");
-        timeoutHint.className = "dy-text-danger fav-timeout-hint";
-        timeoutHint.textContent = "已超时退出，仅获取部分数据";
-        dom.dialogBody.appendChild(timeoutHint);
-      }
-
-      // “添加”按钮：与取消按钮同批 targets（未关注作者的作品），经 SAVE_WORKS 批量入
-      // 扩展作品库（mergeWork 去重合并，新记录落默认“未分类”分组）。已入账的 awemeId
-      // 记入 addedIds，避免重复点击时重复计数。
-      const addedIds = new Set();
-      const pendingAdds = () =>
-        state[cfg.stateKey].filter((w) => w.authorFollowed === false && !addedIds.has(w.awemeId));
-      const addBtn = document.createElement("button");
-      addBtn.className = "dy-btn flex-inline-center dy-btn-primary";
-      const syncAddBtn = () => {
-        const pending = pendingAdds();
-        addBtn.textContent =
-          pending.length > 0 ? `添加 (${pending.length})` : addedIds.size > 0 ? `已添加 (${addedIds.size})` : "添加";
-        addBtn.disabled = pending.length === 0;
-      };
-      syncAddBtn();
-      addBtn.addEventListener("click", async () => {
-        const targets = pendingAdds();
-        if (targets.length === 0) return;
-        addBtn.disabled = true;
-        addBtn.classList.add("dy-btn-loading");
-        const res = await services.bgMsg({ type: "SAVE_WORKS", works: targets });
-        addBtn.classList.remove("dy-btn-loading");
-        if (!res || res.ok !== true) {
-          syncAddBtn();
-          const errHint =
-            typeof res?.error === "string" && res.error.includes("AUTH_FAILED")
-              ? "密钥已过期，请刷新抖音页面后重试"
-              : "添加失败: " + (res?.error || "未知错误");
-          dialog.showToast(errHint, "error");
-          return;
-        }
-        for (const w of targets) addedIds.add(w.awemeId);
-        syncAddBtn();
-        dialog.showToast(`已添加 ${targets.length} 个作品（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`, "success");
-      });
-      dom.dialogFooter.appendChild(addBtn);
-
-      const cancelBtn = document.createElement("button");
-      cancelBtn.className = "dy-btn flex-inline-center dy-btn-danger";
-      cancelBtn.textContent = unfollowed.length > 0 ? `${cfg.cancelLabel} (${unfollowed.length})` : cfg.cancelLabel;
-      cancelBtn.disabled = unfollowed.length === 0;
-      cancelBtn.addEventListener("click", async () => {
-        const targets = state[cfg.stateKey].filter((w) => w.authorFollowed === false);
-        if (targets.length === 0) return;
-        state[cfg.cancelingKey] = true;
-        cancelBtn.disabled = true;
-        addBtn.disabled = true;
-        cancelBtn.classList.add("dy-btn-loading");
-        const ids = targets.map((w) => w.awemeId);
-        // 启动 cancel — bgMsg 立即返回 { ok: true, requestId, total }
-        // 进度和完成由 CANCEL_PROGRESS / CANCEL_DONE 消息驱动
-        const cancelRes = await services.bgMsg({ type: cfg.cancelType, awemeIds: ids });
-        if (cancelRes && cancelRes.ok === false) {
-          state[cfg.cancelingKey] = false;
-          cancelBtn.classList.remove("dy-btn-loading");
-          cancelBtn.disabled = false;
-          syncAddBtn();
-          const errHint = cancelRes.error?.includes("AUTH_FAILED")
-            ? "密钥已过期，请刷新抖音页面后重试"
-            : "取消失败: " + (cancelRes.error || "未知错误");
-          dialog.showToast(errHint, "error");
-          return;
-        }
-        // 记录活动 cancel 上下文,供 onCancelProgress / onCancelDone 使用
-        this.#activeCancel = { btn: cancelBtn, cfg, requestId: cancelRes.requestId, syncAddBtn };
-        cancelBtn.textContent = `取消中... (0/${ids.length})`;
-      });
-      dom.dialogFooter.appendChild(cancelBtn);
-    } catch (err) {
-      const msg = err.message || String(err);
-      if (msg.includes("NO_SIGNATURE")) {
-        dialog.showNoSignatureDialog(cfg.noSignatureUrl, cfg.noSignatureStep, cfg.noSignatureScan);
-        state[cfg.fetchingKey] = false;
-        return;
-      }
-      if (msg.includes("NEED_TAB")) {
-        dialog.showDialog("需要打开抖音页面", `<p>请在浏览器中先打开一个抖音页面，然后重试。</p>`, [
-          { text: "好的", primary: true, callback: () => dialog.closeDialog() },
-        ]);
-        state[cfg.fetchingKey] = false;
-        return;
-      }
-      dialog.showFetchErrorDialog(msg);
-    }
-
-    state[cfg.fetchingKey] = false;
-  }
-
-  #renderGrid(gridId, works, formatStats) {
-    const grid = dom.dialogBody.querySelector("#" + gridId);
-    if (!grid) return;
-    grid.innerHTML = "";
-
-    const unfollowed = works.filter((w) => w.authorFollowed === false);
-    const statsEl = dom.dialogBody.querySelector(".fav-stats");
-    if (statsEl) {
-      statsEl.textContent = formatStats
-        ? formatStats(works.length, unfollowed.length)
-        : `${works.length} 件 · 未关注 ${unfollowed.length} 件`;
-    }
-
-    if (unfollowed.length === 0) {
-      grid.innerHTML = "";
-      return;
-    }
-
-    for (const w of unfollowed) {
-      const item = document.getElementById("favWorkTemplate").content.cloneNode(true).firstElementChild;
-      const thumb = item.querySelector(".fav-work-thumb");
-      // div+background-image：失败浏览器不绘制裂图图标，直接露出条目底色
-      const coverUrl = w.cover || "";
-      if (coverUrl) thumb.style.backgroundImage = `url("${coverUrl.replace(/["\\]/g, "\\$&")}")`;
-
-      item.addEventListener("click", () => {
-        if (w.awemeId) window.open(`${config.URL_BASE}/video/${w.awemeId}`, "_blank");
-      });
-
-      grid.appendChild(item);
-    }
-  }
-}
-
-const favorites = new Favorites();
 
 
 
@@ -3298,15 +3375,20 @@ class WorksGrid extends VirtualGrid {
   #coverDrainRafId = 0;
   #videoStates = new WeakMap();
   #currentMediaCard = null;
-  constructor() {
+  #emptyMsg;
+  #emptyHint;
+  constructor({ emptyMsg, emptyHint } = {}) {
     super({
       container: dom.mainContainer,
       itemClass: "work-card",
       skeletonClass: "work-skeleton",
       itemKey: "awemeId",
-      emptyMsg: "还没有保存的作品",
-      emptyHint: "浏览抖音时，作品会自动被捕获",
+      emptyMsg,
+      emptyHint,
     });
+    // 空态文案按实例区分（作品/点赞/收藏域文案不同）
+    this.#emptyMsg = emptyMsg || "还没有保存的作品";
+    this.#emptyHint = emptyHint || "浏览抖音时，作品会自动被捕获";
     this.#bindMediaEvents();
   }
 
@@ -3316,7 +3398,7 @@ class WorksGrid extends VirtualGrid {
     if (search.isFilterActive()) {
       this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试");
     } else {
-      this.render(view, "还没有保存的作品", "浏览抖音时，作品会自动被捕获");
+      this.render(view, this.#emptyMsg, this.#emptyHint);
     }
   }
 
@@ -3331,13 +3413,30 @@ class WorksGrid extends VirtualGrid {
 
     const title = card.querySelector(".work-title");
     title.querySelectorAll(".work-action-btn").forEach((btn) => btn.remove());
-    title.append(...fresh.querySelectorAll(".work-action-btn"));
+    // 单条同步按钮仅作品域注入（SYNC_WORKS 写 works store）；下载按钮四域通用
+    if (state.domain === "works") {
+      title.append(...fresh.querySelectorAll(".work-action-btn"));
+    } else {
+      title.append(
+        ...[...fresh.querySelectorAll(".work-action-btn")].filter((b) => b.title !== "同步"),
+      );
+    }
 
     const badge = card.querySelector(".work-type-badge");
     const thumb = card.querySelector(".work-thumb");
     const video = card.querySelector(".work-video-player");
     const controls = card.querySelector(".work-video-controls");
-    const checkbox = card.querySelector(".work-checkbox");
+    let checkbox = card.querySelector(".work-checkbox");
+    if (!checkbox) {
+      // 骨架模板不含勾选框：避免批量模式一次性对上千个骨架做样式重排/重绘，仅在卡片填充时创建
+      checkbox = document.createElement("div");
+      checkbox.className = "work-checkbox";
+      checkbox.setAttribute("role", "checkbox");
+      checkbox.tabIndex = 0;
+      checkbox.setAttribute("aria-checked", "false");
+      checkbox.setAttribute("aria-label", "选择作品");
+      card.querySelector(".work-media").after(checkbox);
+    }
     const titleText = card.querySelector(".work-title-text");
 
     badge.classList.toggle("hidden", work.type === "video");
@@ -3469,6 +3568,8 @@ class WorksGrid extends VirtualGrid {
   }
 
   async #handleWorkSync(btn, awemeId) {
+    // 单条同步仅作品域有意义（SYNC_WORKS 写 works store）；点赞/收藏域卡片不注入同步按钮
+    if (state.domain !== "works") return;
     btn.disabled = true;
     btn.classList.add("work-syncing");
     try {
@@ -3665,7 +3766,18 @@ class WorksGrid extends VirtualGrid {
   }
 }
 
-const worksGrid = new WorksGrid();
+const worksGrid = new WorksGrid({
+  emptyMsg: "还没有保存的作品",
+  emptyHint: "浏览抖音时，作品会自动被捕获",
+});
+const likesGrid = new WorksGrid({
+  emptyMsg: "还没有同步的点赞作品",
+  emptyHint: "点击菜单「同步」拉取本账户的点赞列表",
+});
+const favoritesGrid = new WorksGrid({
+  emptyMsg: "还没有同步的收藏作品",
+  emptyHint: "点击菜单「同步」拉取本账户的收藏列表",
+});
 // ---------- Detail ----------
 class Detail {
   #index = -1;
@@ -3865,6 +3977,15 @@ class Detail {
   }
 
   async removeWork(awemeId) {
+    // 作品型三域按当前域删除本地记录（点赞/收藏域仅删本地，远端取消走批量入口）
+    if (config.WORK_LIKE_DOMAINS.includes(state.domain)) {
+      await services.deleteWorkLike(state.domain, [awemeId]);
+      state[state.domain] = state[state.domain].filter((w) => w.awemeId !== awemeId);
+      state.selectedIds.delete(awemeId);
+      search.activeWorkLikeGrid().removeItems(new Set([awemeId]));
+      store.refreshGroups();
+      return;
+    }
     await services.bgMsg({ type: "DELETE_WORKS", awemeIds: [awemeId] });
     state.selectedIds.delete(awemeId);
     const idx = state.works.findIndex((w) => w.awemeId === awemeId);
@@ -3970,6 +4091,10 @@ class Detail {
   async openDetail(awemeId) {
     const work = this.openDetailIndex(awemeId);
     if (!work) return;
+    // 单条同步仅作品域有意义（SYNC_WORKS 写 works store）；点赞/收藏域隐藏该按钮
+    const isWorkLikeNonWorks =
+      config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works";
+    dom.detailSyncBtn.classList.toggle("hidden", isWorkLikeNonWorks);
     dom.detailOverlay.classList.remove("hidden");
     document.body.style.overflow = "hidden";
     this.renderDetail();
@@ -4280,9 +4405,13 @@ class Detail {
       e.stopPropagation();
       const work = this.getCurrentWork();
       if (!work) return;
+      // 点赞/收藏域的详情「移除」仅删本地记录（远端取消走批量入口），文案区分
+      const localOnly = config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works";
       const removeBody = document.createElement("p");
       removeBody.className = "confirm-delete-msg";
-      removeBody.textContent = `确定要移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？`;
+      removeBody.textContent = localOnly
+        ? `确定要从${config.DOMAINS_META[state.domain].label}域移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？远端点赞/收藏不受影响。`
+        : `确定要移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？`;
       dialog.showDialog("移除作品", removeBody, [
         { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
         {
@@ -4318,6 +4447,8 @@ class Detail {
       this.updateLoopBtn(work?.type === "video" && utils.getVideoUrl(work));
     });
 
+    // 单条同步仅作品域有意义（SYNC_WORKS 写 works store）；点赞/收藏域隐藏该按钮。
+    // initDetailEvents 仅执行一次，不能在此读 state.domain，改为每次打开详情时同步显隐
     dom.detailSyncBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const work = this.getCurrentWork();
@@ -4604,17 +4735,10 @@ chrome.runtime.onMessage.addListener((message) => {
       sync.onFollowingProgress(message);
       break;
     case "FAVORITES_PROGRESS":
-      favorites.onFavProgress(message);
-      break;
     case "COLLECTION_PROGRESS":
-      favorites.onCollectionProgress(message);
+      domainScanSync.onScanProgress(message);
       break;
-    case "CANCEL_PROGRESS":
-      favorites.onCancelProgress(message);
-      break;
-    case "CANCEL_DONE":
-      favorites.onCancelDone(message);
-      break;
+    // 批量「取消并移除」由 Batch 内挂 requestId 专属 listener 消化，全局不处理
   }
 });
 
@@ -4638,9 +4762,11 @@ class AppShell {
   switchDomain(domain) {
     if (domain === state.domain) return;
 
-    // 先中止两个网格未完成的分块渲染，防止旧域骨架卡在下一帧追加进共享容器
+    // 先中止所有网格未完成的分块渲染，防止旧域骨架卡在下一帧追加进共享容器
     worksGrid.abortRender();
     followingsGrid.abortRender();
+    likesGrid.abortRender();
+    favoritesGrid.abortRender();
     dom.mainContainer.innerHTML = "";
 
     state.selectedIds.clear();
@@ -4657,8 +4783,8 @@ class AppShell {
     sidebar.clearSidebarActive();
     state.currentFollowingSecUid = null;
 
-    document.body.classList.remove("domain-works", "domain-followings");
-    document.body.classList.add("domain-" + domain);
+    // 域样式经 data-domain 属性挂载（CSS 按属性选择器适配四域）
+    document.body.dataset.domain = domain;
 
     document.querySelectorAll(".ds-btn").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.domain === domain);
@@ -4737,6 +4863,7 @@ dom.btnBatch.addEventListener("click", () => batch.handleBatchToggle());
 dom.batchSelectAll.addEventListener("click", () => batch.handleBatchSelectAll());
 dom.batchDelete.addEventListener("click", () => batch.handleBatchDelete());
 dom.batchMove.addEventListener("click", () => batch.handleBatchMove());
+dom.batchSaveToWorks.addEventListener("click", () => batch.saveSelectedToWorks());
 
 dom.btnMenu.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -4758,44 +4885,11 @@ dom.fileInput.addEventListener("change", (e) => importExport.handleImport(e));
 
 dom.btnExport.addEventListener("click", () => importExport.handleExport());
 
-dom.btnFavorites.addEventListener("click", () =>
-  favorites.openScanDialog({
-    title: "扫描点赞",
-    stateKey: "favoriteWorks",
-    fetchingKey: "favoriteFetching",
-    cancelingKey: "cancelingFavorites",
-    cancelType: "CANCEL_LIKE",
-    formatStats: (total, unfollowed) => `已扫描 ${total} 个点赞作品，发现 ${unfollowed} 个未关注作者作品`,
-    cancelLabel: "取消点赞",
-    noSignatureUrl: config.URL_USER_SELF + config.URL_LIKE_TAB,
-    noSignatureStep: "点赞",
-    noSignatureScan: "扫描点赞列表",
-    buildFetchArgs: () => ({ type: "FETCH_FAVORITES", secUid: null }),
-    needSecUid: true,
-  }),
-);
-dom.btnCollections.addEventListener("click", () =>
-  favorites.openScanDialog({
-    title: "扫描收藏",
-    stateKey: "collectionWorks",
-    fetchingKey: "collectionFetching",
-    cancelingKey: "cancelingCollections",
-    cancelType: "CANCEL_COLLECTION",
-    formatStats: (total, unfollowed) => `${total} 件 · 未关注 ${unfollowed} 件`,
-    cancelLabel: "取消收藏",
-    noSignatureUrl: config.URL_USER_SELF + config.URL_COLLECTION_TAB,
-    noSignatureStep: "收藏",
-    noSignatureScan: "扫描收藏列表",
-    buildFetchArgs: () => ({ type: "FETCH_COLLECTION" }),
-    needSecUid: false,
-  }),
-);
-
 dom.btnSettings?.addEventListener("click", () => settings.openPanel());
 
 dom.btnReset.addEventListener("click", async () => {
   const domain = state.domain;
-  const domainName = domain === "works" ? "作品" : "关注";
+  const domainName = config.DOMAINS_META[domain].label;
 
   const resetBody = document.createElement("p");
   resetBody.className = "confirm-delete-msg";
@@ -4812,11 +4906,7 @@ dom.btnReset.addEventListener("click", async () => {
           await services.bgMsg({ type: "RESET_DOMAIN", domain });
           state.selectedIds.clear();
           store.set("batchMode", false);
-          if (domain === "works") {
-            store.set("works", []);
-          } else {
-            store.set("followings", []);
-          }
+          store.set(domain, []);
           await groups.renderGroupTabs();
           dom.dialogTitle.textContent = "重置完成";
           dom.dialogBody.innerHTML = `<p>${domainName}数据已清空</p>`;
@@ -4830,18 +4920,20 @@ dom.btnReset.addEventListener("click", async () => {
 });
 
 dom.btnSync.addEventListener("click", async () => {
-  if (sync.isRunning()) return;
+  if (sync.isRunning() || domainScanSync.isRunning()) return;
   if (state.domain === "followings") {
     await sync.syncFollowings();
-  } else {
+  } else if (state.domain === "works") {
     await sync.syncCurrentGroup();
+  } else {
+    await domainScanSync.syncDomain(state.domain);
   }
 });
 
 // ---------- init IIFE ----------
 (async function init() {
   // 构建标记：用于确认页面运行的是最新构建（头像探针预载版）
-  console.info("[DDM] options build 2026-08-25 searchbar-appshell-refactor");
+  console.info("[DDM] options build 2026-08-26 four-domain");
   document.body.classList.remove("batch-mode");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
@@ -4864,6 +4956,7 @@ dom.btnSync.addEventListener("click", async () => {
 
   store.on("domain", async () => {
     sync.updateSyncBtnLabel();
+    batch.syncSaveToWorksBtn();
     await groups.renderGroupTabs();
     search.onDomainChanged();
     try {
@@ -4879,6 +4972,12 @@ dom.btnSync.addEventListener("click", async () => {
   });
   store.on("followings", () => {
     if (state.domain === "followings") search.refreshGridView();
+  });
+  store.on("likes", () => {
+    if (state.domain === "likes") search.refreshGridView();
+  });
+  store.on("favorites", () => {
+    if (state.domain === "favorites") search.refreshGridView();
   });
   store.on("groups", () => groups.renderGroupTabs());
   store.on("currentGroupId", async () => {
@@ -4901,7 +5000,7 @@ dom.btnSync.addEventListener("click", async () => {
     }
   });
 
-  document.body.classList.add("domain-works");
+  document.body.dataset.domain = "works";
   appShell.updateDomainSlider("works");
   sync.updateSyncBtnLabel();
   await groups.renderGroupTabs();

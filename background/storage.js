@@ -1,13 +1,17 @@
 // background/storage.js — IndexedDB 封装层
 
 const DB_NAME = "douyin-saver";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORES = {
   works: { keyPath: "awemeId", indexes: ["groupId"] },
   works_groups: { keyPath: "id" },
   followings: { keyPath: "uid", indexes: ["groupId"] },
   followings_groups: { keyPath: "id" },
+  likes: { keyPath: "awemeId", indexes: ["groupId"] },
+  likes_groups: { keyPath: "id" },
+  favorites: { keyPath: "awemeId", indexes: ["groupId"] },
+  favorites_groups: { keyPath: "id" },
 };
 
 // 单例连接

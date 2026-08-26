@@ -203,7 +203,7 @@ optgroup {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px 18px;
+  padding: 4px 14px;
   font-size: var(--dy-font-size-sm);
   font-weight: 500;
   border-radius: var(--dy-radius);
@@ -399,13 +399,13 @@ optgroup {
   display: none;
 }
 
-body.domain-followings #mainGrid {
+body[data-domain="followings"] #mainGrid {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
 }
 
-body.domain-followings .main-container {
+body[data-domain="followings"] .main-container {
   flex: 1;
   min-width: 0;
   display: grid;
@@ -414,18 +414,19 @@ body.domain-followings .main-container {
   padding: 10px 20px;
 }
 
-body.domain-followings .main-container.hidden {
+body[data-domain="followings"] .main-container.hidden {
   display: none;
 }
 
-body.domain-followings .state-message {
+body[data-domain="followings"] .state-message {
   flex: 1 1 0;
   min-width: 0;
   width: 100%;
 }
 
-body.domain-works #sidebar,
-body.domain-works #sidebarResizeHandle {
+/* 侧边栏是关注域专属：作品型三域（works/likes/favorites）统一隐藏 */
+body:not([data-domain="followings"]) #sidebar,
+body:not([data-domain="followings"]) #sidebarResizeHandle {
   display: none;
 }
 

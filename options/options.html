@@ -15,12 +15,15 @@
       <div class="ds-slider"></div>
       <button class="ds-btn active" data-domain="works">作品</button>
       <button class="ds-btn" data-domain="followings">关注</button>
+      <button class="ds-btn" data-domain="likes">点赞</button>
+      <button class="ds-btn" data-domain="favorites">收藏</button>
     </div>
     <div class="group-selector">
       <div class="group-tabs" id="groupTabs"></div>
     </div>
     <div class="topbar-right flex-row">
       <span id="batchCount" class="batch-count hidden" aria-live="polite"></span>
+      <button class="dy-btn flex-inline-center batch-action hidden" id="btnBatchSaveToWorks">存入作品</button>
       <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove" disabled>移动</button>
       <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete" disabled>移除</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost batch-action" id="btnBatchSelectAll">全选</button>
@@ -35,8 +38,6 @@
           <button class="menu-item" id="btnImport">导入</button>
           <button class="menu-item" id="btnExport">导出</button>
           <button class="menu-item" id="btnGroupManage">分组</button>
-          <button class="menu-item" id="btnFavorites">扫描点赞</button>
-          <button class="menu-item" id="btnCollections">扫描收藏</button>
           <button class="menu-item" id="btnSearch">搜索</button>
           <button class="menu-item" id="btnSettings">设置</button>
           <div class="menu-divider"></div>
@@ -209,7 +210,6 @@
        头像必须是 div+background-image：背景图加载失败浏览器不绘制裂图图标，元素层面杜绝断裂图 -->
   <template id="followingSkeletonTemplate">
     <div class="following-card following-skeleton" data-uid="" tabindex="0">
-      <div class="following-checkbox" role="checkbox" tabindex="0" aria-checked="false" aria-label="选择关注者"></div>
       <div class="following-main">
         <div class="following-avatar" role="img"></div>
         <span class="following-avatar-fallback hidden"></span>
@@ -236,14 +236,6 @@
           </svg>
         </div>
       </a>
-    </div>
-  </template>
-
-  <!-- ====== 点赞/收藏作品模板 ====== -->
-  <template id="favWorkTemplate">
-    <div class="fav-work-item">
-      <!-- 缩略图必须是 div+background-image：背景图失败浏览器不绘制裂图图标 -->
-      <div class="fav-work-thumb" role="img"></div>
     </div>
   </template>
 
@@ -288,7 +280,6 @@
   <template id="workSkeletonTemplate">
     <div class="work-card work-skeleton flex-col" tabindex="0">
       <div class="work-media"></div>
-      <div class="work-checkbox" role="checkbox" tabindex="0" aria-checked="false" aria-label="选择作品"></div>
       <div class="work-title flex-row">
         <span class="work-title-text text-ellipsis"></span>
       </div>
@@ -352,14 +343,6 @@
       <button class="dy-btn flex-inline-center dy-btn-primary" id="addGroupBtn">添加</button>
     </div>
     <div class="group-list" id="groupList"></div>
-  </template>
-
-  <!-- ====== 点赞/收藏弹窗容器模板 ====== -->
-  <template id="favDialogTemplate">
-    <div class="fav-dialog-body">
-      <div class="fav-stats"></div>
-      <div class="fav-grid" id="favGrid"></div>
-    </div>
   </template>
 
   <!-- ====== 导入结果模板 ====== -->
