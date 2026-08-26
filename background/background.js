@@ -9,6 +9,10 @@ const CONFIG = {
     WORKS_GROUPS: "works_groups",
     FOLLOWINGS: "followings",
     FOLLOWINGS_GROUPS: "followings_groups",
+    LIKES: "likes",
+    LIKES_GROUPS: "likes_groups",
+    FAVORITES: "favorites",
+    FAVORITES_GROUPS: "favorites_groups",
   },
   DEFAULT_WORKS_GROUPS: [
     { id: "all", name: "全部作品", fixed: true },
@@ -16,6 +20,14 @@ const CONFIG = {
   ],
   DEFAULT_FOLLOWINGS_GROUPS: [
     { id: "all", name: "全部关注", fixed: true },
+    { id: "uncategorized", name: "未分组", fixed: true },
+  ],
+  DEFAULT_LIKES_GROUPS: [
+    { id: "all", name: "全部点赞", fixed: true },
+    { id: "uncategorized", name: "未分组", fixed: true },
+  ],
+  DEFAULT_FAVORITES_GROUPS: [
+    { id: "all", name: "全部收藏", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
   DNR_RULES: [
@@ -222,6 +234,7 @@ const CONFIG = {
   API: {
     FOLLOWING: "/aweme/v1/web/user/following/list",
     PROFILE_OTHER: "/aweme/v1/web/user/profile/other/",
+    FAVORITE: "/aweme/v1/web/aweme/favorite/",
     COLLECTION: "/aweme/v1/web/aweme/listcollection/",
     DETAIL: "/aweme/v1/web/aweme/detail/",
     POST: "/aweme/v1/web/aweme/post/",
@@ -230,6 +243,14 @@ const CONFIG = {
   // 更新策略版本导致换盐，独立模式收藏扫描将重新出现 Signature Not Found）
   WEB_SIGN_SALT: "A96D855A08C0A9707F8BEF0D9A527E4E",
   CANCEL: {
+    // Tab 模式取消点赞走 inject XHR（CONFIG.CANCEL.LIKE_URL），此处 like 四要素仅供
+    // handleIndependentCancel 的 kind 配置位；独立模式点赞取消在路由层显式拒绝（Turing/XHR 签名限制）
+    like: {
+      url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
+      body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+      type: "application/x-www-form-urlencoded",
+      referrer: "https://www.douyin.com/user/self?showTab=like",
+    },
     collection: {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
       body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
@@ -341,6 +362,20 @@ const DOMAIN_CONFIG = {
     itemKey: CONFIG.STORAGE_KEYS.FOLLOWINGS,
     idField: "uid",
     idToString: true,
+  },
+  [CONFIG.STORAGE_KEYS.LIKES]: {
+    storeName: CONFIG.STORAGE_KEYS.LIKES,
+    groupsName: CONFIG.STORAGE_KEYS.LIKES_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_LIKES_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.LIKES,
+    idField: "awemeId",
+  },
+  [CONFIG.STORAGE_KEYS.FAVORITES]: {
+    storeName: CONFIG.STORAGE_KEYS.FAVORITES,
+    groupsName: CONFIG.STORAGE_KEYS.FAVORITES_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_FAVORITES_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.FAVORITES,
+    idField: "awemeId",
   },
 };
 
@@ -948,7 +983,7 @@ async function handleIndependentFetchFollowing(secUid, sendResponse) {
   }
 }
 
-async function handleIndependentFetchCollection(sendResponse) {
+async function handleIndependentFetchCollection(persist, sendResponse) {
   try {
     await ensureABogus();
     const requestId = crypto.randomUUID();
@@ -998,7 +1033,8 @@ async function handleIndependentFetchCollection(sendResponse) {
         );
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
-    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
+    const { saved, lostUids } = await persistScanResults(persist, all, cancelled);
+    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled, saved, lostUids });
   } catch (e) {
     sendResponse({ ok: false, error: e.message });
   }
@@ -1163,6 +1199,16 @@ chrome.runtime.onInstalled.addListener(async () => {
     if (!followingsGroups.length) {
       await storage.putGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS, CONFIG.DEFAULT_FOLLOWINGS_GROUPS);
     }
+
+    const likesGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.LIKES_GROUPS);
+    if (!likesGroups.length) {
+      await storage.putGroups(CONFIG.STORAGE_KEYS.LIKES_GROUPS, CONFIG.DEFAULT_LIKES_GROUPS);
+    }
+
+    const favoritesGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.FAVORITES_GROUPS);
+    if (!favoritesGroups.length) {
+      await storage.putGroups(CONFIG.STORAGE_KEYS.FAVORITES_GROUPS, CONFIG.DEFAULT_FAVORITES_GROUPS);
+    }
   } catch (e) {
     console.warn("[DY] onInstalled partial failure:", e.message);
   }
@@ -1288,6 +1334,8 @@ function createDomainHandlers(domain) {
 
 const worksHandlers = createDomainHandlers(CONFIG.STORAGE_KEYS.WORKS);
 const followingsHandlers = createDomainHandlers(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+const likesHandlers = createDomainHandlers(CONFIG.STORAGE_KEYS.LIKES);
+const favoritesHandlers = createDomainHandlers(CONFIG.STORAGE_KEYS.FAVORITES);
 
 function extractImportItems(data, domain) {
   const cfg = DOMAIN_CONFIG[domain];
@@ -1311,12 +1359,17 @@ function mergeWork(w, old) {
 }
 
 async function mergeAndSaveWorks(works) {
-  const ds = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
-  const valid = works.filter((w) => w && w.awemeId);
-  if (valid.length === 0) return { added: 0, updated: 0, total: 0 };
+  return mergeAndSaveDomainWorks(CONFIG.STORAGE_KEYS.WORKS, works);
+}
+
+// 作品型三域（works/likes/favorites）共用的合并落库：mergeWork 三项保护 + 长效链降级防护
+async function mergeAndSaveDomainWorks(domain, works) {
+  const ds = domainStorage(domain);
+  const valid = (works || []).filter((w) => w && w[ds.idField]);
+  if (valid.length === 0) return { added: 0, updated: 0, total: await ds.count() };
 
   const oldItems = await Promise.all(
-    valid.map((w) => ds.get(w.awemeId).then((old) => ({ w, old }))),
+    valid.map((w) => ds.get(w[ds.idField]).then((old) => ({ w, old }))),
   );
 
   let added = 0,
@@ -1406,6 +1459,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case "GET_WORK":
       return asyncHandler(() => handleGetWork(message.awemeId, sendResponse), sendResponse);
 
+    // 点赞域
+    case "SAVE_LIKES":
+      return asyncHandler(() => likesHandlers.save(message.likes, sendResponse), sendResponse);
+    case "GET_LIKES":
+      return asyncHandler(() => likesHandlers.get(message.groupId, sendResponse), sendResponse);
+    case "DELETE_LIKES":
+      return asyncHandler(() => likesHandlers.delete(message.awemeIds, sendResponse), sendResponse);
+    case "MOVE_LIKES":
+      return asyncHandler(
+        () => likesHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
+        sendResponse,
+      );
+
+    // 收藏域
+    case "SAVE_FAVORITES":
+      return asyncHandler(() => favoritesHandlers.save(message.favorites, sendResponse), sendResponse);
+    case "GET_FAVORITES":
+      return asyncHandler(() => favoritesHandlers.get(message.groupId, sendResponse), sendResponse);
+    case "DELETE_FAVORITES":
+      return asyncHandler(() => favoritesHandlers.delete(message.awemeIds, sendResponse), sendResponse);
+    case "MOVE_FAVORITES":
+      return asyncHandler(
+        () => favoritesHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
+        sendResponse,
+      );
+
     // 关注域
     case "SAVE_FOLLOWINGS":
       return asyncHandler(() => followingsHandlers.save(message.followings, sendResponse), sendResponse);
@@ -1457,13 +1536,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return asyncHandler(() => handleCalibrateFollowing(message.uid, message.secUid, sendResponse), sendResponse);
     case "FETCH_FAVORITES":
       return asyncHandler(async () => {
-        return handleFetchFavorites(message.secUid, sendResponse);
+        // 点赞列表无独立模式分支（favorite 端点 Turing 风控，见 docs/05）
+        return handleFetchFavorites(message.secUid, message.persist, sendResponse);
       }, sendResponse);
     case "FETCH_COLLECTION":
       return asyncHandler(async () => {
         const im = await loadIndependentMode();
-        if (im) return handleIndependentFetchCollection(sendResponse);
-        return handleFetchCollection(sendResponse);
+        if (im) return handleIndependentFetchCollection(message.persist, sendResponse);
+        return handleFetchCollection(message.persist, sendResponse);
       }, sendResponse);
     case "SYNC_WORKS":
       return asyncHandler(async () => {
@@ -1488,13 +1568,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }, sendResponse);
     case "CANCEL_LIKE":
       return asyncHandler(async () => {
-        return runCancelBatch(message.awemeIds, "CANCEL_ONE_LIKE", "CANCEL_PROGRESS", sendResponse);
+        // 点赞取消无独立模式分支（a_bogus 与 XHR 原型链深度绑定，SW 无法直连，见 docs/06）
+        if (await loadIndependentMode()) {
+          return sendResponse({ ok: false, error: "UNSUPPORTED_INDEPENDENT" });
+        }
+        return runCancelBatch(message.awemeIds, "CANCEL_ONE_LIKE", "CANCEL_PROGRESS", message.domain, sendResponse);
       }, sendResponse);
     case "CANCEL_COLLECTION":
       return asyncHandler(async () => {
         const im = await loadIndependentMode();
-        if (im) return handleIndependentCancel(message.awemeIds, "collection", sendResponse);
-        return runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", sendResponse);
+        if (im) return handleIndependentCancel(message.awemeIds, "collection", message.domain, sendResponse);
+        return runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", message.domain, sendResponse);
       }, sendResponse);
     case "GET_SECURITY_STATUS":
       sendToTab("GET_SECURITY_STATUS", { timeout: CONFIG.TIMEOUT.SECURITY_STATUS }, sendResponse);
@@ -1768,7 +1852,33 @@ async function handleFetchFollowing(secUid, sendResponse) {
   }
 }
 
-async function handleFetchFavorites(secUid, sendResponse) {
+// 扫描落库 + 丢失检测（persist = "likes" | "favorites" 时启用）。
+// 用户中途取消时跳过丢失检测（部分拉取会产生假丢失），已收集部分仍合并落库（幂等）。
+async function persistScanResults(persistDomain, all, cancelled) {
+  if (!persistDomain || cancelled || all.length === 0) return { saved: null, lostUids: [] };
+  const ds = domainStorage(persistDomain);
+  const idField = ds.idField;
+  const oldKeys = Object.keys(await ds.getAll());
+  const saved = await mergeAndSaveDomainWorks(persistDomain, all);
+
+  // 按远端列表顺序（即主页点赞/收藏顺序，最新在前）写 savedAt，使列表顺序与主页一致。
+  // 必须在落库后读回完整记录再合并写回，避免 putBatch 整条替换导致视频/封面等字段丢失；
+  // 也不能用「落库后再 ds.get 判定是否新条目」——mergeAndSaveDomainWorks 已先把新条目写入，
+  // 会导致 newOnes 永远为空、savedAt 全退化为 Date.now()（即当前「保存时间都一样」的 bug）。
+  const baseTime = Date.now();
+  const stampIds = all.filter((w) => w && w[idField]).map((w) => String(w[idField]));
+  const records = await Promise.all(stampIds.map((id) => ds.get(id)));
+  const toWrite = records
+    .map((rec, i) => (rec ? { ...rec, savedAt: baseTime - i } : null))
+    .filter(Boolean);
+  if (toWrite.length > 0) await ds.putBatch(toWrite);
+
+  const incomingIds = new Set(stampIds);
+  const lostUids = oldKeys.filter((k) => !incomingIds.has(String(k)));
+  return { saved, lostUids };
+}
+
+async function handleFetchFavorites(secUid, persist, sendResponse) {
   try {
     const requestId = crypto.randomUUID();
     let cancelled = false;
@@ -1821,13 +1931,14 @@ async function handleFetchFavorites(secUid, sendResponse) {
       sendResponse({ ok: false, error: lastError, requestId });
       return;
     }
-    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
+    const { saved, lostUids } = await persistScanResults(persist, all, cancelled);
+    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled, saved, lostUids });
   } catch (err) {
     sendResponse({ ok: false, error: err.message });
   }
 }
 
-async function handleFetchCollection(sendResponse) {
+async function handleFetchCollection(persist, sendResponse) {
   try {
     const requestId = crypto.randomUUID();
     let cancelled = false;
@@ -1879,13 +1990,14 @@ async function handleFetchCollection(sendResponse) {
       sendResponse({ ok: false, error: lastError, requestId });
       return;
     }
-    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled });
+    const { saved, lostUids } = await persistScanResults(persist, all, cancelled);
+    sendResponse({ ok: true, requestId, works: all, timedOut: cancelled, saved, lostUids });
   } catch (err) {
     sendResponse({ ok: false, error: err.message });
   }
 }
 
-async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
+async function runCancelBatch(awemeIds, tabType, progressType, persistDomain, sendResponse) {
   if (!Array.isArray(awemeIds) || awemeIds.length === 0) {
     sendResponse({ ok: false, error: "EMPTY" });
     return;
@@ -1930,6 +2042,9 @@ async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
   }
 
   chrome.runtime.onMessage.removeListener(cancelHandler);
+  const failedAwemeIds = errors.map((e) => e.awemeId).filter(Boolean);
+  // 移除 = 取消并删本地：远端取消成功的条目同步删除该域本地记录
+  const deletedIds = await deleteCancelledFromDomain(persistDomain, awemeIds, failedAwemeIds);
   chrome.runtime
     .sendMessage({
       type: "CANCEL_DONE",
@@ -1938,12 +2053,28 @@ async function runCancelBatch(awemeIds, tabType, progressType, sendResponse) {
       cancelled,
       refreshed: awemeIds.length - errors.length,
       failed: errors.length,
-      failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
+      failedAwemeIds,
+      deletedIds,
     })
     .catch(() => {});
 }
 
-async function handleIndependentCancel(awemeIds, kind, sendResponse) {
+// persistDomain 为空则跳过删本地（原扫描弹窗调用方无域概念）
+async function deleteCancelledFromDomain(persistDomain, awemeIds, failedAwemeIds) {
+  if (!persistDomain) return [];
+  const failedSet = new Set((failedAwemeIds || []).map(String));
+  const ids = (awemeIds || []).map(String).filter((id) => !failedSet.has(id));
+  if (ids.length === 0) return [];
+  try {
+    await domainStorage(persistDomain).deleteBatch(ids);
+    return ids;
+  } catch (err) {
+    console.warn("[DY] delete cancelled from domain failed:", err.message);
+    return [];
+  }
+}
+
+async function handleIndependentCancel(awemeIds, kind, persistDomain, sendResponse) {
   try {
     if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
     const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
@@ -1996,6 +2127,9 @@ async function handleIndependentCancel(awemeIds, kind, sendResponse) {
       }
     }
     chrome.runtime.onMessage.removeListener(cancelHandler);
+    const failedAwemeIds = errors.map((e) => e.awemeId).filter(Boolean);
+    // 移除 = 取消并删本地：远端取消成功的条目同步删除该域本地记录
+    const deletedIds = await deleteCancelledFromDomain(persistDomain, awemeIds, failedAwemeIds);
     chrome.runtime
       .sendMessage({
         type: "CANCEL_DONE",
@@ -2004,7 +2138,8 @@ async function handleIndependentCancel(awemeIds, kind, sendResponse) {
         cancelled,
         refreshed: awemeIds.length - errors.length,
         failed: errors.length,
-        failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
+        failedAwemeIds,
+        deletedIds,
       })
       .catch(() => {});
   } catch (e) {
@@ -2016,7 +2151,7 @@ async function handleIndependentCancel(awemeIds, kind, sendResponse) {
 
 async function handleSaveWorks(works, sendResponse) {
   try {
-    const result = await mergeAndSaveWorks(works);
+    const result = await mergeAndSaveDomainWorks(CONFIG.STORAGE_KEYS.WORKS, works);
     const invalid = works.filter((w) => !w || !w.awemeId).length;
     sendResponse({ ok: true, ...result, invalid });
   } catch (err) {
@@ -2103,8 +2238,21 @@ async function handleGetGroups(domain, sendResponse) {
     result.forEach((g, i) => {
       if (!("order" in g)) g.order = i;
     });
-    result.sort((a, b) => a.order - b.order);
-    sendResponse({ groups: result });
+
+    // 固定分组钉在队首（全部 → 未分组），其余按 order 升序；与写路径(handleReorderGroups/reconcileImportGroups)保持一致
+    const FIXED_FRONT = ["all", "uncategorized"];
+    const fixed = FIXED_FRONT.map((id) => result.find((g) => g.id === id)).filter(Boolean);
+    const rest = result
+      .filter((g) => !FIXED_FRONT.includes(g.id))
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    const normalized = [...fixed, ...rest];
+    normalized.forEach((g, i) => (g.order = i));
+
+    // 顺序与存储不一致时回写，修复历史错位的脏数据（自愈，只读路径最多写一次）
+    if (list.length && normalized.some((g, i) => list[i] !== g)) {
+      await storage.putGroups(groupsName, normalized);
+    }
+    sendResponse({ groups: normalized });
   } catch (err) {
     sendResponse({ error: err.message });
   }
@@ -2341,7 +2489,10 @@ async function handleImportData(data, domain, sendResponse) {
     }
 
     if (domain === CONFIG.STORAGE_KEYS.FOLLOWINGS) await handleSaveFollowings(items, sendResponse, true);
-    else await handleSaveWorks(items, sendResponse);
+    else await mergeAndSaveDomainWorks(domain, items).then((result) => {
+      const invalid = items.filter((w) => !w || !w[DOMAIN_CONFIG[domain].idField]).length;
+      sendResponse({ ok: true, ...result, invalid });
+    });
   } catch (err) {
     sendResponse({ error: err.message });
   }
@@ -2384,9 +2535,13 @@ async function handleGetStats(sendResponse) {
     // 避免大数据量下每次统计都产生整表读取 + 大对象分配
     const dsWorks = domainStorage(CONFIG.STORAGE_KEYS.WORKS);
     const dsFollowings = domainStorage(CONFIG.STORAGE_KEYS.FOLLOWINGS);
-    const [works_groups, followings_groups, est] = await Promise.all([
+    const dsLikes = domainStorage(CONFIG.STORAGE_KEYS.LIKES);
+    const dsFavorites = domainStorage(CONFIG.STORAGE_KEYS.FAVORITES);
+    const [works_groups, followings_groups, likes_groups, favorites_groups, est] = await Promise.all([
       dsWorks.getGroups(),
       dsFollowings.getGroups(),
+      dsLikes.getGroups(),
+      dsFavorites.getGroups(),
       storage.estimate(),
     ]);
 
@@ -2404,14 +2559,16 @@ async function handleGetStats(sendResponse) {
       return { total, groupCounts };
     }
 
-    const [works, followings] = await Promise.all([
+    const [works, followings, likes, favorites] = await Promise.all([
       buildDomainStats(dsWorks, works_groups),
       buildDomainStats(dsFollowings, followings_groups),
+      buildDomainStats(dsLikes, likes_groups),
+      buildDomainStats(dsFavorites, favorites_groups),
     ]);
 
     sendResponse({
       ok: true,
-      stats: { works, followings, bytes },
+      stats: { works, followings, likes, favorites, bytes },
     });
   } catch (err) {
     sendResponse({ error: err.message });
