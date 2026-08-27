@@ -93,7 +93,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
-| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；检索状态封装为 `#searchState` 私有实例字段，标签常量为类静态字段；元素事件在构造器内自绑定） |
+| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；检索状态封装为 `#searchState` 私有实例字段；作品型三域带「已关注/未关注」作者归属勾选；**收起即重置**——所有筛选/排序改动不跨收起保留，无筛选摘要条；元素事件在构造器内自绑定） |
 | `VirtualGrid`    | 网格渲染基类（骨架 + 双向虚拟化：填充/卸载双 observer + 分时间预算填充 + 事件委托） |
 | `Dialog`         | 弹窗管理                                                          |
 | `FollowingsGrid` | 关注卡片网格                                                      |
@@ -135,6 +135,8 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 - **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件（静默失效）；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断（见 [docs/11](./docs/11-options-ui.md)）。
 - **网格媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 四个槽位全是 `<div role="img">`（唯一例外详情大图 `<img>`+探针）；离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际再提交。各槽位失败语义、代际机制与清背景要求全文见 [docs/11](./docs/11-options-ui.md)。
 - **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被文件后部组件规则覆盖，hidden 静默失效、占位层常显（见 [docs/11](./docs/11-options-ui.md)）。
+- **搜索栏收起即重置，筛选不跨收起保留** — `closeSearchBar()` 必须先调 `clearSearchFilters()` 恢复默认初始状态（关键词/排序/归属勾选/逆序全部复位）；无「收起但筛选仍生效」的摘要条。域切换**不**重置（搜索栏展开期间改动按现态保留）。
+- **「已关注/未关注」归属判定走方案A：作品 `uid` 实时关联关注全集** — 全集用 `state.followedUids`（`services.loadFollowedUids()` 全量 `groupId:'all'` 加载，不受关注分组影响，init/域切换/`followings` 事件三处刷新）；记录无 `uid` 或全集未加载成功（`state.followedUidsLoaded`）时**不归判**，避免把已关注作者作品误算为未关注引入误删。禁止改用扫描快照 `authorFollowed` 做该判定的主判据。
 
 ## config 分组速查
 

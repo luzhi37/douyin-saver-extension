@@ -22,10 +22,10 @@
       <div class="group-tabs" id="groupTabs"></div>
     </div>
     <div class="topbar-right flex-row">
-      <span id="batchCount" class="batch-count hidden" aria-live="polite"></span>
-      <button class="dy-btn flex-inline-center batch-action hidden" id="btnBatchSaveToWorks">存入作品</button>
-      <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove" disabled>移动</button>
+      <button class="dy-btn flex-inline-center batch-action hidden" id="btnBatchSaveToWorks">存入</button>
+      <span id="batchCount" class="batch-count" aria-live="polite"></span>
       <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete" disabled>移除</button>
+      <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove" disabled>移动</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost batch-action" id="btnBatchSelectAll">全选</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch" title="批量管理作品">批量</button>
       <div class="menu-container">
@@ -50,10 +50,6 @@
 
   <!-- ====== 搜索栏（菜单「搜索」在顶栏下方展开的内联工具条，无快捷键，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
   <div id="searchBar" class="search-bar hidden">
-    <svg width="16" height="16">
-      <use href="#icon-search" />
-    </svg>
-    <input id="searchInput" type="text" placeholder="搜索标题 / 作者 / ID" spellcheck="false" />
     <span class="sb-filter-label">范围</span>
     <div class="sb-seg" id="sbScope">
       <button class="sb-seg-btn active" data-scope="all">综合</button>
@@ -61,12 +57,19 @@
       <button class="sb-seg-btn" data-scope="title" id="sbScopeTitle">标题</button>
       <button class="sb-seg-btn" data-scope="id">ID</button>
     </div>
+    <svg width="16" height="16">
+      <use href="#icon-search" />
+    </svg>
+    <input id="searchInput" type="text" placeholder="搜索标题 / 作者 / ID" spellcheck="false" />
+    <span id="sbCount" class="sb-count"></span>
     <span id="sbWorkFilters" class="sb-domain-filters flex-row">
       <span class="sb-filter-label">排序</span>
       <div class="sb-seg" id="sbSort">
         <button class="sb-seg-btn active" data-sort="saved">保存时间</button>
         <button class="sb-seg-btn" data-sort="authorCount">作者作品数</button>
       </div>
+      <label class="sb-check"><input type="checkbox" id="sbFollowed" checked />已关注</label>
+      <label class="sb-check"><input type="checkbox" id="sbUnfollowed" checked />未关注</label>
     </span>
     <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
       <span class="sb-filter-label">排序</span>
@@ -75,15 +78,9 @@
         <button class="sb-seg-btn" data-fsort="works">作品数</button>
       </div>
     </span>
-    <label class="sb-reverse"><input type="checkbox" id="sbReverse" />逆序</label>
+    <label class="sb-check"><input type="checkbox" id="sbReverse" />逆序</label>
     <button id="btnClearInBar" class="filter-clear-btn">清除</button>
     <button id="btnCloseSearch" class="icon-btn flex-center sb-close" aria-label="收起搜索">✕</button>
-  </div>
-
-  <!-- ====== 筛选状态条（仅「搜索栏收起但筛选仍生效」期间显示，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
-  <div id="filterBar" class="filter-bar hidden">
-    <span id="filterBarText" class="filter-bar-text"></span>
-    <button id="btnClearFilter" class="filter-clear-btn">清除筛选</button>
   </div>
 
   <!-- ====== 主体内容 ====== -->
