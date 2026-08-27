@@ -298,18 +298,22 @@ optgroup {
   display: inline-flex;
 }
 
-/* 批量已选计数（建议4）：仅批量模式显示 */
+/* 存入作品按钮仅点赞/收藏域显示：hidden 需压过 batch-mode 显示规则（同 .hidden 被覆盖坑） */
+.batch-mode .batch-action.hidden {
+  display: none;
+}
+
+/* 批量已选计数：仅批量模式显示，纯数字置于移除按钮左侧 */
 .batch-count {
   display: none;
-  align-items: center;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--dy-text-secondary);
   white-space: nowrap;
   padding: 0 2px;
 }
 
 .batch-mode .batch-count {
-  display: inline-flex;
+  display: inline;
 }
 
 .menu-container {
@@ -320,7 +324,7 @@ optgroup {
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  min-width: 120px;
+  min-width: 90px;
   background: var(--dy-surface-elevated);
   border: 1px solid var(--dy-border);
   border-radius: var(--dy-radius);
@@ -715,6 +719,11 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .batch-mode .work-action-btn {
   display: none !important;
+}
+
+/* 批量模式下按钮隐藏后底栏回落到 min-height，需保持普通模式的 40px 高度防跳变 */
+.batch-mode .work-title {
+  min-height: 40px;
 }
 
 .batch-mode .work-video-player.video-ready {
@@ -2248,30 +2257,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   border-color: rgba(254, 44, 85, 0.45);
 }
 
-/* ====== 筛选状态条（建议5）：仅筛选生效期间存在 ====== */
-.filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 14px;
-  background: var(--dy-surface);
-  border-bottom: 1px solid var(--dy-border);
-  font-size: 12px;
-  color: var(--dy-text-secondary);
-  flex-shrink: 0;
-}
-
-.filter-bar.hidden {
-  display: none;
-}
-
-.filter-bar-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* ====== 搜索栏清除按钮（搜索栏内「清除」与旧筛选状态条共用同形） ====== */
 .filter-clear-btn {
   font-size: 11px;
   background: none;
@@ -2289,8 +2275,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   border-color: var(--dy-border);
 }
 
-/* ====== 搜索栏（建议5）：菜单「搜索」在顶栏下方展开的内联工具条，无快捷键；
-   收起但筛选仍生效时由 .filter-bar 显示摘要 ====== */
+/* ====== 搜索栏（菜单「搜索」在顶栏下方展开的内联工具条；收起即重置，筛选不跨收起保留） ====== */
 .search-bar {
   display: flex;
   align-items: center;
@@ -2341,7 +2326,15 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   color: var(--dy-text-muted);
 }
 
-.sb-reverse {
+/* 搜索应用后的结果数（随筛选实时刷新） */
+.sb-count {
+  font-size: 12px;
+  color: var(--dy-text-secondary);
+  white-space: nowrap;
+}
+
+/* 搜索栏勾选项（逆序 / 已关注 / 未关注）共用 */
+.sb-check {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2352,7 +2345,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   white-space: nowrap;
 }
 
-.sb-reverse input {
+.sb-check input {
   /* 中性白勾选，不用主题红（--dy-primary） */
   accent-color: var(--dy-text);
   margin: 0;

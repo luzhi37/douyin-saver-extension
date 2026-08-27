@@ -15,19 +15,19 @@ const CONFIG = {
     FAVORITES_GROUPS: "favorites_groups",
   },
   DEFAULT_WORKS_GROUPS: [
-    { id: "all", name: "全部作品", fixed: true },
+    { id: "all", name: "全部", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
   DEFAULT_FOLLOWINGS_GROUPS: [
-    { id: "all", name: "全部关注", fixed: true },
+    { id: "all", name: "全部", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
   DEFAULT_LIKES_GROUPS: [
-    { id: "all", name: "全部点赞", fixed: true },
+    { id: "all", name: "全部", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
   DEFAULT_FAVORITES_GROUPS: [
-    { id: "all", name: "全部收藏", fixed: true },
+    { id: "all", name: "全部", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
   ],
   DNR_RULES: [
@@ -2246,10 +2246,19 @@ async function handleGetGroups(domain, sendResponse) {
       .filter((g) => !FIXED_FRONT.includes(g.id))
       .sort((a, b) => (a.order || 0) - (b.order || 0));
     const normalized = [...fixed, ...rest];
+
+    // 全部分组名统一为「全部」：存量数据若带旧名（全部作品/关注/点赞/收藏）在此收敛，并随下方回写路径落库
+    let allNameChanged = false;
+    for (const g of normalized) {
+      if (g.id === "all" && g.name !== "全部") {
+        g.name = "全部";
+        allNameChanged = true;
+      }
+    }
     normalized.forEach((g, i) => (g.order = i));
 
     // 顺序与存储不一致时回写，修复历史错位的脏数据（自愈，只读路径最多写一次）
-    if (list.length && normalized.some((g, i) => list[i] !== g)) {
+    if (list.length && (allNameChanged || normalized.some((g, i) => list[i] !== g))) {
       await storage.putGroups(groupsName, normalized);
     }
     sendResponse({ groups: normalized });

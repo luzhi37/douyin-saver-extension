@@ -136,11 +136,9 @@ const dom = {
   sidebarWorkTemplate: document.querySelector("#sidebarWorkTemplate"),
   batchSaveToWorks: document.querySelector("#btnBatchSaveToWorks"),
   batchCount: document.querySelector("#batchCount"),
-  filterBar: document.querySelector("#filterBar"),
-  filterBarText: document.querySelector("#filterBarText"),
-  btnClearFilter: document.querySelector("#btnClearFilter"),
   searchBar: document.querySelector("#searchBar"),
   searchInput: document.querySelector("#searchInput"),
+  sbCount: document.querySelector("#sbCount"),
   sbScope: document.querySelector("#sbScope"),
   sbScopeAuthor: document.querySelector("#sbScopeAuthor"),
   sbScopeTitle: document.querySelector("#sbScopeTitle"),
@@ -148,6 +146,8 @@ const dom = {
   sbSort: document.querySelector("#sbSort"),
   sbFollowFilters: document.querySelector("#sbFollowFilters"),
   sbFollowSort: document.querySelector("#sbFollowSort"),
+  sbFollowed: document.querySelector("#sbFollowed"),
+  sbUnfollowed: document.querySelector("#sbUnfollowed"),
   sbReverse: document.querySelector("#sbReverse"),
   btnCloseSearch: document.querySelector("#btnCloseSearch"),
   btnClearInBar: document.querySelector("#btnClearInBar"),
@@ -168,6 +168,10 @@ const state = {
   currentFollowingSecUid: null,
   sidebarCursor: null,
   sidebarLoading: false,
+  // 作者归属判定（方案A）：关注全集 uid 集合，全量加载不受分组影响；
+  // followedUidsLoaded 标记加载成功，加载失败时保留旧集合并把“未关注”判定归零，避免误判全为未关注
+  followedUids: new Set(),
+  followedUidsLoaded: false,
   // 短操作弹窗锁：为 true 时禁止点击 X 关闭，待操作完成才解锁
   preventDialogClose: false,
 };
@@ -270,15 +274,13 @@ const utils = {
 // 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
 // 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响
 class SearchBar {
-  static SEARCH_SCOPE_LABELS = { author: "作者", title: "标题", id: "ID" };
-  static SEARCH_SORT_LABELS = { authorCount: "作者作品数" };
-  static SEARCH_FOLLOWINGS_SORT_LABELS = { works: "作品数" };
-
   #searchState = {
     keyword: "",
     scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID
     sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品域）
     followingsSort: "followers", // followers 粉丝数 | works 作品数（仅关注域）
+    followed: true, // 作者归属：已关注（默认勾选，双勾=全部）
+    unfollowed: true, // 作者归属：未关注
     reverse: false, // 逆序（翻转最终顺序，两域共用）
   };
 
@@ -295,10 +297,31 @@ class SearchBar {
 
   // ---------- 数据层：过滤与排序视图 ----------
   isFilterActive() {
+    if (this.#ownerFilterActive()) return true;
     if (!this.#searchState.keyword.trim() && !this.#searchState.reverse) return false;
     return this.#isWorkLikeDomain()
       ? this.#searchState.sort !== "saved"
       : this.#searchState.followingsSort !== "followers";
+  }
+
+  // 作者归属判定（方案A）：实时关联关注全集 uid。
+  // 记录无 uid（作者信息缺失）或关注全集未加载成功时不归判，避免误删已关注作者的作品
+  #isFollowedWork(w) {
+    return Boolean(w.uid) && state.followedUidsLoaded && state.followedUids.has(String(w.uid));
+  }
+
+  #isUnfollowedWork(w) {
+    return Boolean(w.uid) && state.followedUidsLoaded && !state.followedUids.has(String(w.uid));
+  }
+
+  // 双勾=全部（不筛）；只要任一勾选被取消即进入归属筛选
+  #ownerFilterActive() {
+    return !(this.#searchState.followed && this.#searchState.unfollowed);
+  }
+
+  // 归属筛选是否对当前可见网格生效（服务层刷新关注全集后按需重渲网格）
+  isOwnerFilterActive() {
+    return this.#isWorkLikeDomain() && this.#ownerFilterActive();
   }
 
   // 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
@@ -324,6 +347,17 @@ class SearchBar {
     const source = state[state.domain]; // 作品型三域：数据源即当前域数组
     let list = source;
     if (kw) list = list.filter((w) => this.#matchWork(w, kw));
+    if (this.#isWorkLikeDomain() && this.#ownerFilterActive()) {
+      // 已关注/未关注勾选（默认双勾=不筛）：单边勾选仅保留对应归属，两边都未勾则无结果
+      // （#ownerFilterActive 保证不会同时为 true，故 followed 优先分支可安全省略双勾判断）
+      list = list.filter((w) =>
+        this.#searchState.followed
+          ? this.#isFollowedWork(w)
+          : this.#searchState.unfollowed
+            ? this.#isUnfollowedWork(w)
+            : false,
+      );
+    }
     if (this.#searchState.sort === "authorCount") {
       // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
       // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
@@ -370,25 +404,6 @@ class SearchBar {
   }
 
   // ---------- UI 同步 ----------
-  updateFilterBar() {
-    const parts = [];
-    const kw = this.#searchState.keyword.trim();
-    if (kw) parts.push(`${SearchBar.SEARCH_SCOPE_LABELS[this.#searchState.scope] || "关键词"} "${kw}"`);
-    if (this.#isWorkLikeDomain()) {
-      if (this.#searchState.sort !== "saved") parts.push(SearchBar.SEARCH_SORT_LABELS[this.#searchState.sort]);
-    } else if (this.#searchState.followingsSort !== "followers") {
-      parts.push(SearchBar.SEARCH_FOLLOWINGS_SORT_LABELS[this.#searchState.followingsSort]);
-    }
-    if (this.#searchState.reverse) parts.push("逆序");
-    // 搜索栏展开期间控件状态自可见，摘要条隐藏避免两行重复
-    if (!parts.length || !this.isFilterActive() || this.#isSearchBarOpen()) {
-      dom.filterBar.classList.add("hidden");
-      return;
-    }
-    dom.filterBarText.textContent = parts.join(" · ");
-    dom.filterBar.classList.remove("hidden");
-  }
-
   // 域切换后搜索栏的域相关联动：排序段显隐（作品型 vs 关注域各有排序维度）/范围段文案/占位符/分段选中
   syncForDomain() {
     const isWorkLike = this.#isWorkLikeDomain();
@@ -397,19 +412,25 @@ class SearchBar {
     this.syncScopeUIForDomain();
     this.#updateSearchPlaceholder();
     this.syncSegUI();
+    this.syncCount();
   }
 
-  // store.on("domain") 的搜索栏联动入口：摘要条常刷；搜索栏展开期间才同步域差异
+  // store.on("domain") 的搜索栏联动入口：搜索栏展开期间才同步域差异
   onDomainChanged() {
-    this.updateFilterBar();
     if (this.#isSearchBarOpen()) this.syncForDomain();
   }
 
-  // 筛选变化后的统一入口：重渲当前域网格 + 同步筛选条
+  // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数
   refreshGridView() {
     if (this.#isWorkLikeDomain()) this.activeWorkLikeGrid().renderCards();
     else followingsGrid.renderFollowingCards();
-    this.updateFilterBar();
+    this.syncCount();
+  }
+
+  // 搜索应用后的结果数：取当前域的过滤视图长度（关键词/排序/归属勾选实时联动）
+  syncCount() {
+    const count = this.#isWorkLikeDomain() ? this.getWorksView().length : this.getFollowingsView().length;
+    dom.sbCount.textContent = `共 ${count} 条`;
   }
 
   // 作品型三域 → 对应网格实例（Batch 等外部类也需要按域取网格，公开）
@@ -429,6 +450,8 @@ class SearchBar {
     dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.fsort === this.#searchState.followingsSort);
     });
+    dom.sbFollowed.checked = this.#searchState.followed;
+    dom.sbUnfollowed.checked = this.#searchState.unfollowed;
     dom.sbReverse.checked = this.#searchState.reverse;
   }
 
@@ -462,7 +485,6 @@ class SearchBar {
     // 排序段随域显隐；逆序复选框两域共用
     this.syncForDomain();
     dom.searchInput.value = this.#searchState.keyword;
-    this.updateFilterBar();
     this.#updateSearchMenuLabel();
     dom.searchInput.focus();
     dom.searchInput.select();
@@ -470,8 +492,10 @@ class SearchBar {
 
   closeSearchBar() {
     if (!this.#isSearchBarOpen()) return;
+    // 收起即重置：搜索栏内的关键词/排序/归属勾选等改动一律不保留，
+    // 网格恢复全量，下次展开从默认初始状态开始
+    this.clearSearchFilters();
     dom.searchBar.classList.add("hidden");
-    this.updateFilterBar();
     this.#updateSearchMenuLabel();
   }
 
@@ -493,6 +517,8 @@ class SearchBar {
     this.#searchState.scope = "all";
     this.#searchState.sort = "saved";
     this.#searchState.followingsSort = "followers";
+    this.#searchState.followed = true;
+    this.#searchState.unfollowed = true;
     this.#searchState.reverse = false;
     dom.searchInput.value = "";
     this.syncScopeUIForDomain();
@@ -530,9 +556,16 @@ class SearchBar {
       this.#searchState.reverse = dom.sbReverse.checked;
       this.refreshGridView();
     });
+    dom.sbFollowed.addEventListener("change", () => {
+      this.#searchState.followed = dom.sbFollowed.checked;
+      this.refreshGridView();
+    });
+    dom.sbUnfollowed.addEventListener("change", () => {
+      this.#searchState.unfollowed = dom.sbUnfollowed.checked;
+      this.refreshGridView();
+    });
     dom.btnClearInBar.addEventListener("click", () => this.clearSearchFilters());
     dom.btnCloseSearch.addEventListener("click", () => this.closeSearchBar());
-    dom.btnClearFilter.addEventListener("click", () => this.clearSearchFilters());
     dom.btnSearchMenu.addEventListener("click", () => this.toggleSearchBar());
   }
 }
@@ -656,6 +689,16 @@ const services = {
     return (res.followings || [])
       .filter((f) => f && f.uid)
       .map((f) => (typeof f.uid === "string" ? f : { ...f, uid: String(f.uid) }));
+  },
+
+  // 作者归属判定用关注全集（方案A）：全量加载不受分组影响，直接建 uid 集合。
+  // 加载失败时保留旧集合并保持 followedUidsLoaded=false，避免把全部作品误判为「未关注」
+  async loadFollowedUids() {
+    const res = await this.bgMsg({ type: "GET_FOLLOWINGS", groupId: "all" }).catch(() => null);
+    if (!res || !Array.isArray(res.followings)) return false;
+    state.followedUidsLoaded = true;
+    state.followedUids = new Set(res.followings.filter((f) => f && f.uid).map((f) => String(f.uid)));
+    return true;
   },
 
   async loadGroups(domain) {
@@ -1253,7 +1296,7 @@ class FollowingsGrid extends VirtualGrid {
       skeletonClass: "following-skeleton",
       itemKey: "uid",
       emptyMsg: "还没有保存的关注者",
-      emptyHint: "点击菜单「同步关注」获取你的关注列表",
+      emptyHint: "点击菜单「同步」获取你的关注列表",
     });
   }
 
@@ -1262,7 +1305,7 @@ class FollowingsGrid extends VirtualGrid {
     if (search.isFilterActive()) {
       this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试");
     } else {
-      this.render(view, "还没有保存的关注者", "点击菜单「同步关注」获取你的关注列表");
+      this.render(view, "还没有保存的关注者", "点击菜单「同步」获取你的关注列表");
     }
   }
 
@@ -1622,7 +1665,7 @@ class Batch {
   // 已选计数与按钮可用性统一在此刷新（docs/UI_IMPROVEMENTS.md 建议4）
   syncSelectionUI() {
     const count = state.selectedIds.size;
-    if (dom.batchCount) dom.batchCount.textContent = `已选 ${count}`;
+    if (dom.batchCount) dom.batchCount.textContent = count;
     const noneSelected = count === 0;
     dom.batchMove.disabled = noneSelected;
     dom.batchDelete.disabled = noneSelected;
@@ -2646,13 +2689,6 @@ class Sync {
       store.refreshGroups();
     }
     return trashGroup;
-  }
-
-  updateSyncBtnLabel() {
-    const btn = dom.btnSync;
-    if (!btn) return;
-    const labels = { works: "同步作品", followings: "同步关注", likes: "同步点赞", favorites: "同步收藏" };
-    btn.textContent = labels[state.domain] || "同步作品";
   }
 }
 
@@ -4955,10 +4991,13 @@ dom.btnSync.addEventListener("click", async () => {
   window.addEventListener("resize", groups.updateTabMask, { passive: true });
 
   store.on("domain", async () => {
-    sync.updateSyncBtnLabel();
     batch.syncSaveToWorksBtn();
     await groups.renderGroupTabs();
     search.onDomainChanged();
+    // 方案A：作者归属判定依赖关注全集，域切换时异步刷新；完成后归属筛选仍生效则重渲网格
+    services.loadFollowedUids().then((ok) => {
+      if (ok && search.isOwnerFilterActive()) search.refreshGridView();
+    });
     try {
       await services.loadDomainData();
     } catch (err) {
@@ -4970,8 +5009,10 @@ dom.btnSync.addEventListener("click", async () => {
   store.on("works", () => {
     if (state.domain === "works") search.refreshGridView();
   });
-  store.on("followings", () => {
-    if (state.domain === "followings") search.refreshGridView();
+  store.on("followings", async () => {
+    // 方案A：关注数据变化时同步刷新关注全集，保证作者归属判定不过期
+    await services.loadFollowedUids();
+    if (state.domain === "followings" || search.isOwnerFilterActive()) search.refreshGridView();
   });
   store.on("likes", () => {
     if (state.domain === "likes") search.refreshGridView();
@@ -5002,12 +5043,17 @@ dom.btnSync.addEventListener("click", async () => {
 
   document.body.dataset.domain = "works";
   appShell.updateDomainSlider("works");
-  sync.updateSyncBtnLabel();
   await groups.renderGroupTabs();
   try {
     await services.loadDomainData();
   } catch (err) {
     console.error("[DY] load domain data failed:", err);
     appShell.renderErrorState("数据加载失败", err.message);
+  }
+  // 方案A：启动即预载关注全集，供作品/点赞/收藏域的「已关注/未关注」归属判定
+  try {
+    await services.loadFollowedUids();
+  } catch (err) {
+    console.error("[DY] load followed uids failed:", err);
   }
 })();
