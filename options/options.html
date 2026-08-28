@@ -22,9 +22,9 @@
       <div class="group-tabs" id="groupTabs"></div>
     </div>
     <div class="topbar-right flex-row">
-      <button class="dy-btn flex-inline-center batch-action hidden" id="btnBatchSaveToWorks">存入</button>
       <span id="batchCount" class="batch-count" aria-live="polite"></span>
       <button class="dy-btn flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete" disabled>移除</button>
+      <button class="dy-btn flex-inline-center batch-action hidden" id="btnBatchSaveToWorks">存入</button>
       <button class="dy-btn flex-inline-center batch-action" id="btnBatchMove" disabled>移动</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost batch-action" id="btnBatchSelectAll">全选</button>
       <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch" title="批量管理作品">批量</button>
@@ -250,9 +250,9 @@
         <video class="work-video-player" muted playsinline preload="none"></video>
         <div class="work-video-controls">
           <div class="video-controls-top">
-            <button class="video-play-btn icon-btn" aria-label="播放预览"></button>
+            <button class="video-play-btn detail-bar-btn icon-btn flex-center" aria-label="播放预览"></button>
             <span class="video-time">0:00 / 0:00</span>
-            <button class="video-mute-btn icon-btn" aria-label="静音预览"></button>
+            <button class="video-mute-btn detail-bar-btn icon-btn flex-center" aria-label="静音预览"></button>
           </div>
           <input type="range" class="video-progress" min="0" max="100" value="0" aria-label="播放进度" />
         </div>

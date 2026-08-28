@@ -22,8 +22,8 @@ inject.js (主世界)            — fetch/XHR Hook、签名捕获、按钮注�
     ↓ CustomEvent（DY_* 事件对）
 content.js (隔离世界)         — 主世界脚本加载器、requestResponse 事件桥、作品捕获 LRU 缓存
     ↓ chrome.runtime.sendMessage
-background/background.js      — Service Worker：消息路由、IndexedDB 存储、循环长任务；
-  (+ storage.js / crypto.js)                      独立模式下直接 fetch API
+background/background.js      — Service Worker：消息路由（App.route）、IndexedDB 存储（DomainStore）、循环长任务；
+  (+ storage.js / crypto.js)                      类单例架构（Credentials / IndependentClient / DomainStore / DomainHandlers / TabBridge / Groups / DataTools / ScanTasks / IndependentTasks / App + runtimeConfig/utils/formatters 对象）；独立模式下直接 fetch API
     ↑↓ chrome.runtime.sendMessage
 options/options.js            — 管理 UI：store 响应式渲染、网格/弹窗/侧边栏、扫描触发入口
 ```
@@ -35,26 +35,26 @@ manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douy
 ### 双模消息路由（background 唯一入口）
 
 ```
-chrome.runtime.onMessage (background.js switch)
+chrome.runtime.onMessage (background.js App.route switch)
   │
   ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORK
   │                            SAVE_FOLLOWINGS / GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS
   │                            GET_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / RELOAD_CONFIG
   │
-  ├─ 按模式分支（读 loadIndependentMode()）──→
-  │     SYNC_WORKS          → im ? handleIndependentSyncWorks        : handleSyncWorks（逐条 sendToTabAsync）
-  │     FETCH_FOLLOWING     → im ? handleIndependentFetchFollowing   : handleFetchFollowing
-  │     FETCH_COLLECTION    → im ? handleIndependentFetchCollection  : handleFetchCollection
-  │     FETCH_WORKS_PAGE    → im ? handleIndependentFetchWorksPage   : sendToTab("FETCH_WORKS_PAGE")
-  │     CANCEL_COLLECTION   → im ? handleIndependentCancel           : runCancelBatch(CANCEL_ONE_COLLECTION)
+  ├─ 按模式分支（读 independentClient.loadMode()）──→
+  │     SYNC_WORKS          → im ? independentTasks.syncWorks         : scanTasks.syncWorks（逐条 tabBridge.sendAsync）
+  │     FETCH_FOLLOWING     → im ? independentTasks.fetchFollowing   : scanTasks.fetchFollowing
+  │     FETCH_COLLECTION    → im ? independentTasks.fetchCollection  : scanTasks.fetchCollection
+  │     FETCH_WORKS_PAGE    → im ? independentTasks.fetchWorksPage   : tabBridge.fetchWorksPage
+  │     CANCEL_COLLECTION   → im ? independentTasks.cancel           : scanTasks.runCancelBatch(CANCEL_ONE_COLLECTION)
   │
   ├─ 仅 Tab 模式（无独立分支）──→
-  │     FETCH_FAVORITES     → handleFetchFavorites（独立模式不支持点赞扫描）
-  │     CANCEL_LIKE         → runCancelBatch(CANCEL_ONE_LIKE)
-  │     GET_SECURITY_STATUS → sendToTab（恒走 Tab，需检查 Hook 注入）
+  │     FETCH_FAVORITES     → scanTasks.fetchFavorites（独立模式不支持点赞扫描）
+  │     CANCEL_LIKE         → scanTasks.runCancelBatch(CANCEL_ONE_LIKE)
+  │     GET_SECURITY_STATUS → tabBridge.getSecurityStatus（恒走 Tab，需检查 Hook 注入）
   │
-  ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → handleCalibrateFollowing
+  ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → scanTasks.calibrateOne
   │
   └─ 凭据/配置管理 ──→ SET_MODE / CAPTURE_BROWSER_FEATURES / GET_COOKIE_INFO / REFRESH_COOKIE
                        GET_BROWSER_FEATURES / REFRESH_BROWSER_FEATURES / GET_CACHE_TIMES
@@ -69,7 +69,7 @@ options 触发（如 SYNC_WORKS）
   → background 循环 handler：逐条(页)请求 → chrome.runtime.sendMessage(进度消息) → 页间随机延迟
   → 结束发完成消息（SYNC_DONE / CANCEL_DONE）或一次性返回全量结果（FETCH_* 类）
 取消：options 弹窗关闭 → CANCEL_ACTIVE_TASK
-       ├─ Tab 模式：background → withDouyinTab → content → DY_CANCEL_ACTIVE_TASK → inject activeTask.abort()
+       ├─ Tab 模式：background → tabBridge.find → content → DY_CANCEL_ACTIVE_TASK → inject activeTask.abort()
        └─ 独立模式：background 循环内自挂 cancelHandler 监听同名消息，置 cancelled 标志
 ```
 
@@ -106,15 +106,15 @@ options 设置面板开关 → SET_MODE { enabled }
 ### background 消息转发原语（Tab模式专用）
 
 ```js
-// background.js —— 定位一个可用抖音标签页（排除 creator 子域，要求 status === "complete"）
-async function withDouyinTab() -> Promise<Tab|null>
+// background.js TabBridge —— 定位一个可用抖音标签页（排除 creator 子域，要求 status === "complete"）
+async find() -> Promise<Tab|null>
 
 // 向抖音 tab 发消息并等待 inject 结果；生成 requestId；超时 CONFIG.TIMEOUT.REQUEST（可被 data.timeout 覆盖）
 // 错误码：NO_DOUYIN_TAB / TAB_QUERY_FAILED / TIMEOUT / NO_LISTENER / EMPTY_RESPONSE
-function sendToTab(type, data, sendResponse) -> void   // 回调式，仅调用一次 sendResponse
+send(type, data, sendResponse) -> void   // 回调式，仅调用一次 sendResponse
 
-// sendToTab 的 Promise 封装；background 循环 handler 中逐条/逐页请求均用此形态
-function sendToTabAsync(type, data) -> Promise<{ok, error?, ...}>
+// send 的 Promise 封装；background 循环 handler 中逐条/逐页请求均用此形态
+sendAsync(type, data) -> Promise<{ok, error?, ...}>
 ```
 
 ### content.js 事件桥
@@ -152,7 +152,7 @@ case "SYNC_WORKS":
   }, sendResponse);
 ```
 
-### sendToTab（超时后主动杀灭 inject 在途任务）
+### TabBridge.send（超时后主动杀灭 inject 在途任务）
 
 ```js
 const timer = setTimeout(() => {
