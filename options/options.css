@@ -613,7 +613,12 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 8px 6px 6px;
+  /* 进度条贴合底栏：底部留白归零，进度条直抵卡片底缘（同详情模式通栏贴底）；
+     左右内缩收到 3px 让控件尽量贴边框（卡片圆角 dy-radius-lg=10px，7px 拇指在
+     进度条极端位置距圆角切线约 0.6px，肉眼不可见）；拇指裁切由
+     .video-progress::-webkit-slider-thumb 缩小到 7px 抵消（10px 圆心在 3px 轨道
+     上会探出底缘 3.5px 被 overflow:hidden 切平） */
+  padding: 8px 3px 0;
   display: none;
   flex-direction: column;
   gap: 4px;
@@ -638,21 +643,10 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
-.video-play-btn,
-.video-mute-btn {
-  border-radius: 50%;
-  width: auto;
-  height: auto;
-  color: #fff;
-}
-
-.video-play-btn {
-  padding: 4px 6px;
-}
-
-.video-mute-btn {
-  padding: 4px 10px;
-}
+/* 卡片预览的播放/静音按钮直接复用详情模式底栏按钮样式：HTML 上加 .detail-bar-btn
+   .icon-btn .flex-center，外观完全由这两者提供（32px 高、圆角矩形、悬浮 rgba(255,255,255,0.1)
+   + scale(1.1)），与详情底栏按钮一致。.video-play-btn / .video-mute-btn 仅作 JS 选取钩子，
+   不再单独定义外观，避免与底栏按钮样式分叉 */
 
 .video-progress,
 .detail-progress-slider {
@@ -674,6 +668,14 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   border-radius: 50%;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
+}
+
+/* 卡片进度条已贴底（.work-video-controls padding-bottom:0），缩小拇指从 10px→7px，
+   使其圆心在 3px 轨道上探出底缘的量降到约 2px，避免被 .work-card 的
+   overflow:hidden 把拇指下方切平（详情模式滑块贴底栏顶缘、下方有实体底栏故无需） */
+.video-progress::-webkit-slider-thumb {
+  width: 7px;
+  height: 7px;
 }
 
 .work-title {
@@ -1194,6 +1196,21 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+/* 主图链接失效态：详情主图已清空，叠加「链接已失效」提示，绝不回退显示上一作品 */
+.detail-image-container.detail-image-failed::after {
+  content: "链接已失效";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 8px 16px;
+  border-radius: var(--dy-radius);
+  font-size: 14px;
+  pointer-events: none;
 }
 
 /* 计数徽章与导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，

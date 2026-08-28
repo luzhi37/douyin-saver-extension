@@ -59,18 +59,18 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS`                                                                                                                          |
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `SAVE_LIKES` / `GET_LIKES` / `DELETE_LIKES` / `MOVE_LIKES` / `SAVE_FAVORITES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES`（likes/favorites 经 `DomainHandlers.save` 域驱动落库，闭合原断路缺陷） |
 | 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
-| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准：打开侧边栏触发，background 按模式取 profile/other 后直接落库）                                                                                                                            |
-| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options.js 触发 background 的循环扫描；background 内逐页请求后透传进度。`FETCH_FOLLOWING` 列表收集完成后自动进入校准阶段（`calibrateFollowingStats` 逐用户请求 profile/other，覆盖 awemeCount/followerCount），受运行参数 `calibrateFollowings` 开关门控                              |
-| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options.js 触发 background 的批量取消；tab 模式下逐条派发 `CANCEL_ONE_*` 到 inject；独立模式下由 `handleIndependentCancel` 直接在 background 循环 POST                                                                                                     |
+| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准：打开侧边栏触发，background 按模式取 profile/other 后直接落库） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
+| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options.js 触发 background 的循环扫描；background 内逐页请求后透传进度。`FETCH_FOLLOWING` 列表收集完成后自动进入校准阶段（`scanTasks.calibrateStats` 逐用户请求 profile/other，覆盖 awemeCount/followerCount），受运行参数 `calibrateFollowings` 开关门控                              |
+| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options.js 触发 background 的批量取消；tab 模式下逐条派发 `CANCEL_ONE_*` 到 inject；独立模式下由 `independentTasks.cancel` 直接在 background 循环 POST                                                                                                     |
 | 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环；仅在长操作弹窗关闭时发送（无 `state.activeDialog` 时不发送）                                                                                              |
 | Tab 转发（background→tab） | `FETCH_SINGLE_WORK` / `FETCH_FOLLOWING_PAGE` / `FETCH_USER_PROFILE` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_LIKE` / `CANCEL_ONE_COLLECTION`（tab 模式下经 content→inject；独立模式下由 background 直接 POST） / `FETCH_WORKS_PAGE`（独立模式下由 background 直接处理） / `GET_SECURITY_STATUS` |
 | 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发（`FOLLOWING_PROGRESS` 带 `phase:"calibrate"` 表示关注校准阶段）                                                                                                |
 
 **长任务链路模式**：
-- `sendToTab`：background 生成 `requestId`，向抖音标签页发消息，等待超时 `CONFIG.TIMEOUT.REQUEST`（默认 30s，`GET_SECURITY_STATUS` 5s）。`sendToTab` 内部 `.catch()` 处理 `withDouyinTab()` 极端异常路径。
-- `sendToTabAsync`：`sendToTab` 的 Promise 封装，用于 background 循环 handler 中逐条/逐页请求（`SYNC_WORKS`、`FETCH_FOLLOWING`、`FETCH_FAVORITES`、`FETCH_COLLECTION` 的 background 循环均使用此模式；独立模式下 `CANCEL_LIKE`/`CANCEL_COLLECTION` 由 `handleIndependentCancel` 在 background 内直接循环，不走此路径）。
+- `tabBridge.send`（`sendToTab`）：`TabBridge` 生成 `requestId`，向抖音标签页发消息，等待超时 `CONFIG.TIMEOUT.REQUEST`（默认 30s，`GET_SECURITY_STATUS` 5s）。内部 `.catch()` 处理 `find()` 极端异常路径。
+- `tabBridge.sendAsync`（`sendToTabAsync`）：`send` 的 Promise 封装，用于 background 循环 handler 中逐条/逐页请求（`SYNC_WORKS`、`FETCH_FOLLOWING`、`FETCH_FAVORITES`、`FETCH_COLLECTION` 的 background 循环均使用此模式；独立模式下 `CANCEL_LIKE`/`CANCEL_COLLECTION` 由 `independentTasks.cancel` 在 background 内直接循环，不走此路径）。
 - `requestResponse`：content.js **先 `addEventListener(resultEvent)` 再 `dispatchEvent(requestEvent)`**，消除同步 handler 的 `setTimeout(0)` workaround 需求。
 
 > 同步/扫描/取消的完整链路、时序差异、分页参数见 docs/02–09 各分册（索引见文末「文档索引」）。
@@ -107,6 +107,26 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | `Detail`         | 详情播放器                                                        |
 | `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；ds-btn/resize/btnRetry 事件构造器内自绑定） |
 
+### background.js 类单例（重构后与 options.js 同构）
+
+`background/background.js` 已由「纯函数 + 模块级 let」重构为 3 个对象 + 10 个类，状态全部塌缩为类私有字段；`App.route()` 吸收原 `route` 内全部分支（含 11 个内联处理器）。
+
+| 类 / 对象              | 职责                                                                                                                                                      |
+|------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `runtimeConfig` (对象) | 运行时配置：从 `chrome.storage.local` 读 `runtimeConfig` 叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient` |
+| `utils` (对象)        | 纯函数集：`parseExpire` / `urlExpireAt` / `isLongLivedVideoUrl` / `extractMsTokenFromCookie` / `asyncHandler` / `sendSyncDone`                             |
+| `formatters` (对象)   | `formatWork` / `formatFollowing`                                                                                                                          |
+| `Credentials`         | 客户端凭据/签名：持有 `#abOgus`/`#cachedClockSkew`/`#clockSkewTime`；`ensureABogus`/`getClockSkew`/`buildBaseParams`/`getMsToken`/`refreshWebIdChain`；吸收 `GET_COOKIE_INFO`/`GET_BROWSER_FEATURES`/`GET_CACHE_TIMES`/`REFRESH_MSTOKEN`/`REFRESH_WEBID`/`REFRESH_BROWSER_FEATURES`/`REFRESH_COOKIE`/`CAPTURE_BROWSER_FEATURES` |
+| `IndependentClient`   | 独立模式开关/校准开关（持有 `#mode`/`#loaded`/`#calibrate`）+ 签名直连 `request` + `resolveSelfSecUid`；`request` 经 `credentials` 跨类取签名/时钟/msToken |
+| `DomainStore`         | 域存储封装：`storeName`/`groupsName`/`defaultGroups`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护） |
+| `DomainHandlers`      | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 已域驱动闭合 likes/favorites 断路；`get`/`delete`/`move`/`getOne`/`#saveFollowings`       |
+| `TabBridge`           | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                            |
+| `Groups`              | 分组 tab + 管理（域感知）                                                                                                                                 |
+| `DataTools`           | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                     |
+| `ScanTasks`           | Tab 模式长任务：`calibrateStats`/`calibrateOne`/`fetchFollowing`/`persistScan`/`fetchFavorites`/`fetchCollection`/`runCancelBatch`/`deleteCancelled`/`syncWorks` |
+| `IndependentTasks`    | 独立模式长任务：`fetchFollowing`/`fetchCollection`/`syncWorks`/`fetchWorksPage`/`cancel`                                                                   |
+| `App`                 | 初始化（注册 `onInstalled`/`onStartup`/`onClicked` + `setupDeclarativeNetRequest`）+ 消息路由 `route`（`SET_MODE` 调 `independentClient.setMode`）         |
+
 ## 设计约定与知识点陷阱
 
 > 本节只保留规则红线；机制原理、历史踩坑与实测数据见各条目指向的分册。
@@ -140,7 +160,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 ## config 分组速查
 
-`options/options.js` 顶层 `config` 常量（35 个键。`background.js` 另有 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `TOKEN_TTL` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` 等）：
+`options/options.js` 顶层 `config` 常量（35 个键）。`background.js` 另有顶层 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` / `WEB_SIGN_SALT` 等，以及重构后的 `runtimeConfig` 对象（含 `KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`，从 `chrome.storage.local` 读取并叠加进 `CONFIG`）；`background.js` 的模块级可变状态（原 `abOgus`/`cachedClockSkew`/clockSkewTime/独立模式三开关）已全部塌缩为 `Credentials`/`IndependentClient` 的类私有字段：
 
 | 分组       | 键                                                                                                                            |
 |------------|-------------------------------------------------------------------------------------------------------------------------------|

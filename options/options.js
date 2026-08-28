@@ -2573,7 +2573,12 @@ class Sync {
     if (state.domain !== "followings") return null;
     this.#running = true;
 
-    const secUid = await services.findSecUid();
+    // 独立模式不依赖打开的抖音标签页：此处显式传 "self"，交由 background 经
+    // storage.secUid → resolveSelfSecUid 解析登录账号自身的 sec_uid。
+    // 否则 findSecUid 会优先返回任意打开的 /user/* 标签页 sec_uid（可能是他人账号），
+    // 导致同步「我的关注」时请求了他人列表而命中 2096「列表不可见」。
+    const { independentMode } = await chrome.storage.local.get("independentMode");
+    const secUid = independentMode ? "self" : await services.findSecUid();
     if (!secUid) {
       this.#running = false;
       return "NO_SEC_UID";
@@ -2591,6 +2596,7 @@ class Sync {
       if (!res.ok) {
         this.#running = false;
         if (res.error && res.error.includes("NO_SIGNATURE")) return "NO_SIGNATURE";
+        if (res.error === "FOLLOWING_LIST_PRIVATE") return "FOLLOWING_LIST_PRIVATE";
         throw new Error(res.error || "FETCH_FAILED");
       }
       this.#requestId = res.requestId || null;
@@ -2640,6 +2646,11 @@ class Sync {
     }
 
     if (result === "CANCELLED") return;
+
+    if (result === "FOLLOWING_LIST_PRIVATE") {
+      if (this.#statusEl) this.#statusEl.textContent = "关注列表不可见（账号隐私设置）";
+      return;
+    }
 
     if (result && result.error) {
       if (this.#statusEl) this.#statusEl.textContent = result.error;
@@ -3491,13 +3502,15 @@ class WorksGrid extends VirtualGrid {
       this.#stageThumb(thumb);
       if (coverUrl) this.#enqueueCover(thumb, coverUrl);
 
-      this.#videoStates.set(video, {
+      const st = {
         progress: controls.querySelector(".video-progress"),
         timeSpan: controls.querySelector(".video-time"),
         muteBtn: controls.querySelector(".video-mute-btn"),
         playBtn: controls.querySelector(".video-play-btn"),
         controls: controls,
-      });
+      };
+      this.#videoStates.set(video, st);
+      this.#bindVideoMediaEvents(video, st);
     } else if (work.type === "note") {
       const imgUrl = utils.pickHttpsUrl(work.images?.[0] || work.cover || "");
       this.#stageThumb(thumb);
@@ -3698,34 +3711,8 @@ class WorksGrid extends VirtualGrid {
       const video = card.querySelector(".work-video-player");
       if (video) this.#stopPreview(video);
     });
-    this.#container.addEventListener("timeupdate", (e) => {
-      const video = e.target;
-      if (!video.matches || !video.matches(".work-video-player")) return;
-      if (video._lastProgressUpdate && Date.now() - video._lastProgressUpdate < 250) return;
-      video._lastProgressUpdate = Date.now();
-      if (!this.#videoStates.has(video)) return;
-      const st = this.#videoStates.get(video);
-      detail.updateVideoProgress(video, st.progress, st.timeSpan, "0.3");
-    });
-    this.#container.addEventListener("loadedmetadata", (e) => {
-      const video = e.target;
-      if (!video.matches || !video.matches(".work-video-player")) return;
-      if (!this.#videoStates.has(video)) return;
-      const st = this.#videoStates.get(video);
-      st.timeSpan.textContent = `0:00 / ${detail.formatTime(video.duration)}`;
-    });
-    this.#container.addEventListener("error", (e) => {
-      const video = e.target;
-      if (!video.matches || !video.matches(".work-video-player")) return;
-      if (!this.#videoStates.has(video)) return;
-      const st = this.#videoStates.get(video);
-      detail.handleVideoError(video, {
-        onMax: () => { st.timeSpan.textContent = "⚠ 链接失效"; },
-        onRetry: (retries, delay) => {
-          st.timeSpan.textContent = delay > 0 ? `⏳ 重试(${retries + 1})…` : "⏳ 重试…";
-        },
-      });
-    });
+    // timeupdate/loadedmetadata/error/play/pause 是媒体事件，不冒泡，无法委托到容器，
+    // 已在 fillCard 内经 #bindVideoMediaEvents 直绑到 video 元素（见该方法注释）。
     this.#container.addEventListener("input", (e) => {
       const slider = e.target;
       if (!slider.matches || !slider.matches(".video-progress")) return;
@@ -3737,18 +3724,34 @@ class WorksGrid extends VirtualGrid {
         if (video && video.duration) video.currentTime = (slider.value / 100) * video.duration;
       });
     });
-    this.#container.addEventListener("play", (e) => {
-      const video = e.target;
-      if (!video.matches || !video.matches(".work-video-player")) return;
-      if (!this.#videoStates.has(video)) return;
-      clearTimeout(video._retryTimer);
-      this.#videoStates.get(video).playBtn.innerHTML = config.icons.pause;
+  }
+
+  // 媒体事件（timeupdate/loadedmetadata/error/play/pause）不冒泡，无法走容器级委托，
+  // 必须在 video 元素上直绑。fillCard 每次经 media.replaceChildren 重建 video 元素，
+  // 故随卡片填充绑定一次即可；旧元素脱离 DOM 后被 GC，不会重复绑定或泄漏。
+  #bindVideoMediaEvents(video, st) {
+    video.addEventListener("timeupdate", () => {
+      if (video._lastProgressUpdate && Date.now() - video._lastProgressUpdate < 250) return;
+      video._lastProgressUpdate = Date.now();
+      detail.updateVideoProgress(video, st.progress, st.timeSpan, "0.3");
     });
-    this.#container.addEventListener("pause", (e) => {
-      const video = e.target;
-      if (!video.matches || !video.matches(".work-video-player")) return;
-      if (!this.#videoStates.has(video)) return;
-      this.#videoStates.get(video).playBtn.innerHTML = config.icons.play;
+    video.addEventListener("loadedmetadata", () => {
+      st.timeSpan.textContent = `0:00 / ${detail.formatTime(video.duration)}`;
+    });
+    video.addEventListener("error", () => {
+      detail.handleVideoError(video, {
+        onMax: () => { st.timeSpan.textContent = "⚠ 链接失效"; },
+        onRetry: (retries, delay) => {
+          st.timeSpan.textContent = delay > 0 ? `⏳ 重试(${retries + 1})…` : "⏳ 重试…";
+        },
+      });
+    });
+    video.addEventListener("play", () => {
+      clearTimeout(video._retryTimer);
+      st.playBtn.innerHTML = config.icons.pause;
+    });
+    video.addEventListener("pause", () => {
+      st.playBtn.innerHTML = config.icons.play;
     });
   }
 
@@ -3830,7 +3833,6 @@ class Detail {
   #mediaBreakUntil = 0;
   #imgProbeToken = 0;
   #bgProbeToken = 0;
-  #lastGoodBg = null;
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
@@ -4070,11 +4072,14 @@ class Detail {
   }
 
   // 背景虚化的健壮提交：候选 URL 逐个探针，成功才写入 --bg-url（带引号转义）；
-  // 全部失效时回退到上一张成功背景（#lastGoodBg），首次打开无历史则落到深色底。
+  // 全部失效或本件无可用封面时降级为统一深色底（--bg-url:none），绝不回退到上一件作品的模糊封面。
   // 直接给 CSS 背景塞失效链接会静默变成纯黑——note 类型"虚化丢失"的根源即此。
   #applyDetailBg(candidates) {
     const urls = [...new Set(candidates.map((u) => utils.pickHttpsUrl(u || "")).filter(Boolean))];
-    if (!urls.length) return;
+    if (!urls.length) {
+      dom.detailOverlay.style.setProperty("--bg-url", "none");
+      return;
+    }
     const token = ++this.#bgProbeToken;
     const commit = (u) => {
       const escaped = u.replace(/["\\]/g, "\\$&");
@@ -4086,14 +4091,14 @@ class Detail {
     const tryNext = (i) => {
       if (token !== this.#bgProbeToken) return;
       if (i >= urls.length) {
-        if (this.#lastGoodBg) commit(this.#lastGoodBg);
+        // 全部失效：统一深色底，不沿用上一件成功封面
+        dom.detailOverlay.style.setProperty("--bg-url", "none");
         return;
       }
       const probe = new Image();
       probe.onload = () => {
         if (token !== this.#bgProbeToken) return;
         this.markMediaOk();
-        this.#lastGoodBg = urls[i];
         commit(urls[i]);
       };
       probe.onerror = () => {
@@ -4162,6 +4167,9 @@ class Detail {
       const work = this.getCurrentWork();
       if (!work) return this.closeDetail();
 
+      // 切作品先复位背景为统一深色底，避免探针完成前残留上一件作品的模糊封面
+      dom.detailOverlay.style.setProperty("--bg-url", "none");
+
       const isVideo = work.type === "video" && utils.getVideoUrl(work);
       if (isVideo) {
         this.resetAudio();
@@ -4171,7 +4179,7 @@ class Detail {
 
       const bgUrl = work.cover || work.images?.[0] || "";
       if (bgUrl) {
-        // 候选链探测：封面优先、图集各帧兜底；全部失效时保留上一张成功背景（见 #applyDetailBg）
+        // 候选链探测：封面优先、图集各帧兜底；全部失效时降级为统一深色底（见 #applyDetailBg）
         this.#applyDetailBg([work.cover, ...(work.images || [])]);
       }
 
@@ -4227,6 +4235,8 @@ class Detail {
       } else if (work.cover) {
         dom.detailPlayBtn.style.display = "none";
         dom.detailMuteBtn.style.display = "none";
+        // 切到新作品先清空上个作品的图，避免链接失效时残留上一作品内容
+        this.#clearDetailImage();
         // 探针先行：失败不落可见节点；onReady 在探针落定后触发，不再先于加载结束过渡
         const token = ++this.#imgProbeToken;
         const probe = new Image();
@@ -4239,10 +4249,13 @@ class Detail {
         probe.onerror = () => {
           if (token !== this.#imgProbeToken) return;
           this.markMediaFail();
+          // 链接失效：保持清空并显示失效态，绝不回退到上一个作品
+          this.#showImageFailed();
           onReady();
         };
         probe.src = work.cover;
       } else {
+        this.#clearDetailImage();
         onReady();
       }
 
@@ -4340,10 +4353,13 @@ class Detail {
       readyFn();
     };
     img.alt = work.desc || "";
+    // 切到新作品先清空上个作品的图，避免链接失效时残留上一作品内容
+    this.#clearDetailImage();
     // 探针先行：失败 URL 不落可见节点（裂图无载体）；成功后经缓存落 src，load 时结束过渡
     const firstUrl = work.images[0] || work.cover || "";
     const token = ++this.#imgProbeToken;
     if (!firstUrl) {
+      this.#showImageFailed();
       fireReady();
     } else {
       const probe = new Image();
@@ -4357,6 +4373,8 @@ class Detail {
       probe.onerror = () => {
         if (token !== this.#imgProbeToken) return;
         this.markMediaFail();
+        // 链接失效：保持清空并显示失效态，绝不回退到上一个作品
+        this.#showImageFailed();
         fireReady();
       };
       probe.src = firstUrl;
@@ -4610,6 +4628,20 @@ class Detail {
   resetMediaElements() {
     this.resetVideo();
     this.resetAudio();
+  }
+
+  // 切作品时清空详情主图，杜绝链接失效时残留上一作品的内容
+  #clearDetailImage() {
+    dom.detailImage.removeAttribute("src");
+    this.#hideImageFailed();
+  }
+
+  #showImageFailed() {
+    dom.detailImage.parentElement.classList.add("detail-image-failed");
+  }
+
+  #hideImageFailed() {
+    dom.detailImage.parentElement.classList.remove("detail-image-failed");
   }
 
   toggleVideoPlay(video, playBtn) {

@@ -141,7 +141,7 @@ for (const item of items) {
 | `CONFIG.GROUPS.ID_PREFIX` | `"custom_"` | ADD_GROUP 生成的自定义分组 id 前缀 |
 | `config.STORAGE_MAX_BYTES`（options.js） | 10MB | 导入体积门禁提示（UI 侧校验） |
 | `config.TRASH_GROUP_NAME`（options.js） | `'稍后删除'` | 丢失关注手动移入的目标分组名 |
-| 默认分组定义 | `DEFAULT_WORKS_GROUPS` / `DEFAULT_FOLLOWINGS_GROUPS` | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源 |
+| 默认分组定义 | `CONFIG.DEFAULT_GROUPS`（四域共用一份） | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源；消费处 `.map` 拷贝避免污染共享引用 |
 
 ## 相关文档
 
