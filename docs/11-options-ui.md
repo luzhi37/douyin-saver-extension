@@ -1,6 +1,6 @@
-# 11 · 管理页渲染与交互（options.js）
+# 11 · 管理页渲染与交互（options/ 模块化）
 
-> 职责边界：options.js 的渲染与交互子系统机制——VirtualGrid 双向虚拟化、Sidebar 升降级虚拟化、媒体加载统一体系与全局熔断、悬停预览事件委托、批量勾选 DOM 约定、弹窗锁定与取消门控、CSS 协同约定。数据流与消息协议见 [01](./01-project-architecture.md)；写入语义见 [10](./10-storage-write-and-import.md)；抖音页面注入侧见 [09](./09-inject-tab-mode.md)。
+> 职责边界：options/ 各模块的渲染与交互子系统机制——VirtualGrid 双向虚拟化、Sidebar 升降级虚拟化、媒体加载统一体系与全局熔断、悬停预览事件委托、批量勾选 DOM 约定、弹窗锁定与取消门控、CSS 协同约定。数据流与消息协议见 [01](./01-project-architecture.md)；写入语义见 [10](./10-storage-write-and-import.md)；抖音页面注入侧见 [09](./09-inject-tab-mode.md)。
 
 ## 概述
 
@@ -245,7 +245,7 @@ probe.onerror = () => {
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | options.js 代码布局约束、进度消息载荷表、CANCEL_ACTIVE_TASK 双路径 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | options/ 代码布局约束、进度消息载荷表、CANCEL_ACTIVE_TASK 双路径 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_PROGRESS/SYNC_DONE 的产生侧（本册的消费侧过滤） |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | FOLLOWING_PROGRESS 时序（#followingsRequestId 过滤的上游） |
 | 07 | [07-independent-fetch-user-works.md](./07-independent-fetch-user-works.md) | 侧边栏滚动加载的数据来源 |

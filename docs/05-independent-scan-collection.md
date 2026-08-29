@@ -111,7 +111,7 @@ function getWebId() / refreshWebIdChain()           // webid 三级获取 / 强�
 // crypto.js
 export function md5Hex(text) -> string              // 标准 MD5 → 32 位小写 hex（SW 无 node crypto，纯 JS 实现）
 
-// options.js —— 下游消费
+// options/ —— 下游消费
 Favorites.openScanDialog(cfg)                        // cfg 见 01 文档扫描入口；needSecUid=false
 #renderGrid / 「添加」按钮 → SAVE_WORKS { works: 未关注 targets }
 ```

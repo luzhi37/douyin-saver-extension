@@ -152,7 +152,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | 配置 | 默认 | 作用 |
 |------|------|------|
 | `CONFIG.PAGE.AUTHOR` | 20 | 每页条数 |
-| `config.SIDEBAR_SCROLL_THRESHOLD`（options.js） | 100px | 触发加载的距底阈值 |
+| `config.SIDEBAR_SCROLL_THRESHOLD`（options/core.js） | 100px | 触发加载的距底阈值 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 独立模式单请求超时；Tab模式 msg.timeout 同源 |
 | `inject CONFIG.TIMEOUT.FETCH_PAGE` | 15000ms | Tab模式 inject 侧 fetch 超时 |
 | content BRIDGE FETCH_WORKS_PAGE timeout | 60000ms 固定 | 事件桥兜底超时 |

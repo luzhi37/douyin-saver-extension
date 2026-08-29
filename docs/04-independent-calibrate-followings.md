@@ -78,7 +78,7 @@ async function independentRequest(CONFIG.API.PROFILE_OTHER, params)   // GET，�
 ```
 
 ```js
-// options.js —— 侧边栏触发点（Sidebar 私有方法）
+// options/components/sidebar.js —— 侧边栏触发点（Sidebar 私有方法）
 async #calibrateFollowing(following)
 // bgMsg CALIBRATE_FOLLOWING → 成功后同步 state 与 [data-uid] 卡片的统计文本
 ```
