@@ -1,6 +1,6 @@
 # 08 · DNR 规则（Declarative Net Request）
 
-> 职责边界：扩展注册的全部动态 DNR 规则——匹配条件、头改写动作、优先级关系，以及每条规则存在的网络层原因。规则定义于 `background/background.js` 的 `CONFIG.DNR_RULES`，是独立模式各端点可用性的共同前提（02–07 各文档不再重复）。
+> 职责边界：扩展注册的全部动态 DNR 规则——匹配条件、头改写动作、优先级关系，以及每条规则存在的网络层原因。规则定义于 `background/core.js` 的 `CONFIG.DNR_RULES`，是独立模式各端点可用性的共同前提（02–07 各文档不再重复）。
 
 ## 概述
 
@@ -34,7 +34,7 @@ chrome.runtime.onInstalled / onStartup
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/main.js
 async function setupDeclarativeNetRequest()   // 幂等全量对账注册；无入参出参
 // chrome.runtime.onInstalled.addListener(… setupDeclarativeNetRequest + 默认分组初始化 + reloadRuntimeConfig …)
 // chrome.runtime.onStartup.addListener(setupDeclarativeNetRequest)
@@ -91,10 +91,10 @@ const resp = await fetch(CONFIG.MSSDK.API, {
 
 | 配置 | 位置 | 作用 |
 |------|------|------|
-| `CONFIG.DNR_RULES` | background.js | 7 条规则的唯一事实来源；修改后重载扩展生效 |
+| `CONFIG.DNR_RULES` | core.js | 7 条规则的唯一事实来源；修改后重载扩展生效 |
 | manifest `permissions` | manifest.json | 必含 `declarativeNetRequest` |
 | manifest `host_permissions` | manifest.json | `*://*.douyin.com/*` / `douyinvod.com` / `douyinpic.com` / `mssdk.bytedance.com` / `mcs.zijieapi.com` / `ttwid.bytedance.com`（后者当前无代码使用，属遗留待清理） |
-| `CONFIG.DOUYIN_URL_PATTERN` / `DOUYIN_EXCLUDE_DOMAIN` | background.js | Tab 模式选 tab 用（非 DNR），与 excludedInitiatorDomains 语义互补：一个管"发到哪"，一个管"谁发起的不改" |
+| `CONFIG.DOUYIN_URL_PATTERN` / `DOUYIN_EXCLUDE_DOMAIN` | core.js | Tab 模式选 tab 用（非 DNR），与 excludedInitiatorDomains 语义互补：一个管"发到哪"，一个管"谁发起的不改" |
 
 ## 相关文档
 

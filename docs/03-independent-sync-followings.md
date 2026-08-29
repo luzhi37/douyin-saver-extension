@@ -61,7 +61,7 @@ uid cookie (douyin.com jar) → savedCookie 正则提取 uid
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/tasks/independent-tasks.js
 async function handleIndependentFetchFollowing(secUid, sendResponse)
 // 出参：{ ok:true, requestId, followings: Following[], total } | { ok:false, error }
 // 进度：FOLLOWING_PROGRESS（列表阶段无 phase 字段）

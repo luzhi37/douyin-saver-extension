@@ -63,7 +63,7 @@ options 扫描弹窗「取消收藏」
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/tasks/independent-tasks.js
 async function handleIndependentCancel(awemeIds, kind, sendResponse)
 // awemeIds: string[]；kind: "collection"
 // 出参（ack）：{ ok:true, requestId, total }；后续结果仅经 CANCEL_PROGRESS / CANCEL_DONE 消息

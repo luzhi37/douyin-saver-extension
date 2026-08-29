@@ -62,7 +62,7 @@ options: 监听 SYNC_PROGRESS / SYNC_DONE（按 requestId 匹配）更新弹窗�
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/tasks/independent-tasks.js
 async function handleIndependentSyncWorks(awemeIds, sendResponse)
 // 入参：awemeIds: string[]（非空）；立即 sendResponse({ok,requestId,total}) 后不再使用 sendResponse
 // 出参（ack）：{ ok: true, requestId: string, total: number }

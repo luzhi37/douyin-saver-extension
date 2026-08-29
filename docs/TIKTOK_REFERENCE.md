@@ -32,15 +32,15 @@ ChaCha20 + MD5 + 自定义 Base64（无 padding）。**本扩展已移除**（20
 | 7 | webID     | 服务端下发                   | POST `mcs.zijieapi.com/webid`                                         |
 | 8 | device_id | 服务端下发                   | 未实现（本扩展未使用）                                                |
 
-> **mssdk 静态载荷（`background/crypto.js` 的 `MSSDK_STR_DATA`）公开性**：blob 取自参考项目 `src/encrypt/msToken.py` 的 `MsToken.DATA`，同段内容已在 GitHub 公开，且不含个人数据/凭据（身份由请求者会话决定）——随仓库公开不构成新增泄露。若服务端日后作废该固定值，仅独立模式严格端点退回随机兜底 msToken（403）；重新抓包替换该常量即恢复。
+> **mssdk 静态载荷（`background/identity/crypto.js` 的 `MSSDK_STR_DATA`）公开性**：blob 取自参考项目 `src/encrypt/msToken.py` 的 `MsToken.DATA`，同段内容已在 GitHub 公开，且不含个人数据/凭据（身份由请求者会话决定）——随仓库公开不构成新增泄露。若服务端日后作废该固定值，仅独立模式严格端点退回随机兜底 msToken（403）；重新抓包替换该常量即恢复。
 
 ## 三、全景对照表
 
 | #   | 模块                         | 本扩展实现                |
 |-----|------------------------------|---------------------------|
-| 1   | ABogus                        | ✅ `crypto.js` 实现        |
+| 1   | ABogus                        | ✅ `identity/crypto.js` 实现 |
 | 2–3 | XBogus/XGnarly                | ❌ 已移除（2026-08-04）     |
-| 4–7 | msToken/ttwid/verifyFp/webID  | ✅ msToken（含 mssdk 兑换）/webID 于 `background.js`；ttwid ❌ 未实现（仅 manifest 遗留 host 权限）；verifyFp ❌ 已移除（2026-08-04） |
+| 4–7 | msToken/ttwid/verifyFp/webID  | ✅ msToken（含 mssdk 兑换）/webID 于 `background/identity/credentials.js`；ttwid ❌ 未实现（仅 manifest 遗留 host 权限）；verifyFp ❌ 已移除（2026-08-04） |
 | 8   | device_id                    | ❌ 未实现（本扩展不需要） |
 
 ## 四、Douyin API 端点

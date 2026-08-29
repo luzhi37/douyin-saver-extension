@@ -64,7 +64,7 @@ options: 渲染 favGrid → 标题 (未关注N/总数) → 「添加 N」/「取
 ① savedMsToken 缓存（无过期逻辑）
 ② douyin.com cookie jar 的 msToken（注：页面 SDK 走 mssdk 兑换后签发域在 bytedance.com，
    jar 里没有 msToken 属正常现象）
-③ mssdk 兑换：先删 bytedance.com 旧 msToken cookie → POST 静态载荷（crypto.js 的
+③ mssdk 兑换：先删 bytedance.com 旧 msToken cookie → POST 静态载荷（identity/crypto.js 的
    MSSDK_STR_DATA）到 mssdk.bytedance.com/web/common（DNR rule 7 补 Origin/Referer）→
    SW 读不到 Set-Cookie，
    从 bytedance.com jar 读回新签发的真 token（参考 TikTokDownloader src/encrypt/msToken.py）
@@ -95,7 +95,7 @@ SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"                // CONFIG.WEB_SIGN_SALT
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/tasks/independent-tasks.js
 async function handleIndependentFetchCollection(sendResponse)
 // 出参：{ ok:true, requestId, works: Work[], timedOut: boolean }
 //     | { ok:false, error }
@@ -108,8 +108,8 @@ function getWebId() / refreshWebIdChain()           // webid 三级获取 / 强�
 ```
 
 ```js
-// crypto.js
-export function md5Hex(text) -> string              // 标准 MD5 → 32 位小写 hex（SW 无 node crypto，纯 JS 实现）
+// identity/crypto.js
+export class Crypto { ... static md5Hex(...) -> string }   // 标准 MD5 → 32 位小写 hex（SW 无 node crypto，纯 JS 实现）
 
 // options/ —— 下游消费
 Favorites.openScanDialog(cfg)                        // cfg 见 01 文档扫描入口；needSecUid=false

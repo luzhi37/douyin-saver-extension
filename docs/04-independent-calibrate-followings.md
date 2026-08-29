@@ -63,7 +63,7 @@ options Sidebar.openSidebar(following)
 ## 接口 / 方法签名
 
 ```js
-// background.js —— 批量校准（纯迭代器，不落库；写回发生在调用方的整体落库路径上）
+// background/tasks/scan-tasks.js —— 批量校准（纯迭代器，不落库；写回发生在调用方的整体落库路径上）
 async function calibrateFollowingStats(list, fetchStats, isCancelled, requestId)
 // list: Following[]（原地改写 awemeCount/followerCount）
 // fetchStats: (secUid) => Promise<{ awemeCount, followerCount }>
