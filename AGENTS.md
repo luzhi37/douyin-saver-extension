@@ -36,7 +36,7 @@ content.js (隔离世界)       — 桥接, requestResponse 模式
     ↓ chrome.runtime.sendMessage
 background.js (Service Worker) — 消息路由, 存储操作, sendToTab 转发
     ↓ chrome.runtime.sendMessage
-options.js (管理 UI)        — store 响应式, 弹窗/侧边栏/网格/导出导入
+options/ (管理 UI)          — ES 模块化：core.js 共享基础（7 全局对象）+ 类模块（grids/components/data/sync）+ main.js 组合根（事件绑定/订阅/init）
 ```
 
 ## 双域存储模型
@@ -62,8 +62,8 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `SAVE_LIKES` / `GET_LIKES` / `DELETE_LIKES` / `MOVE_LIKES` / `SAVE_FAVORITES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES`（likes/favorites 经 `DomainHandlers.save` 域驱动落库，闭合原断路缺陷） |
 | 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
 | 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准：打开侧边栏触发，background 按模式取 profile/other 后直接落库） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
-| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options.js 触发 background 的循环扫描；background 内逐页请求后透传进度。`FETCH_FOLLOWING` 列表收集完成后自动进入校准阶段（`scanTasks.calibrateStats` 逐用户请求 profile/other，覆盖 awemeCount/followerCount），受运行参数 `calibrateFollowings` 开关门控                              |
-| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options.js 触发 background 的批量取消；tab 模式下逐条派发 `CANCEL_ONE_*` 到 inject；独立模式下由 `independentTasks.cancel` 直接在 background 循环 POST                                                                                                     |
+| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options/（main.js 触发）background 的循环扫描；background 内逐页请求后透传进度。`FETCH_FOLLOWING` 列表收集完成后自动进入校准阶段（`scanTasks.calibrateStats` 逐用户请求 profile/other，覆盖 awemeCount/followerCount），受运行参数 `calibrateFollowings` 开关门控                              |
+| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options/ 触发 background 的批量取消；tab 模式下逐条派发 `CANCEL_ONE_*` 到 inject；独立模式下由 `independentTasks.cancel` 直接在 background 循环 POST                                                                                                     |
 | 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环；仅在长操作弹窗关闭时发送（无 `state.activeDialog` 时不发送）                                                                                              |
 | Tab 转发（background→tab） | `FETCH_SINGLE_WORK` / `FETCH_FOLLOWING_PAGE` / `FETCH_USER_PROFILE` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_LIKE` / `CANCEL_ONE_COLLECTION`（tab 模式下经 content→inject；独立模式下由 background 直接 POST） / `FETCH_WORKS_PAGE`（独立模式下由 background 直接处理） / `GET_SECURITY_STATUS` |
 | 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发（`FOLLOWING_PROGRESS` 带 `phase:"calibrate"` 表示关注校准阶段）                                                                                                |
@@ -107,7 +107,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | `Detail`         | 详情播放器                                                        |
 | `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；ds-btn/resize/btnRetry 事件构造器内自绑定） |
 
-### background.js 类单例（重构后与 options.js 同构）
+### background.js 类单例（重构后与 options 侧类模块同构）
 
 `background/background.js` 已由「纯函数 + 模块级 let」重构为 3 个对象 + 10 个类，状态全部塌缩为类私有字段；`App.route()` 吸收原 `route` 内全部分支（含 11 个内联处理器）。
 
@@ -131,7 +131,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 > 本节只保留规则红线；机制原理、历史踩坑与实测数据见各条目指向的分册。
 
-- **所有变量定义在 options.js 顶层** — `config` / `dom` / `state` / `store` / `utils` / `services` 在文件顶部定义，所有 class 直接引用这些全局变量。
+- **所有共享全局变量定义在 `options/core.js` 顶部** — `config` / `dom` / `state` / `store` / `utils` / `runtimeConfig` / `services` 在 core.js 顶部定义并 export，其余模块经 ES import 引用；各模块文件自身仍遵守「class 定义后紧跟实例化」（类间循环 import 靠 live binding 在调用时安全消解，拆分方案见 [plans/options-module-split-plan.md](./plans/options-module-split-plan.md)）。
 - **私有方法使用 `#` 语法** — 类外部不可访问。
 - **class field 箭头仅用于 add/remove 对称的事件回调** — 如 `Sidebar.#onResizeDown/Move/Up`、`Detail.#noteKeyHandler`。
 - **自引用用 `this.xxx()` 而非单例名** — class 内部调用自身方法必须用 `this`，不要用模块级单例变量。
@@ -160,7 +160,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 ## config 分组速查
 
-`options/options.js` 顶层 `config` 常量（35 个键）。`background.js` 另有顶层 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` / `WEB_SIGN_SALT` 等，以及重构后的 `runtimeConfig` 对象（含 `KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`，从 `chrome.storage.local` 读取并叠加进 `CONFIG`）；`background.js` 的模块级可变状态（原 `abOgus`/`cachedClockSkew`/clockSkewTime/独立模式三开关）已全部塌缩为 `Credentials`/`IndependentClient` 的类私有字段：
+`options/core.js` 顶层 `config` 常量（35 个键）。`background.js` 另有顶层 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` / `WEB_SIGN_SALT` 等，以及重构后的 `runtimeConfig` 对象（含 `KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`，从 `chrome.storage.local` 读取并叠加进 `CONFIG`）；`background.js` 的模块级可变状态（原 `abOgus`/`cachedClockSkew`/clockSkewTime/独立模式三开关）已全部塌缩为 `Credentials`/`IndependentClient` 的类私有字段：
 
 | 分组       | 键                                                                                                                            |
 |------------|-------------------------------------------------------------------------------------------------------------------------------|

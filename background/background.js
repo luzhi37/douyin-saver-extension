@@ -293,7 +293,7 @@ const DOMAIN_CONFIG = {
 };
 
 // ---------- runtimeConfig ----------
-// 对标 options.js 的同名对象：从 chrome.storage.local 读取运行时配置并叠加进 CONFIG。
+// 对标 options/core.js 的同名对象：从 chrome.storage.local 读取运行时配置并叠加进 CONFIG。
 const runtimeConfig = {
   KEY: "runtimeConfig",
   // 默认运行配置：直接由 CONFIG 的 TIMEOUT/DELAY/SYNC 派生（单一事实来源），仅 calibrateFollowings 为运行时独占开关。
@@ -364,7 +364,7 @@ const runtimeConfig = {
 };
 
 // ---------- utils ----------
-// 纯函数集（无状态，对标 options.js 的 utils）
+// 纯函数集（无状态，对标 options/core.js 的 utils）
 const utils = {
   parseExpire(value) {
     const n = Number(value);

@@ -12,7 +12,7 @@ Chrome Manifest V3 extension for managing Douyin (抖音) user data — works (v
 
 ```powershell
 # Syntax check all JS files
-node --check background/background.js background/crypto.js content/content.js content/inject.js options/options.js
+node --check background/background.js background/crypto.js content/content.js content/inject.js options/main.js options/core.js options/grids/virtual-grid.js options/grids/works-grid.js options/grids/followings-grid.js options/components/dialog.js options/components/search-bar.js options/components/sidebar.js options/components/detail.js options/components/settings.js options/components/app-shell.js options/data/groups.js options/data/batch.js options/data/import-export.js options/sync/sync.js options/sync/domain-scan-sync.js
 ```
 
 ## Where to Look

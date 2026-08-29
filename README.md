@@ -32,7 +32,7 @@ content.js (隔离世界)       — 桥接层，requestResponse 模式
     ↓ chrome.runtime.sendMessage
 background.js (Service Worker) — 消息路由、IndexedDB 操作、分页循环
     ↓ chrome.runtime.sendMessage
-options.js (管理 UI)        — 响应式 store、虚拟网格、播放器
+options/ (管理 UI)        — 响应式 store、虚拟网格、播放器（ES 模块化：core.js + grids/components/data/sync + main.js）
 ```
 
 两种运行模式：
@@ -68,8 +68,8 @@ options.js (管理 UI)        — 响应式 store、虚拟网格、播放器
 ## 验证
 
 ```powershell
-# 语法检查
-node --check background/background.js content/content.js content/inject.js options/options.js
+# 语法检查（options 为 ES 模块，node --check 自动识别 ESM）
+node --check background/background.js background/crypto.js content/content.js content/inject.js options/main.js options/core.js options/grids/virtual-grid.js options/grids/works-grid.js options/grids/followings-grid.js options/components/dialog.js options/components/search-bar.js options/components/sidebar.js options/components/detail.js options/components/settings.js options/components/app-shell.js options/data/groups.js options/data/batch.js options/data/import-export.js options/sync/sync.js options/sync/domain-scan-sync.js
 ```
 
 实机测试：`chrome://extensions` → 重新加载 → 打开抖音页面验证。

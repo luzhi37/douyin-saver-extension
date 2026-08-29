@@ -25,7 +25,7 @@ content.js (隔离世界)         — 主世界脚本加载器、requestResponse
 background/background.js      — Service Worker：消息路由（App.route）、IndexedDB 存储（DomainStore）、循环长任务；
   (+ storage.js / crypto.js)                      类单例架构（Credentials / IndependentClient / DomainStore / DomainHandlers / TabBridge / Groups / DataTools / ScanTasks / IndependentTasks / App + runtimeConfig/utils/formatters 对象）；独立模式下直接 fetch API
     ↑↓ chrome.runtime.sendMessage
-options/options.js            — 管理 UI：store 响应式渲染、网格/弹窗/侧边栏、扫描触发入口
+options/ (main.js 组合根)      — 管理 UI（ES 模块化）：core.js 共享基础（config/dom/state/store/utils/runtimeConfig/services）+ grids/components/data/sync 类模块 + main.js 事件绑定/订阅/init
 ```
 
 manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douyin.com/*` 且排除 `creator.douyin.com`，`run_at: document_start`；`inject.js` 经 `web_accessible_resources` 以 `<script src>` 注入主世界；权限含 `storage / declarativeNetRequest / tabs / scripting / unlimitedStorage / cookies`。
@@ -184,9 +184,9 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 1. **从上到下、先声明后使用**。config/const 必须在文件最顶部；执行语句不得出现在声明之前。
 2. **class 定义与实例化成对出现**——类定义后紧跟 `const name = new Class()`，不允许先集中列出所有 class 再集中实例化。
 3. 大段分隔用边框注释 `// ---------- 标签 ----------`。
-4. options.js 顶层集中定义 `config / dom / state / store / utils / services`，所有 class 直接引用这些模块级变量；类内部自引用必须用 `this.xxx()`，不得用单例变量名。
+4. options/core.js 顶层集中定义并 export `config / dom / state / store / utils / runtimeConfig / services`，所有类模块经 ES import 引用这些模块级变量；类内部自引用必须用 `this.xxx()`，不得用单例变量名。
 5. 私有方法使用 `#` 语法；**class field 箭头函数仅用于 add/remove 对称的事件回调**（如 `Detail.#noteKeyHandler`）。
-6. options.js 启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建。
+6. options/main.js 组合根启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建。
 
 ## 双域存储模型
 
@@ -283,7 +283,7 @@ DOMAIN_CONFIG = {
 
 键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。
 
-### options.js 顶层 `config`（UI 侧，35 键）
+### options/core.js 顶层 `config`（UI 侧，35 键）
 
 按分组速查：视频重试（`VIDEO_RETRY_DELAYS:[200,400,600]` 等）、媒体熔断（`MEDIA_FAIL_WINDOW:5000` / `MEDIA_FAIL_MAX:10` / `MEDIA_BREAK_COOLDOWN:15000`）、超时（`FETCH_RETRY_DELAY/SYNC_TIMEOUT/VIDEO_FALLBACK_TIMEOUT`）、详情页（`DETAIL_TITLE_MAX_LEN:40` / `TOAST_DURATION:2000` / `DOWNLOAD_MAX_RETRY:1`）、UI 延迟（`HOVER_PREVIEW_DELAY:200` / `BLOB_REVOKE_DELAY:10000` / `NOTE_AUTO_PLAY_INTERVAL:3000`）、侧边栏（`SIDEBAR_SNAP_POINTS:[650,0]` 等 5 键）、网格项尺寸（`CARD_SIZE_FALLBACK:261` 等 3 键）、分块渲染（`RENDER_CHUNK_SIZE:50` / `OBSERVER_ROOT_MARGIN:'200px'` / `OBSERVE_CHUNK_SIZE:48` / `FILL_FRAME_BUDGET_MS:8` / `UNLOAD_ROOT_MARGIN:'1200px'`）、分组/存储（`GROUP_NAME_MAX_LEN:20` / `STORAGE_MAX_BYTES:10MB` / `TRASH_GROUP_NAME:'稍后删除'`）、Tab 滚动（`TAB_SCROLL_THRESHOLD:2`）、抖音 URL 与正则/图标（`URL_BASE` / `SEC_UID_REGEX` / `icons`）。
 
