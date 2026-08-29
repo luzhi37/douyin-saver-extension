@@ -200,7 +200,7 @@ function endCheck(a) {
   return r;
 }
 
-// 平台：抖音 — a_bogus 签名主算法（background.js 独立模式请求使用）
+// 平台：抖音 — a_bogus 签名主算法（background 独立模式请求使用）
 export class ABogus {
   constructor(userAgent, platform, features = {}) {
     this.userAgent = userAgent || UA_DEFAULT;
@@ -264,76 +264,80 @@ export class ABogus {
 }
 
 // 平台：抖音 — 标准 MD5（UTF-8 字符串 → 32 位小写 hex；Argus x-secsdk-web-signature 依赖）
-export function md5Hex(text) {
-  const bytes = Array.from(new TextEncoder().encode(text));
-  const bitLenHi = Math.floor(bytes.length / 0x20000000);
-  const bitLenLo = (bytes.length << 3) >>> 0;
-  bytes.push(0x80);
-  while (bytes.length % 64 !== 56) bytes.push(0);
-  for (let i = 0; i < 4; i++) bytes.push((bitLenLo >>> (i * 8)) & 0xff);
-  for (let i = 0; i < 4; i++) bytes.push((bitLenHi >>> (i * 8)) & 0xff);
+// 通用：Cookie 解析 / msToken 生成。三者均为无状态纯函数，折进 Crypto 静态类
+// （小写 crypto 是全局 Web Crypto，故类名首字母大写以免遮蔽）
+export class Crypto {
+  static md5Hex(text) {
+    const bytes = Array.from(new TextEncoder().encode(text));
+    const bitLenHi = Math.floor(bytes.length / 0x20000000);
+    const bitLenLo = (bytes.length << 3) >>> 0;
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    for (let i = 0; i < 4; i++) bytes.push((bitLenLo >>> (i * 8)) & 0xff);
+    for (let i = 0; i < 4; i++) bytes.push((bitLenHi >>> (i * 8)) & 0xff);
 
-  const K = new Array(64);
-  for (let i = 0; i < 64; i++) K[i] = (Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
-  const S = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-  ];
+    const K = new Array(64);
+    for (let i = 0; i < 64; i++) K[i] = (Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
+    const S = [
+      7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+      5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+      4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+      6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
 
-  const add = (x, y) => (x + y) | 0;
-  const rotl = (x, n) => (x << n) | (x >>> (32 - n));
-  let a0 = 1732584193, b0 = -271733879, c0 = -1732584194, d0 = 271733878;
+    const add = (x, y) => (x + y) | 0;
+    const rotl = (x, n) => (x << n) | (x >>> (32 - n));
+    let a0 = 1732584193, b0 = -271733879, c0 = -1732584194, d0 = 271733878;
 
-  for (let off = 0; off < bytes.length; off += 64) {
-    const M = new Array(16);
-    for (let j = 0; j < 16; j++)
-      M[j] =
-        bytes[off + j * 4] |
-        (bytes[off + j * 4 + 1] << 8) |
-        (bytes[off + j * 4 + 2] << 16) |
-        (bytes[off + j * 4 + 3] << 24);
-    let A = a0, B = b0, C = c0, D = d0;
-    for (let i = 0; i < 64; i++) {
-      let F, g;
-      if (i < 16) { F = (B & C) | (~B & D); g = i; }
-      else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) & 15; }
-      else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) & 15; }
-      else { F = C ^ (B | ~D); g = (7 * i) & 15; }
-      F = add(add(F, A), add(K[i], M[g]));
-      A = D; D = C; C = B;
-      B = add(B, rotl(F, S[i]));
+    for (let off = 0; off < bytes.length; off += 64) {
+      const M = new Array(16);
+      for (let j = 0; j < 16; j++)
+        M[j] =
+          bytes[off + j * 4] |
+          (bytes[off + j * 4 + 1] << 8) |
+          (bytes[off + j * 4 + 2] << 16) |
+          (bytes[off + j * 4 + 3] << 24);
+      let A = a0, B = b0, C = c0, D = d0;
+      for (let i = 0; i < 64; i++) {
+        let F, g;
+        if (i < 16) { F = (B & C) | (~B & D); g = i; }
+        else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) & 15; }
+        else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) & 15; }
+        else { F = C ^ (B | ~D); g = (7 * i) & 15; }
+        F = add(add(F, A), add(K[i], M[g]));
+        A = D; D = C; C = B;
+        B = add(B, rotl(F, S[i]));
+      }
+      a0 = add(a0, A); b0 = add(b0, B); c0 = add(c0, C); d0 = add(d0, D);
     }
-    a0 = add(a0, A); b0 = add(b0, B); c0 = add(c0, C); d0 = add(d0, D);
+    const hex = (x) => {
+      let s = "";
+      for (let i = 0; i < 4; i++) s += ((x >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
+      return s;
+    };
+    return hex(a0) + hex(b0) + hex(c0) + hex(d0);
   }
-  const hex = (x) => {
-    let s = "";
-    for (let i = 0; i < 4; i++) s += ((x >>> (i * 8)) & 0xff).toString(16).padStart(2, "0");
-    return s;
-  };
-  return hex(a0) + hex(b0) + hex(c0) + hex(d0);
-}
 
-// 平台：通用 — Cookie 字符串解析工具
-export function parseCookieToPairs(cookieStr) {
-  return cookieStr
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => {
-      const idx = s.indexOf("=");
-      return idx > 0 ? { key: s.slice(0, idx), value: s.slice(idx + 1) } : null;
-    })
-    .filter(Boolean);
-}
-
-// 平台：通用 — msToken 生成（抖音/TikTok 共用；本项目用于抖音请求）
-export function generateRandomMsToken(size = 156) {
-  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  let result = "";
-  for (let i = 0; i < size; i++) {
-    result += chars[(Math.random() * chars.length) | 0];
+  // 平台：通用 — Cookie 字符串解析工具
+  static parseCookieToPairs(cookieStr) {
+    return cookieStr
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => {
+        const idx = s.indexOf("=");
+        return idx > 0 ? { key: s.slice(0, idx), value: s.slice(idx + 1) } : null;
+      })
+      .filter(Boolean);
   }
-  return result;
+
+  // 平台：通用 — msToken 生成（抖音/TikTok 共用；本项目用于抖音请求）
+  static generateRandomMsToken(size = 156) {
+    const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let result = "";
+    for (let i = 0; i < size; i++) {
+      result += chars[(Math.random() * chars.length) | 0];
+    }
+    return result;
+  }
 }

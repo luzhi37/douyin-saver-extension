@@ -47,15 +47,15 @@
 ## 接口 / 方法签名
 
 ```js
-// background.js —— 作品合并
+// background/data/domain-store.js —— 作品合并
 function mergeWork(w, old) -> Work              // 纯函数：字段覆盖 + 三项保护（见代码片段）
 async function mergeAndSaveWorks(works) -> Promise<{ added, updated, total }>
 
-// background.js —— 关注合并
+// background/data/domain-store.js —— 关注合并
 async function handleSaveFollowings(followings, sendResponse, isImport = false)
 // 出参：{ ok:true, added, updated, lost, lostUids: string[], total } | { ok:false, error:"EMPTY" }
 
-// background.js —— 导入
+// background/data/data-tools.js —— 导入
 function extractImportItems(data, domain) -> any[]     // data[cfg.itemKey] 或空数组
 async function reconcileImportGroups(domain, data, items) -> void   // 就地改写 item.groupId
 async function handleImportData(data, domain, sendResponse)
@@ -147,7 +147,7 @@ for (const item of items) {
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | IndexedDB 结构、DOMAIN_CONFIG、storage.js 封装 API、chrome.storage.local 键表 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | IndexedDB 结构、DOMAIN_CONFIG、data/storage.js 封装 API、chrome.storage.local 键表 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_WORKS 循环末尾调用 mergeAndSaveWorks 的位置与时序 |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | 关注列表采集产出的 6 字段形状（本册负责怎么落） |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 计数 >0 才写入规则的上游：校准写入权威计数 |

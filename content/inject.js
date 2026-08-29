@@ -306,7 +306,7 @@
     return url && url.startsWith("http:") ? url.replace("http:", "") : url || "";
   }
 
-  // 与 background.js 同款：从 CDN 直链 query 解析过期时间戳
+  // 与 background 侧同款：从 CDN 直链 query 解析过期时间戳
   function parseExpire(value) {
     const n = Number(value);
     if (!isFinite(n) || n <= 0) return null;

@@ -41,7 +41,7 @@ options 收到结果：
 ## 接口 / 方法签名
 
 ```js
-// background.js（独立分支）
+// background/tasks/independent-tasks.js（独立分支）
 async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse)
 // 出参：{ ok:true, works: Work[], hasMore: boolean, maxCursor: string }
 //     | { ok:false, error }

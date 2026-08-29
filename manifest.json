@@ -21,7 +21,7 @@
     "*://*.tiktok.com/*"
   ],
   "background": {
-    "service_worker": "background/background.js",
+    "service_worker": "background/main.js",
     "type": "module"
   },
   "content_scripts": [

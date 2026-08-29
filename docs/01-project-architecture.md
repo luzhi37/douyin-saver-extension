@@ -22,8 +22,8 @@ inject.js (主世界)            — fetch/XHR Hook、签名捕获、按钮注�
     ↓ CustomEvent（DY_* 事件对）
 content.js (隔离世界)         — 主世界脚本加载器、requestResponse 事件桥、作品捕获 LRU 缓存
     ↓ chrome.runtime.sendMessage
-background/background.js      — Service Worker：消息路由（App.route）、IndexedDB 存储（DomainStore）、循环长任务；
-  (+ storage.js / crypto.js)                      类单例架构（Credentials / IndependentClient / DomainStore / DomainHandlers / TabBridge / Groups / DataTools / ScanTasks / IndependentTasks / App + runtimeConfig/utils/formatters 对象）；独立模式下直接 fetch API
+background/ (ES 模块化)        — Service Worker：main.js 组合根 + 入口（消息路由 App.route、初始化）；core.js 共享基础（CONFIG/DOMAIN_CONFIG/utils/formatters/runtimeConfig）；
+  identity/（Crypto/ABogus/Credentials/IndependentClient/TabBridge）+ data/（Storage/DomainStore/DomainHandlers/Groups/DataTools）+ tasks/（ScanTasks/IndependentTasks）；独立模式下直接 fetch API
     ↑↓ chrome.runtime.sendMessage
 options/ (main.js 组合根)      — 管理 UI（ES 模块化）：core.js 共享基础（config/dom/state/store/utils/runtimeConfig/services）+ grids/components/data/sync 类模块 + main.js 事件绑定/订阅/init
 ```
@@ -35,7 +35,7 @@ manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douy
 ### 双模消息路由（background 唯一入口）
 
 ```
-chrome.runtime.onMessage (background.js App.route switch)
+chrome.runtime.onMessage (background/main.js App.route switch)
   │
   ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORK
   │                            SAVE_FOLLOWINGS / GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS
@@ -106,7 +106,7 @@ options 设置面板开关 → SET_MODE { enabled }
 ### background 消息转发原语（Tab模式专用）
 
 ```js
-// background.js TabBridge —— 定位一个可用抖音标签页（排除 creator 子域，要求 status === "complete"）
+// background/identity/tab-bridge.js TabBridge —— 定位一个可用抖音标签页（排除 creator 子域，要求 status === "complete"）
 async find() -> Promise<Tab|null>
 
 // 向抖音 tab 发消息并等待 inject 结果；生成 requestId；超时 CONFIG.TIMEOUT.REQUEST（可被 data.timeout 覆盖）
@@ -141,7 +141,7 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 
 ## 关键代码片段
 
-### 模式分支路由（background.js 消息 switch 内）
+### 模式分支路由（background/main.js 消息 switch 内）
 
 ```js
 case "SYNC_WORKS":
@@ -190,7 +190,7 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 
 ## 双域存储模型
 
-### IndexedDB（storage.js 封装，库名 `douyin-saver` v1）
+### IndexedDB（data/storage.js 封装，库名 `douyin-saver` v1）
 
 | store | keyPath | 索引 | 内容 |
 |-------|---------|------|------|
@@ -263,7 +263,7 @@ DOMAIN_CONFIG = {
 
 ## 配置项说明
 
-### background.js `CONFIG`（编译期默认值，部分被 runtimeConfig 覆盖）
+### background/core.js `CONFIG`（编译期默认值，部分被 runtimeConfig 覆盖）
 
 | 分组 | 键 |
 |------|----|

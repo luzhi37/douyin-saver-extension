@@ -26,6 +26,7 @@ config/const 定义          ┐ 常量在最顶部
 2. **class 定义与实例化成对出现** — 每个 class 定义后紧跟 `const name = new Class()`，不允许先集中列出所有 class 再集中实例化
 3. **执行语句不得出现在声明之前** — 函数调用、事件绑定必须在所有配置和定义之后
 4. **大段分隔用 `// ---------- 标签 ----------`** — 每个逻辑段的开头用带边框的注释标记
+5. **`background/` 目录按职责分子目录、每类/对象独立成文件** — 共享基础（CONFIG/DOMAIN_CONFIG/utils/formatters/runtimeConfig）合入 `core.js`；签名与标签页通信归 `identity/`（crypto/credentials/independent-client/tab-bridge）；域数据管理归 `data/`（storage/domain-store/domain-handlers/groups/data-tools）；批量长任务归 `tasks/`（scan-tasks/independent-tasks）；`main.js` 为组合根 + 入口（App 类 + 实例化 + `init`/onMessage 监听，manifest `service_worker` 指向），文件名 = kebab-case 类名，类间循环 import 靠 live binding 在调用时安全消解
 
 ## 四层架构
 
@@ -34,7 +35,7 @@ inject.js (主世界)          — fetch hook, 按钮注入, 抓取逻辑
     ↓ CustomEvent
 content.js (隔离世界)       — 桥接, requestResponse 模式
     ↓ chrome.runtime.sendMessage
-background.js (Service Worker) — 消息路由, 存储操作, sendToTab 转发
+background/ (Service Worker) — ES 模块化：core.js 共享基础 + identity/data/tasks 子目录类模块 + main.js 组合根（消息路由 App.route）
     ↓ chrome.runtime.sendMessage
 options/ (管理 UI)          — ES 模块化：core.js 共享基础（7 全局对象）+ 类模块（grids/components/data/sync）+ main.js 组合根（事件绑定/订阅/init）
 ```
@@ -55,7 +56,7 @@ DOMAIN_CONFIG = {
 
 ## 消息协议
 
-background.js switch 分发所有 `chrome.runtime.sendMessage`。
+`App.route()`（`background/main.js`）switch 分发所有 `chrome.runtime.sendMessage`。
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -107,25 +108,28 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | `Detail`         | 详情播放器                                                        |
 | `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；ds-btn/resize/btnRetry 事件构造器内自绑定） |
 
-### background.js 类单例（重构后与 options 侧类模块同构）
+### background/ 类单例（按职责分模块，与 options 侧类模块同构）
 
-`background/background.js` 已由「纯函数 + 模块级 let」重构为 3 个对象 + 10 个类，状态全部塌缩为类私有字段；`App.route()` 吸收原 `route` 内全部分支（含 11 个内联处理器）。
+`background/` 已按本仓库拆分方案拆为 `core.js`（共享基础）+ `identity/` + `data/` + `tasks/` 子目录 + `main.js`（组合根 + 入口），每个类/对象独立成文件、类定义后紧跟实例化，状态全部塌缩为类私有字段；`App.route()` 吸收原 `route` 内全部分支（含 11 个内联处理器）。拆分方案见 [plans/background-module-split-plan.md](./plans/background-module-split-plan.md)。
 
-| 类 / 对象              | 职责                                                                                                                                                      |
-|------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `runtimeConfig` (对象) | 运行时配置：从 `chrome.storage.local` 读 `runtimeConfig` 叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient` |
-| `utils` (对象)        | 纯函数集：`parseExpire` / `urlExpireAt` / `isLongLivedVideoUrl` / `extractMsTokenFromCookie` / `asyncHandler` / `sendSyncDone`                             |
-| `formatters` (对象)   | `formatWork` / `formatFollowing`                                                                                                                          |
-| `Credentials`         | 客户端凭据/签名：持有 `#abOgus`/`#cachedClockSkew`/`#clockSkewTime`；`ensureABogus`/`getClockSkew`/`buildBaseParams`/`getMsToken`/`refreshWebIdChain`；吸收 `GET_COOKIE_INFO`/`GET_BROWSER_FEATURES`/`GET_CACHE_TIMES`/`REFRESH_MSTOKEN`/`REFRESH_WEBID`/`REFRESH_BROWSER_FEATURES`/`REFRESH_COOKIE`/`CAPTURE_BROWSER_FEATURES` |
-| `IndependentClient`   | 独立模式开关/校准开关（持有 `#mode`/`#loaded`/`#calibrate`）+ 签名直连 `request` + `resolveSelfSecUid`；`request` 经 `credentials` 跨类取签名/时钟/msToken |
-| `DomainStore`         | 域存储封装：`storeName`/`groupsName`/`defaultGroups`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护） |
-| `DomainHandlers`      | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 已域驱动闭合 likes/favorites 断路；`get`/`delete`/`move`/`getOne`/`#saveFollowings`       |
-| `TabBridge`           | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                            |
-| `Groups`              | 分组 tab + 管理（域感知）                                                                                                                                 |
-| `DataTools`           | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                     |
-| `ScanTasks`           | Tab 模式长任务：`calibrateStats`/`calibrateOne`/`fetchFollowing`/`persistScan`/`fetchFavorites`/`fetchCollection`/`runCancelBatch`/`deleteCancelled`/`syncWorks` |
-| `IndependentTasks`    | 独立模式长任务：`fetchFollowing`/`fetchCollection`/`syncWorks`/`fetchWorksPage`/`cancel`                                                                   |
-| `App`                 | 初始化（注册 `onInstalled`/`onStartup`/`onClicked` + `setupDeclarativeNetRequest`）+ 消息路由 `route`（`SET_MODE` 调 `independentClient.setMode`）         |
+| 类 / 对象              | 文件                         | 职责                                                                                                                                                  |
+|------------------------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `runtimeConfig` (对象) | `core.js`                    | 运行时配置：从 `chrome.storage.local` 读 `runtimeConfig` 叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient` |
+| `utils` (对象)         | `core.js`                    | 纯函数集：`parseExpire` / `urlExpireAt` / `isLongLivedVideoUrl` / `extractMsTokenFromCookie` / `asyncHandler` / `sendSyncDone`                         |
+| `formatters` (对象)    | `core.js`                    | `formatWork` / `formatFollowing`                                                                                                                      |
+| `Crypto` (静态)        | `identity/crypto.js`        | 哈希/解析工具静态类：`md5Hex`（Argus webSign）/ `parseCookieToPairs` / `generateRandomMsToken`                                                        |
+| `ABogus`               | `identity/crypto.js`        | a_bogus 签名算法类（按 UA/浏览器特性实例化，`Credentials.ensureABogus` 使用）；同文件导出 `MSSDK_STR_DATA`（mssdk 兑换载荷）                          |
+| `Credentials`          | `identity/credentials.js`    | 客户端凭据/签名：持有 `#abOgus`/`#cachedClockSkew`/`#clockSkewTime`；`ensureABogus`/`getClockSkew`/`buildBaseParams`/`getMsToken`/`refreshWebIdChain`；吸收 `GET_COOKIE_INFO`/`GET_BROWSER_FEATURES`/`GET_CACHE_TIMES`/`REFRESH_MSTOKEN`/`REFRESH_WEBID`/`REFRESH_BROWSER_FEATURES`/`REFRESH_COOKIE`/`CAPTURE_BROWSER_FEATURES` |
+| `IndependentClient`    | `identity/independent-client.js` | 独立模式开关/校准开关（持有 `#mode`/`#loaded`/`#calibrate`）+ 签名直连 `request` + `resolveSelfSecUid`；`request` 经 `credentials` 跨类取签名/时钟/msToken |
+| `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`）：`getAll`/`get`/`putBatch`/`deleteBatch`/`clear`/`count`/`getByIndex`/`countByIndex`/`getGroups`/`putGroups`/`estimate` |
+| `DomainStore`          | `data/domain-store.js`       | 域存储封装：`storeName`/`groupsName`/`defaultGroups`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护） |
+| `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 已域驱动闭合 likes/favorites 断路；`get`/`delete`/`move`/`getOne`/`#saveFollowings`  |
+| `TabBridge`            | `identity/tab-bridge.js`     | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                    |
+| `Groups`               | `data/groups.js`             | 分组 tab + 管理（域感知）                                                                                                                            |
+| `DataTools`            | `data/data-tools.js`         | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                 |
+| `ScanTasks`            | `tasks/scan-tasks.js`        | Tab 模式长任务：`calibrateStats`/`calibrateOne`/`fetchFollowing`/`persistScan`/`fetchFavorites`/`fetchCollection`/`runCancelBatch`/`deleteCancelled`/`syncWorks` |
+| `IndependentTasks`     | `tasks/independent-tasks.js` | 独立模式长任务：`fetchFollowing`/`fetchCollection`/`syncWorks`/`fetchWorksPage`/`cancel`                                                              |
+| `App`                  | `main.js`                    | 初始化（注册 `onInstalled`/`onStartup`/`onClicked` + `setupDeclarativeNetRequest`）+ 消息路由 `route`（`SET_MODE` 调 `independentClient.setMode`）  |
 
 ## 设计约定与知识点陷阱
 
@@ -160,7 +164,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 
 ## config 分组速查
 
-`options/core.js` 顶层 `config` 常量（35 个键）。`background.js` 另有顶层 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` / `WEB_SIGN_SALT` 等，以及重构后的 `runtimeConfig` 对象（含 `KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`，从 `chrome.storage.local` 读取并叠加进 `CONFIG`）；`background.js` 的模块级可变状态（原 `abOgus`/`cachedClockSkew`/clockSkewTime/独立模式三开关）已全部塌缩为 `Credentials`/`IndependentClient` 的类私有字段：
+`options/core.js` 顶层 `config` 常量（35 个键）。`background/core.js` 另有顶层 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` / `WEB_SIGN_SALT` 等，以及重构后的 `runtimeConfig` 对象（含 `KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`，从 `chrome.storage.local` 读取并叠加进 `CONFIG`）；`background/` 的模块级可变状态（原 `abOgus`/`cachedClockSkew`/clockSkewTime/独立模式三开关）已全部塌缩为 `Credentials`/`IndependentClient` 的类私有字段：
 
 | 分组       | 键                                                                                                                            |
 |------------|-------------------------------------------------------------------------------------------------------------------------------|
