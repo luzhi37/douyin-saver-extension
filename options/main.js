@@ -16,6 +16,33 @@ import { settings } from './components/settings.js';
 import { detail } from './components/detail.js';
 import { appShell } from './components/app-shell.js';
 
+// ---------- 快捷键速查（P0-3）：'?' 打开静态内容弹窗 ----------
+const SHORTCUT_ROWS = [
+  ["Ctrl+K", "展开并聚焦搜索栏"],
+  ["?", "打开快捷键速查"],
+  ["Esc", "关闭弹窗 / 详情 / 收起搜索"],
+  ["详情 · ↑/↓ 或 滚轮", "切换上/下一个作品"],
+  ["详情 · Space", "播放 / 暂停"],
+  ["详情 · M", "静音 / 取消静音"],
+  ["详情 · L", "循环模式（单作品 / 分组 / 关闭）"],
+  ["详情 · F", "全屏播放"],
+  ["详情 · ←/→", "图集翻页（多图作品）"],
+  ["卡片 · Enter / Space", "打开 / 勾选"],
+  ["卡片 · ←/↑/→/↓", "方向键移动焦点"],
+  ["批量 · Ctrl+A", "全选当前结果"],
+  ["批量 · Shift+点击", "范围选择"],
+];
+
+function showShortcutHelp() {
+  const rows = SHORTCUT_ROWS.map(
+    ([keys, desc]) => `<kbd>${keys}</kbd><span class="sh-desc">${desc}</span>`,
+  ).join("");
+  const body = document.createElement("div");
+  body.className = "shortcut-help";
+  body.innerHTML = rows;
+  dialog.showDialog("快捷键", body, [{ text: "好的", primary: true, callback: () => dialog.closeDialog() }]);
+}
+
 // ---------- 消息监听 ----------
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || !message.type) return;
@@ -49,6 +76,34 @@ document.addEventListener("keydown", (e) => {
   }
   if (!dom.detailOverlay.classList.contains("hidden")) return;
   search.closeSearchBar();
+});
+
+// 全局快捷键（P0-3/P1-7）：Ctrl+K 聚焦搜索、? 速查、批量模式 Ctrl+A 全选。
+// 输入框内一律不拦截；弹窗打开时跳过 ?/Ctrl+A，避免与弹窗交互重叠
+const isTypingTarget = (el) =>
+  el instanceof HTMLElement && !!el.closest("input, textarea, select, [contenteditable]");
+document.addEventListener("keydown", (e) => {
+  const typing = isTypingTarget(e.target);
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    if (typing) return;
+    // 弹窗/详情打开时不展开搜索栏，避免在覆盖层背后展开
+    if (!dom.dialogOverlay.classList.contains("hidden")) return;
+    if (!dom.detailOverlay.classList.contains("hidden")) return;
+    e.preventDefault();
+    search.openSearchBar();
+    return;
+  }
+  if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
+    if (!dom.dialogOverlay.classList.contains("hidden")) return;
+    e.preventDefault();
+    showShortcutHelp();
+    return;
+  }
+  if (state.batchMode && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+    if (typing || !dom.dialogOverlay.classList.contains("hidden")) return;
+    e.preventDefault();
+    batch.handleBatchSelectAll();
+  }
 });
 
 dom.btnBatch.addEventListener("click", () => batch.handleBatchToggle());
@@ -92,7 +147,7 @@ dom.btnReset.addEventListener("click", async () => {
       text: `清空${domainName}数据`,
       danger: true,
       callback: async () => {
-        dialog.updateDialog("正在重置…", `<p>正在清空数据…</p>${utils.SPINNER_HTML}`);
+        dialog.updateDialog("正在重置…", "<p>正在清空数据…</p>");
         state.preventDialogClose = true;
         try {
           await services.bgMsg({ type: "RESET_DOMAIN", domain });
@@ -212,4 +267,6 @@ dom.btnSync.addEventListener("click", async () => {
   } catch (err) {
     console.error("[DY] load followed uids failed:", err);
   }
+  // 刷新后恢复搜索栏（P1-8）：URL 带 #search?... 时展开并套用筛选，放在域数据与关注全集之后
+  search.initFromHash();
 })();

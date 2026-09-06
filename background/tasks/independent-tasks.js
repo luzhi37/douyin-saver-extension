@@ -104,7 +104,6 @@ class IndependentTasks {
           await credentials.buildBaseParams({}),
           {
             method: "POST",
-            webSign: true,
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({ count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }).toString(),
             referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",

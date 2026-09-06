@@ -50,7 +50,6 @@
 
   <!-- ====== 搜索栏（菜单「搜索」在顶栏下方展开的内联工具条，无快捷键，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
   <div id="searchBar" class="search-bar hidden">
-    <span class="sb-filter-label">范围</span>
     <div class="sb-seg" id="sbScope">
       <button class="sb-seg-btn active" data-scope="all">综合</button>
       <button class="sb-seg-btn" data-scope="author" id="sbScopeAuthor">作者</button>
@@ -63,7 +62,6 @@
     <input id="searchInput" type="text" placeholder="搜索标题 / 作者 / ID" spellcheck="false" />
     <span id="sbCount" class="sb-count"></span>
     <span id="sbWorkFilters" class="sb-domain-filters flex-row">
-      <span class="sb-filter-label">排序</span>
       <div class="sb-seg" id="sbSort">
         <button class="sb-seg-btn active" data-sort="saved">保存时间</button>
         <button class="sb-seg-btn" data-sort="authorCount">作者作品数</button>
@@ -72,7 +70,6 @@
       <label class="sb-check"><input type="checkbox" id="sbUnfollowed" checked />未关注</label>
     </span>
     <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
-      <span class="sb-filter-label">排序</span>
       <div class="sb-seg" id="sbFollowSort">
         <button class="sb-seg-btn active" data-fsort="followers">粉丝数</button>
         <button class="sb-seg-btn" data-fsort="works">作品数</button>
@@ -428,7 +425,17 @@
             </div>
             <div class="sec-hint hidden" id="secKeyHint"></div>
             <div class="sec-item">
-              <span class="sec-label">关注签名</span>
+              <span class="sec-label">详情捕获</span>
+              <span class="sec-value" id="secSigDetailStatus"></span>
+            </div>
+            <div class="sec-item sec-clickable" id="secSigDetail">
+              <span class="sec-value sec-truncate" id="secSigDetailValue"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secSigDetailValue">复制</button>
+            </div>
+            <div class="sec-hint hidden" id="secSigDetailHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">关注捕获</span>
               <span class="sec-value" id="secSigFollowingStatus"></span>
             </div>
             <div class="sec-item sec-clickable" id="secSigFollowing">
@@ -438,7 +445,17 @@
             </div>
             <div class="sec-hint hidden" id="secSigFollowingHint"></div>
             <div class="sec-item">
-              <span class="sec-label">作品签名</span>
+              <span class="sec-label">资料捕获</span>
+              <span class="sec-value" id="secSigProfileStatus"></span>
+            </div>
+            <div class="sec-item sec-clickable" id="secSigProfile">
+              <span class="sec-value sec-truncate" id="secSigProfileValue"></span>
+              <span class="sec-expand-hint hidden">[展开]</span>
+              <button class="sec-copy-btn hidden" data-copy="secSigProfileValue">复制</button>
+            </div>
+            <div class="sec-hint hidden" id="secSigProfileHint"></div>
+            <div class="sec-item">
+              <span class="sec-label">作品捕获</span>
               <span class="sec-value" id="secSigPostStatus"></span>
             </div>
             <div class="sec-item sec-clickable" id="secSigPost">
@@ -448,7 +465,7 @@
             </div>
             <div class="sec-hint hidden" id="secSigPostHint"></div>
             <div class="sec-item">
-              <span class="sec-label">点赞签名</span>
+              <span class="sec-label">点赞捕获</span>
               <span class="sec-value" id="secSigFavoriteStatus"></span>
             </div>
             <div class="sec-item sec-clickable" id="secSigFavorite">
@@ -458,7 +475,7 @@
             </div>
             <div class="sec-hint hidden" id="secSigFavoriteHint"></div>
             <div class="sec-item">
-              <span class="sec-label">收藏签名</span>
+              <span class="sec-label">收藏捕获</span>
               <span class="sec-value" id="secSigCollectionStatus"></span>
             </div>
             <div class="sec-item sec-clickable" id="secSigCollection">

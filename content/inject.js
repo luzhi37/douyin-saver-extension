@@ -578,8 +578,9 @@
       for (const [k, v] of Object.entries(CONFIG.DEVICE_PARAMS)) url.searchParams.set(k, v);
       for (const [k, v] of Object.entries(this.#getDetailBrowserParams())) url.searchParams.set(k, String(v));
 
-      if (signatureCapture.detailQuery) {
-        for (const [k, v] of signatureCapture.detailQuery.entries()) {
+      const capturedDetail = signatureCapture.stripSdkKeys(signatureCapture.detailQuery);
+      if (capturedDetail) {
+        for (const [k, v] of capturedDetail.entries()) {
           if (k === "aweme_id") continue;
           if (!url.searchParams.has(k)) url.searchParams.set(k, v);
         }
@@ -625,7 +626,10 @@
           count: String(count),
         }),
       );
-      const merged = signatureCapture.mergeParams(url, signatureCapture.stripPageKeys(signatureCapture.followingQuery));
+      const merged = signatureCapture.mergeParams(
+        url,
+        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.followingQuery)),
+      );
       const controller = new AbortController();
       // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
       if (externalSignal) {
@@ -667,7 +671,10 @@
           sec_user_id: secUid,
         }),
       );
-      const merged = signatureCapture.mergeParams(url, signatureCapture.stripPageKeys(sigSource));
+      // sigSource 跨端点兜底（profileQuery || followingQuery || ...），每环都必须经
+      // stripSdkKeys 剥签名键——否则旧 x-secsdk-web-signature 预塞回 URL，页面包装器
+      // 不再重签，Argus 按过期签名拒绝（post/profile 已被强制 webSign 校验）
+      const merged = signatureCapture.mergeParams(url, signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(sigSource)));
       const controller = new AbortController();
       // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
       if (externalSignal) {
@@ -710,7 +717,10 @@
             count: String(count),
           }),
         );
-        const merged = signatureCapture.mergeParams(url, signatureCapture.stripPageKeys(signatureCapture.postQuery));
+        const merged = signatureCapture.mergeParams(
+          url,
+          signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.postQuery)),
+        );
         const resp = await window.fetch(merged.toString(), {
           credentials: "include",
           headers: { Referer: window.location.origin + "/" },
@@ -904,11 +914,14 @@
   const cancelHandler = new CancelHandler();
 
   // ---------- SecurityStatus ----------
-  // 安全状态查询：汇总签名快照 + hook 状态，供 options 安全面板展示。
+  // 安全状态查询：汇总签名捕获快照 + hook 状态，供 options 安全面板展示。
+  // 展示值剥离 SDK 注入键（修复后签名由页面包装器代签，捕获物只有业务/环境参数有价值）；
+  // webSign 标记该端点捕获是否含 x-secsdk-web-signature，用于观察抖音风控策略变化。
   class SecurityStatus {
     #buildSigValue(captured) {
       if (!captured || captured.size === 0) return "";
       return Array.from(captured.entries())
+        .filter(([k]) => !SDK_INJECT_KEYS.has(k))
         .map(([k, v]) => `${k}=${v}`)
         .join("&");
     }
@@ -917,7 +930,9 @@
       const v = this.#buildSigValue(captured);
       return {
         value: v,
-        updatedAt: v && captured.__dyCaptureTime ? captured.__dyCaptureTime : 0,
+        updatedAt: captured && captured.__dyCaptureTime ? captured.__dyCaptureTime : 0,
+        captured: !!(captured && captured.size > 0),
+        webSign: !!(captured && captured.has("x-secsdk-web-signature")),
       };
     }
 
@@ -929,6 +944,7 @@
         signatures: {
           detail: this.#sigData(signatureCapture.detailQuery),
           following: this.#sigData(signatureCapture.followingQuery),
+          profile: this.#sigData(signatureCapture.profileQuery),
           post: this.#sigData(signatureCapture.postQuery),
           favorite: this.#sigData(signatureCapture.favoriteQuery),
           collection: this.#sigData(signatureCapture.collectionQuery),

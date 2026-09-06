@@ -147,7 +147,7 @@ DOMAIN_CONFIG = {
 - **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — JS 不截断文本，靠 `.sec-truncate` 视觉截断；selector 用 `row.querySelector('.sec-truncate, .sec-expanded')`（见 [docs/09](./docs/09-inject-tab-mode.md)）。
 - **取消点赞/收藏用 XHR 而非 fetch（Tab模式）** — a_bogus 签名与 XHR 原型链深度绑定，fetch 发不出有效签名；独立模式由 background 直接 `fetch()` POST（无页面上下文），Referer / Sec-Fetch-* 靠 DNR 规则网络层注入（见 [docs/06](./docs/06-independent-cancel-collection.md) / [docs/08](./docs/08-dnr-rules.md) / [docs/09](./docs/09-inject-tab-mode.md)）。
 - **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）见 [docs/02](./docs/02-independent-sync-works.md) / [docs/09](./docs/09-inject-tab-mode.md)。
-- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名 403 `Signature Not Found`；算法、线格式与盐轮换处置见 [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md)。
+- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名 403 `Signature Not Found`；算法、线格式与盐轮换处置见 [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md)。aweme/post（侧边栏作者作品）亦被风控间歇强制同款校验，故 webSign 已在 `IndependentClient.request` 默认开启（`options.webSign !== false`），独立模式全端点生效（见 docs/05/07）。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送（长操作 X 恒可点）。机制见 [docs/11](./docs/11-options-ui.md)。
 - **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject 六个 API 请求函数经 Fetch Hook 但不被捕获；走 `origFetch.call(window, ...)` 绕过 Hook 会错过页面包装器注入的签名参数（见 [docs/09](./docs/09-inject-tab-mode.md)）。
 - **媒体加载有全局熔断** — 视频/封面失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`，不要自行计数（见 [docs/11](./docs/11-options-ui.md)）。

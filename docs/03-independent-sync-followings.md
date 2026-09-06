@@ -159,7 +159,7 @@ GET https://www.douyin.com/aweme/v1/web/user/following/list
      &msToken=<msToken>&a_bogus=<a_bogus>
 ```
 
-Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键并合并页面捕获 query（`stripPageKeys` 剔除 offset/count 后补环境），签名由页面包装器代注入。
+Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键并合并页面捕获 query（`stripSdkKeys` 剥签名键、`stripPageKeys` 剔除 offset/count 后补业务/环境参数），签名由页面包装器代签注入。
 
 ### 第三步：翻页推进演示
 

@@ -9,7 +9,7 @@ export class ImportExport {
     const file = e.target.files[0];
     if (!file) return;
     dom.fileInput.value = "";
-    dialog.showDialog("正在导入…", `<p>正在读取文件…</p>${utils.SPINNER_HTML}`);
+    dialog.showDialog("正在导入…", "<p>正在读取文件…</p>");
     state.preventDialogClose = true;
     try {
       const raw = await file.text();
@@ -59,7 +59,7 @@ export class ImportExport {
 
   async handleExport() {
     const domain = state.domain || "works";
-    dialog.showDialog("正在导出…", `<p>正在打包数据…</p>${utils.SPINNER_HTML}`);
+    dialog.showDialog("正在导出…", "<p>正在打包数据…</p>");
     state.preventDialogClose = true;
     try {
       const res = await services.bgMsg({ type: "EXPORT_DATA", domain });

@@ -176,7 +176,7 @@ export class WorksGrid extends VirtualGrid {
   handleClick(event, work, el) {
     if (event.target.closest(".work-checkbox")) {
       event.stopPropagation();
-      batch.toggleBatchSelect(work.awemeId, event.target.closest(".work-checkbox"));
+      batch.toggleBatchSelect(work.awemeId, event.target.closest(".work-checkbox"), event.shiftKey);
       return;
     }
     if (event.target.closest(".video-mute-btn")) {
@@ -202,7 +202,7 @@ export class WorksGrid extends VirtualGrid {
       return;
     }
     if (state.batchMode) {
-      batch.toggleBatchSelect(work.awemeId, el.querySelector(".work-checkbox"));
+      batch.toggleBatchSelect(work.awemeId, el.querySelector(".work-checkbox"), event.shiftKey);
       return;
     }
     detail.openDetail(work.awemeId);

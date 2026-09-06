@@ -40,10 +40,11 @@ class IndependentClient {
     this.#calibrate = v === true;
   }
 
-  // 抖音服务端验证 a_bogus 时仅剥离 a_bogus 自身、对“完整查询串”做哈希，
-  // 因此签名必须基于与最终 URL 完全一致（仅缺 a_bogus）的查询串，键顺序也需一致。
+  // 抖音服务端验证 a_bogus 时剥离签名族键（a_bogus/timestamp/x-secsdk-web-signature）、
+  // 对其余"完整查询串"做哈希，因此签名必须基于与最终 URL 完全一致（仅缺 a_bogus）的
+  // 查询串，键顺序也需一致。
   // 注意：msToken / uifid / odin_tt 等 SDK 注入键也参与签名（实测真实 a_bogus
-  // 的 pa 段与“含这些键的完整查询串”逐字节吻合），绝不能剔除。
+  // 的 pa 段与"含这些键的完整查询串"逐字节吻合），绝不能剔除。
   async request(apiPath, params, options = {}) {
     const { savedCookie } = await chrome.storage.local.get("savedCookie");
     if (!savedCookie) throw new Error("NO_COOKIE");
@@ -52,13 +53,16 @@ class IndependentClient {
     // qs 即实际发送的查询串（含 msToken/uifid/odin_tt，不含 a_bogus），顺序与 URL 一致
     const qs = new URLSearchParams(params).toString();
     const a_bogus = credentials.sign(qs, method, await credentials.getClockSkew());
-    // Argus webSign（与页面 window.use("webSignUrl") 同款算法）：
+    // Argus webSign（与页面 window.use("webSignUrl") 同款算法），默认开启：
     // sig = md5(uifid + "_" + ts + "_" + SALT + "_" + 待签查询串)，其中待签查询串 =
     // 最终发送的完整 query 去掉 x-secsdk-web-signature 自身（含 a_bogus 与 timestamp）；
     // 同时随请求携带 uifid / x-secsdk-web-signature / x-secsdk-web-expire 头。
+    // 服务端验 a_bogus 时剥离整个签名族键，故无策略端点多带这三键无害，而被风控强制
+    // webSign 的端点（listcollection 常驻、aweme/post 间歇）缺了则 403 Signature Not
+    // Found——默认开启免除逐端点补签；某端点实测排斥时传 options.webSign === false 关闭。
     let urlQuery = qs + "&a_bogus=" + a_bogus;
     const webSignHeaders = {};
-    if (options.webSign) {
+    if (options.webSign !== false) {
       const uifid = String(params.uifid || "");
       if (uifid) {
         const tsSec = Math.floor((Date.now() + (await credentials.getClockSkew())) / 1000);

@@ -31,7 +31,10 @@ export class SearchBar {
   // ---------- 数据层：过滤与排序视图 ----------
   isFilterActive() {
     if (this.#ownerFilterActive()) return true;
-    if (!this.#searchState.keyword.trim() && !this.#searchState.reverse) return false;
+    // 关键词/逆序本身就是筛选；修复历史缺陷：仅关键词（默认排序）时也须返回 true，
+    // 否则搜索无结果的空态会误显示通用文案（P1-8）
+    if (this.#searchState.keyword.trim()) return true;
+    if (this.#searchState.reverse) return true;
     return this.#isWorkLikeDomain()
       ? this.#searchState.sort !== "saved"
       : this.#searchState.followingsSort !== "followers";
@@ -61,7 +64,8 @@ export class SearchBar {
   #matchWork(work, kw) {
     switch (this.#searchState.scope) {
       case "author":
-        return (work.nickname || "").toLowerCase().includes(kw) || String(work.uid || "").toLowerCase().includes(kw);
+        // 昵称子串匹配；UID 仅精确匹配——uid 是约 19 位纯数字，子串匹配会让任意数字关键词命中大量无关作者
+        return (work.nickname || "").toLowerCase().includes(kw) || (work.uid && String(work.uid) === kw);
       case "title":
         return (work.desc || "").toLowerCase().includes(kw);
       case "id":
@@ -153,17 +157,50 @@ export class SearchBar {
     if (this.#isSearchBarOpen()) this.syncForDomain();
   }
 
-  // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数
+  // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数 + 筛选状态写入 URL hash（P1-8）
   refreshGridView() {
     if (this.#isWorkLikeDomain()) this.activeWorkLikeGrid().renderCards();
     else followingsGrid.renderFollowingCards();
     this.syncCount();
+    this.#writeHash();
   }
 
   // 搜索应用后的结果数：取当前域的过滤视图长度（关键词/排序/归属勾选实时联动）
   syncCount() {
     const count = this.#isWorkLikeDomain() ? this.getWorksView().length : this.getFollowingsView().length;
     dom.sbCount.textContent = `共 ${count} 条`;
+  }
+
+  // ---------- 筛选状态 URL hash 持久化（P1-8） ----------
+  // 「收起即重置」定案保留：hash 只在搜索栏展开期间写入，收起时随 clearSearchFilters 清空；
+  // 页面刷新后由 initFromHash 恢复展开与筛选。仅写非默认值，保持 hash 简洁
+  #writeHash() {
+    const s = this.#searchState;
+    const params = new URLSearchParams();
+    if (s.keyword) params.set("q", s.keyword);
+    if (s.scope !== "all") params.set("scope", s.scope);
+    if (s.sort !== "saved") params.set("sort", s.sort);
+    if (s.followingsSort !== "followers") params.set("fsort", s.followingsSort);
+    if (!s.followed) params.set("followed", "0");
+    if (!s.unfollowed) params.set("unfollowed", "0");
+    if (s.reverse) params.set("reverse", "1");
+    const hash = params.toString() ? "#search?" + params.toString() : "";
+    if (location.hash !== hash) history.replaceState(null, "", hash);
+  }
+
+  #readHash() {
+    const m = location.hash.match(/^#search\?(.*)$/);
+    if (!m) return false;
+    const params = new URLSearchParams(m[1]);
+    const s = this.#searchState;
+    if (params.has("q")) s.keyword = params.get("q") || "";
+    if (params.has("scope")) s.scope = params.get("scope");
+    if (params.has("sort")) s.sort = params.get("sort");
+    if (params.has("fsort")) s.followingsSort = params.get("fsort");
+    if (params.has("followed")) s.followed = params.get("followed") !== "0";
+    if (params.has("unfollowed")) s.unfollowed = params.get("unfollowed") !== "0";
+    if (params.has("reverse")) s.reverse = params.get("reverse") === "1";
+    return true;
   }
 
   // 作品型三域 → 对应网格实例（Batch 等外部类也需要按域取网格，公开）
@@ -212,13 +249,22 @@ export class SearchBar {
   }
 
   // ---------- 展开 / 收起 ----------
+  // 页面刷新后恢复：URL 带 #search?... 时展开搜索栏并套用 hash 中的筛选状态（P1-8）
+  initFromHash() {
+    if (!location.hash.startsWith("#search?")) return;
+    this.openSearchBar();
+  }
+
   openSearchBar() {
     if (this.#isSearchBarOpen()) return;
     dom.searchBar.classList.remove("hidden");
+    // 从 hash 恢复上次展开期间的筛选状态（无 hash 则维持默认初始态）
+    const restored = this.#readHash();
     // 排序段随域显隐；逆序复选框两域共用
     this.syncForDomain();
     dom.searchInput.value = this.#searchState.keyword;
     this.#updateSearchMenuLabel();
+    if (restored) this.refreshGridView();
     dom.searchInput.focus();
     dom.searchInput.select();
   }
