@@ -6,6 +6,9 @@ import { followingsGrid } from '../grids/followings-grid.js';
 
 // ---------- Batch ----------
 export class Batch {
+  // Shift 范围选择的锚点：上一次（非 Shift）点击的 id
+  #lastSelectedId = null;
+
   toggleSelect(id) {
     if (state.selectedIds.has(id)) {
       state.selectedIds.delete(id);
@@ -116,16 +119,45 @@ export class Batch {
     checkboxEl.setAttribute("aria-checked", isSelected ? "true" : "false");
   }
 
-  toggleBatchSelect(id, checkboxEl) {
-    const selected = this.toggleSelect(id);
-    this.updateCheckboxDOM(checkboxEl, selected);
+  // shift=true 时按当前筛选视图顺序，从上次锚点到目标 id 圈选区间（P1-7）
+  toggleBatchSelect(id, checkboxEl, shift = false) {
+    if (shift && this.#lastSelectedId !== null && this.#lastSelectedId !== id) {
+      this.#rangeSelect(this.#lastSelectedId, id);
+    } else {
+      const selected = this.toggleSelect(id);
+      this.updateCheckboxDOM(checkboxEl, selected);
+    }
+    this.#lastSelectedId = id;
     this.syncSelectionUI();
+  }
+
+  // 范围选择：把视图顺序中 [from, to] 区间的条目全部置为选中并同步勾选圆。
+  // 视图顺序与网格视觉一致（含关键词/排序/归属过滤），保证所见即所选
+  #rangeSelect(fromId, toId) {
+    const isWorkLike = config.WORK_LIKE_DOMAINS.includes(state.domain);
+    const view = isWorkLike ? search.getWorksView() : search.getFollowingsView();
+    const idKey = isWorkLike ? "awemeId" : "uid";
+    const ids = view.map((x) => x[idKey]);
+    const a = ids.indexOf(fromId);
+    const b = ids.indexOf(toId);
+    if (a === -1 || b === -1) return;
+    const [start, end] = a < b ? [a, b] : [b, a];
+    for (let i = start; i <= end; i++) state.selectedIds.add(ids[i]);
+    const selector = isWorkLike ? ".work-checkbox" : ".following-checkbox";
+    document.querySelectorAll(selector).forEach((el) => {
+      const id =
+        el.closest("[data-aweme-id]")?.dataset?.awemeId ||
+        el.closest("[data-uid]")?.dataset?.uid;
+      if (state.selectedIds.has(id)) this.updateCheckboxDOM(el, true);
+    });
   }
 
   handleBatchToggle() {
     const newMode = this.toggleBatchMode();
     store.set("batchMode", newMode);
     if (!newMode) {
+      // 退出批量模式：清空选区与范围选择锚点
+      this.#lastSelectedId = null;
       document.querySelectorAll(".work-checkbox").forEach((el) => {
         el.style.display = "none";
         el.innerHTML = "";
@@ -176,7 +208,7 @@ export class Batch {
         text: "移除",
         danger: true,
         callback: async () => {
-          dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个${name}…</p>${utils.SPINNER_HTML}`);
+          dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个${name}…</p>`);
           state.preventDialogClose = true;
           try {
             const result = await this.deleteSelected();
@@ -276,7 +308,7 @@ export class Batch {
     const count = this.selectedCount();
     const name = state.domain === "followings" ? "关注者" : config.DOMAINS_META[state.domain].label;
     dialog.showGroupSelectDialog(`移动到分组...`, await services.loadGroups(), async (groupId) => {
-      dialog.updateDialog("正在移动…", `<p>正在移动 ${count} 个${name}…</p>${utils.SPINNER_HTML}`);
+      dialog.updateDialog("正在移动…", `<p>正在移动 ${count} 个${name}…</p>`);
       state.preventDialogClose = true;
       try {
         const result = await this.moveSelected(groupId);
@@ -294,7 +326,12 @@ export class Batch {
   async saveSelectedToWorks() {
     if (this.selectedCount() === 0) return;
     const domain = state.domain;
-    const targets = state[domain].filter((w) => state.selectedIds.has(w.awemeId));
+    // 剥离源域（点赞/收藏）的 groupId：它属于 likes/favorites 域的分组 id，带入作品域会让
+    // mergeWork 误用（作品只出现在「全部」、不落「未分组」，也不被任何作品分组命中）。
+    // 剥离后新作品回落到作品域默认分组「未分组」，已在作品域分组过的旧作品保留原分组
+    const targets = state[domain]
+      .filter((w) => state.selectedIds.has(w.awemeId))
+      .map(({ groupId, ...rest }) => rest);
     if (targets.length === 0) return;
     dom.batchSaveToWorks.disabled = true;
     try {

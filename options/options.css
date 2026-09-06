@@ -2406,3 +2406,49 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   font-size: 14px;
   flex-shrink: 0;
 }
+/* ===== 快捷键速查弹窗 ===== */
+.shortcut-help {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 18px;
+  font-size: 13px;
+  line-height: 1.9;
+}
+.shortcut-help kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 7px;
+  border: 1px solid var(--dy-border-light);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--dy-surface-hover);
+  color: var(--dy-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+.shortcut-help .sh-desc {
+  color: var(--dy-text-secondary);
+}
+
+/* ===== 减少动效（prefers-reduced-motion） ===== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* 骨架扫描光带：直接停用，避免停在 translateX(100%) 的残留亮条 */
+  .work-skeleton::after,
+  .following-skeleton::after {
+    animation: none !important;
+  }
+  /* spinner 旋转保留：加载反馈必需，其余装饰性动效已压到不可感知 */
+  .spinner {
+    animation-duration: 0.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}

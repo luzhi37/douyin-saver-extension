@@ -74,7 +74,7 @@ async function handleCalibrateFollowing(uid, secUid, sendResponse)
 // 出参：{ ok:true, awemeCount, followerCount }
 //     | { ok:false, error:"BAD_PARAMS"|"NOT_FOUND"|其他 }
 
-async function independentRequest(CONFIG.API.PROFILE_OTHER, params)   // GET，仅 a_bogus，无 webSign
+async function independentRequest(CONFIG.API.PROFILE_OTHER, params)   // GET，a_bogus + webSign（request 默认叠加）
 ```
 
 ```js
@@ -85,7 +85,7 @@ async #calibrateFollowing(following)
 
 Tab 模式对照：inject 端 `fetchProfileOther(secUid)` 的签名源为多源 fallback——
 `__capturedProfileQuery || __capturedFollowingQuery || __capturedPostQuery || __capturedFavoriteQuery || __capturedCollectionQuery`，
-经 `stripPageKeys` 合并后走 `window.fetch(_dyInternal:true)`；全部为空时事件层直接回 `NO_SIGNATURE`。
+经 `stripSdkKeys`（剥签名键）+ `stripPageKeys`（剥分页键）合并后走 `window.fetch(_dyInternal:true)`，签名由页面包装器代签；全部为空时事件层直接回 `NO_SIGNATURE`。fallback 链每环都必须剥签名键——profile/other 已被强制 Argus webSign 校验，任一来源带入的旧 `x-secsdk-web-signature` 都会导致包装器跳过重签而被 Argus 拒绝（见 09 签名策略节）。
 
 ## 关键代码片段
 

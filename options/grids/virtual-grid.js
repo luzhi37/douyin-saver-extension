@@ -342,22 +342,56 @@ export class VirtualGrid {
   // 键盘激活：勾选圆上的 Enter/Space 切换选中；卡片根节点直接持有焦点时 Enter
   // 等价整卡点击（打开详情/侧边栏）。焦点在卡内按钮/输入框上时不拦截，走原生行为
   #onKeydown(event) {
-    if (event.key !== "Enter" && event.key !== " ") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
     const isCheckbox = !!target.closest(".work-checkbox, .following-checkbox");
     const itemEl = target.closest("." + this.#itemClass);
     if (!itemEl) return;
-    if (isCheckbox) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.#activate(event);
+    if (event.key === "Enter" || event.key === " ") {
+      if (isCheckbox) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.#activate(event);
+        return;
+      }
+      if (event.key === "Enter" && target === itemEl && !target.closest("button, input")) {
+        event.preventDefault();
+        this.#activate(event);
+      }
       return;
     }
-    if (event.key === "Enter" && target === itemEl && !target.closest("button, input")) {
+    // 方向键导航（P0-4）：焦点在卡片根节点上时，把焦点移到相邻卡片。
+    // 目标为未填充骨架时先入填充队列，保证落焦后能看到内容（不触碰降级机制）
+    if (event.key.startsWith("Arrow") && target === itemEl) {
+      const delta = this.#arrowDelta(event.key);
+      if (!delta) return;
       event.preventDefault();
-      this.#activate(event);
+      const cards = Array.from(this.#container.children);
+      const idx = cards.indexOf(itemEl);
+      if (idx === -1) return;
+      const next = cards[idx + delta];
+      if (!next) return;
+      if (next.classList.contains(this.#skeletonClass)) this.#enqueueFill(next);
+      next.focus();
     }
+  }
+
+  // 左右 ±1；上下按当前列数跳行。列数不足 2 时上下键不拦截（单列退化为无操作）
+  #arrowDelta(key) {
+    if (key === "ArrowLeft") return -1;
+    if (key === "ArrowRight") return 1;
+    const cols = this.#columns();
+    if (cols < 2) return null;
+    return key === "ArrowUp" ? -cols : cols;
+  }
+
+  #columns() {
+    const cs = getComputedStyle(this.#container);
+    const cols = cs.gridTemplateColumns.split(" ").filter(Boolean).length;
+    if (cols >= 2) return cols;
+    const first = this.#container.firstElementChild;
+    if (!first) return 1;
+    return Math.max(1, Math.round(this.#container.clientWidth / first.getBoundingClientRect().width));
   }
 
   #activate(event) {

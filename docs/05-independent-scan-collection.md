@@ -1,13 +1,13 @@
 # 05 · 独立模式（逆向）— 扫描收藏
 
-> 职责边界：`FETCH_COLLECTION` 在**独立模式**下的完整链路——background 直接翻页 POST `/aweme/v1/web/aweme/listcollection/`。该端点是独立模式唯一启用的 POST 端点，被服务端 Argus 额外校验，需在 a_bogus 之上叠加 **webSign 签名**；本文同时收录该签名的逆向定案、绑定域实验结论与盐轮换处置指南。
+> 职责边界：`FETCH_COLLECTION` 在**独立模式**下的完整链路——background 直接翻页 POST `/aweme/v1/web/aweme/listcollection/`。该端点被服务端 Argus 额外校验，必须携带 **webSign 签名**（`IndependentClient.request` 已默认开启 webSign，独立模式全端点生效）；本文同时收录该签名的逆向定案、绑定域实验结论与盐轮换处置指南。
 
 ## 概述
 
 options「扫描收藏」→ `favorites.openScanDialog(cfg)`（`needSecUid:false`，收藏归属由 Cookie 决定，不传 sec_user_id）→ `FETCH_COLLECTION` → background 分流到 `handleIndependentFetchCollection`：
 
 - while 循环翻页：环境参数走 query（`buildBaseParams()`），业务分页参数 `count/cursor` 走 urlencoded body——空 body 的 POST 固定被 Argus 以 `Signature Not Found` 拒绝；
-- 每页经 `independentRequest(..., { method:"POST", webSign:true, ... })` 发出，叠加 Argus webSign 三件套头；
+- 每页经 `independentRequest(..., { method:"POST", ... })` 发出，叠加 Argus webSign 三件套头（request 内默认开启）；
 - 条目经 `formatWork` 归一化（带 `authorFollowed`），进度 `COLLECTION_PROGRESS` 含未关注计数；
 - 结果 `{ ok, requestId, works, timedOut }` 一次性返回 options，渲染未关注作品网格并提供「添加」（SAVE_WORKS 批量入库）与「取消收藏」（见 [06](./06-independent-cancel-collection.md)）两个动作。
 
@@ -25,7 +25,6 @@ options: favorites.openScanDialog({ buildFetchArgs: () => ({ type:"FETCH_COLLECT
           └─ while (hasMore && !cancelled):
                data = independentRequest(API.COLLECTION, buildBaseParams(), {
                  method: "POST",
-                 webSign: true,                                   // Argus 签名开关
                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
                  body: new URLSearchParams({ count: "20", cursor }).toString(),
                  referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
@@ -54,7 +53,7 @@ options: 渲染 favGrid → 标题 (未关注N/总数) → 「添加 N」/「取
 | 浏览器特征 | `browserFeatures` 缓存（cpu/屏幕/UA 族等） | 特征指纹矛盾 |
 | `msToken` | 五级来源（下节） | 严格端点直接 403 |
 | `a_bogus` | ABogus 类对 `qs+method` 本地签名 | 参数被认定篡改 |
-| **webSign** | 本文算法（仅 listcollection 启用） | `Signature Not Found` |
+| **webSign** | 本文算法（request 默认开启，全端点生效） | `Signature Not Found` |
 | Referer / Sec-Fetch-* | DNR rule 3 + rule 4 注入（见 [08](./08-dnr-rules.md)） | 缺头被拦 |
 | 时钟偏移 | `getClockSkew()` 校正本地钟差 | 时间戳类签名全歪 |
 
@@ -90,7 +89,7 @@ SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"                // CONFIG.WEB_SIGN_SALT
 - `uifid` 不参与待签串，但服务端另行校验其归属（不匹配返回 `Validate Error`）；
 - `params.uifid` 缺失时跳过签名走旧路径（宁可 403 不可崩）；
 - 盐为 secsdk 动态策略常量，2026-08 实测跨会话稳定；**抖音换策略版本则盐变更**，症状与处置见下文"复发处置"；
-- 当前仅本流程启用；GET 点赞 favorite 在页面上也观察到 webSign 痕迹但未强制实测，若日后被拦平移同款分支即可。
+- 启用范围：`IndependentClient.request` 默认开启（`options.webSign !== false`），独立模式全端点生效——aweme/post 曾因风控间歇强制缺签 403 `Signature Not Found`（见 [07](./07-independent-fetch-user-works.md)），故不再按端点逐个开启；GET 点赞 favorite 在页面上也观察到 webSign 痕迹但未强制实测。
 
 ## 接口 / 方法签名
 
@@ -125,7 +124,7 @@ Tab 模式对照：同消息走 `handleFetchCollection`，逐页 `sendToTabAsync
 ```js
 let urlQuery = qs + "&a_bogus=" + a_bogus;
 const webSignHeaders = {};
-if (options.webSign) {
+if (options.webSign !== false) {                    // 默认开启；显式传 false 才关闭
   const uifid = String(params.uifid || "");
   if (uifid) {                                          // 无 uifid 宁可 403 不可崩
     const tsSec = Math.floor((Date.now() + (await getClockSkew())) / 1000);

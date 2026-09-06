@@ -115,7 +115,7 @@ export class Groups {
             text: "删除",
             danger: true,
             callback: async () => {
-              dialog.updateDialog("正在删除…", utils.SPINNER_HTML);
+              dialog.updateDialog("正在删除…", "");
               state.preventDialogClose = true;
               try {
                 await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });

@@ -86,20 +86,22 @@ export class Settings {
     const expandHint = root.querySelector("#" + rowId + " .sec-expand-hint");
     const hintEl = root.querySelector("#" + valueId.replace(/Value$/, "Hint"));
     const copyBtn = root.querySelector("#" + rowId + " .sec-copy-btn");
+    // captured 与 value 分离：捕获可能仅含 SDK 签名键（展示值已剥离），此时仍算已捕获
+    const captured = sig ? (sig.captured ?? !!sig.value) : false;
     const v = sig?.value || "";
     const t = sig?.updatedAt || 0;
-    if (v) {
+    if (captured) {
       const ts = this._statusTimeStr(t);
-      statusEl.textContent = ts ? `✅ 已捕获 · ${ts}` : "✅ 已捕获";
+      statusEl.textContent = `✅ 已捕获${ts ? " · " + ts : ""}${sig?.webSign ? " · webSign" : ""}`;
       statusEl.className = "sec-value sec-ok";
-      valueEl.textContent = v;
+      valueEl.textContent = v || "（仅含签名键，已由页面包装器代签）";
       valueEl.className = "sec-value sec-truncate";
       valueEl.classList.remove("sec-expanded");
       if (expandHint) {
         expandHint.classList.remove("hidden");
         expandHint.textContent = "[展开]";
       }
-      if (copyBtn) copyBtn.classList.remove("hidden");
+      if (copyBtn) copyBtn.classList.toggle("hidden", !v);
       hintEl.classList.add("hidden");
     } else {
       statusEl.textContent = "❌ 未捕获";
@@ -337,22 +339,35 @@ export class Settings {
     // ponytail: a failed sub-fetch only paints the status sections, never blocks others
     if (!secRes || !secRes.ok || !secRes.status) {
       const errMsg = secRes?.error || "QUERY_FAILED";
-      const targets = ["secKeyStatus", "secSigFollowingStatus", "secSigPostStatus", "secSigFavoriteStatus", "secSigCollectionStatus", "secHookFetch", "secHookXhr"];
+      // NO_DOUYIN_TAB 是最常见失败：给出可操作的引导而非裸错误码
+      const failText =
+        errMsg === "NO_DOUYIN_TAB"
+          ? "❌ 未找到抖音标签页（打开抖音页面并等待加载完成后重试）"
+          : `❌ 查询失败：${errMsg}`;
+      const targets = [
+        "secKeyStatus",
+        "secSigDetailStatus",
+        "secSigFollowingStatus",
+        "secSigProfileStatus",
+        "secSigPostStatus",
+        "secSigFavoriteStatus",
+        "secSigCollectionStatus",
+        "secHookFetch",
+        "secHookXhr",
+      ];
       for (const id of targets) {
         const el = root.querySelector("#" + id);
         if (!el) continue;
-        if (id === "secHookFetch" || id === "secHookXhr") {
-          el.textContent = "❌ 查询失败";
-        } else {
-          el.textContent = `❌ 查询失败：${errMsg}`;
-        }
+        el.textContent = failText;
         el.className = "sec-value sec-err";
       }
       return;
     }
     const s = secRes.status;
     this._renderStatusKey(root, s.key, s.keyUpdatedAt);
+    this._renderStatusSig(root, s.signatures?.detail, "secSigDetail", "secSigDetailValue", "请在抖音页面播放任意作品（触发详情请求），等待加载后返回刷新状态");
     this._renderStatusSig(root, s.signatures?.following, "secSigFollowing", "secSigFollowingValue", "请在抖音页面访问关注列表，等待列表加载后返回刷新状态");
+    this._renderStatusSig(root, s.signatures?.profile, "secSigProfile", "secSigProfileValue", "请在抖音页面访问任意作者主页，等待资料加载后返回刷新状态");
     this._renderStatusSig(root, s.signatures?.post, "secSigPost", "secSigPostValue", "请在抖音页面访问任意作者主页，等待作品加载后返回刷新状态");
     this._renderStatusSig(root, s.signatures?.favorite, "secSigFavorite", "secSigFavoriteValue", "请在抖音页面访问喜欢列表，等待加载后返回刷新状态");
     this._renderStatusSig(root, s.signatures?.collection, "secSigCollection", "secSigCollectionValue", "请在抖音页面访问收藏列表，等待加载后返回刷新状态");

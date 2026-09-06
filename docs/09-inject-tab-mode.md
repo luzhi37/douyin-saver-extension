@@ -51,19 +51,19 @@ XHR Hook：包装 open 记录 _dyUrl，send 后 load 事件里 /aweme/ 预检 �
 
 | 函数 | 端点 | 方法 | 签名来源 | 超时 |
 |------|------|------|----------|------|
-| `fetchOneDetail` | `/aweme/detail/` | GET | 复用 `__lastCapturedDetailQuery` 新鲜签名（跳过 aweme_id 键） | 8s |
-| `fetchAuthorWorks` | `/aweme/post/` | GET | 复用 `__capturedPostQuery`（stripPageKeys 后合并） | 15s |
-| `fetchFollowingPage` | `/user/following/list` | GET | 复用 `__capturedFollowingQuery`（事件层有 fallback 链） | 15s |
-| `fetchProfileOther` | `/user/profile/other/` | GET | 五源 fallback（profile→following→post→favorite→collection） | 15s |
-| `fetchOneFavoritesPage` | `/aweme/favorite/` | GET | **包装器代签**：stripSdkKeys 剥签名键后裸发 | 15s |
+| `fetchOneDetail` | `/aweme/detail/` | GET | **包装器代签**：stripSdkKeys 剥签名键后裸发（跳过 aweme_id 键） | 8s |
+| `fetchAuthorWorks` | `/aweme/post/` | GET | 同上（代签，合并 `__capturedPostQuery` 业务参数） | 15s |
+| `fetchFollowingPage` | `/user/following/list` | GET | 同上（代签，合并 `__capturedFollowingQuery` 业务参数） | 15s |
+| `fetchProfileOther` | `/user/profile/other/` | GET | 同上（代签；sigSource 五源 fallback：profile→following→post→favorite→collection，每环都经 stripSdkKeys） | 15s |
+| `fetchOneFavoritesPage` | `/aweme/favorite/` | GET | 同上（代签） | 15s |
 | `fetchOneCollectionPage` | `/aweme/listcollection/` | POST | 同上（代签），Content-Type urlencoded | 15s |
 | `cancelOne(Like/Collection)` | digg / collect | POST XHR | 页面 XHR 原生签名（不可用 fetch 替代） | 30s（BRIDGE 层） |
 
-三种策略的原理：
+两种策略的原理：
 
-1. **复用捕获签名**（detail/post/following/profile）：服务端验证的是"参数集+签名"组合，直接把页面刚产生的新鲜 query 参数（剥掉分页键）合并进扩展构造的 URL，签名依然有效。
-2. **包装器代签**（favorite/collection）：先 `stripSdkKeys` 剥离全部 SDK 注入键（`SDK_INJECT_KEYS = a_bogus/timestamp/x-secsdk-web-signature/msToken/verifyFp/fp/uifid`），保留非签名业务参数（webid/sec_user_id 等），构造"未签名" URL 直接走 `window.fetch` —— 外层 secsdk 包装器会按最终参数集自动注入匹配的新鲜签名。实测 200 OK。**预塞旧签名会导致包装器不再处理 → argus `web_id_sign_invalid` 403**。（页面 `byted_acrawler` SDK 已无 `sign` 函数可调，2026 版仅剩 frontierSign/init。）
-3. **XHR 原生签名**（取消类）：a_bogus 与 XHR 原型链深度绑定，改用 fetch 即失败。
+1. **包装器代签**（全部 fetch 类请求）：先 `stripSdkKeys` 剥离全部 SDK 注入键（`SDK_INJECT_KEYS = a_bogus/timestamp/x-secsdk-web-signature/msToken/verifyFp/fp/uifid`），再 `stripPageKeys` 剥分页键，保留非签名业务参数（webid/sec_user_id 等），构造"未签名" URL 直接走 `window.fetch` —— 外层 secsdk 包装器会按最终参数集自动注入匹配的新鲜签名。**预塞旧签名会导致包装器不再处理 → argus `web_id_sign_invalid` 403 / `Sign Invalid`**。（页面 `byted_acrawler` SDK 已无 `sign` 函数可调，2026 版仅剩 frontierSign/init。）
+   - 历史说明：detail/post/following/profile 曾用"复用捕获签名"策略（stripPageKeys 后带签名合并），在 post 与 profile/other 被风控强制 Argus webSign 校验后，捕获 query 中带入的过期 `x-secsdk-web-signature` 被原样重放、包装器不再重签，导致 `Blocked by ArgusSecurityPlugin Sign Invalid`——已全部统一切换到代签策略。
+2. **XHR 原生签名**（取消类）：a_bogus 与 XHR 原型链深度绑定，改用 fetch 即失败。
 
 ### 请求—响应全链路（以 FETCH_SINGLE_WORK 为例）
 
@@ -114,7 +114,7 @@ function cancelOneLike / cancelOneCollection (awemeId, signal?)
 // inject.js —— 任务槽与采集
 function setActiveTask(abortFn|null)              // 单槽位：注册前 abort 旧任务
 function collectBrowserFeatures() -> object       // navigator/screen/localStorage.securityKey 快照
-function collectSecurityStatus() -> object        // 密钥 + 五路签名缓存摘要 + hook 标志位
+function collectSecurityStatus() -> object        // 密钥 + 六路捕获缓存摘要（含 webSign 标记） + hook 标志位
 function getSecurityKey() -> string               // localStorage["security-sdk/s_sdk_cert_key"].data 去 "pub." 前缀
 
 // content.js
@@ -234,9 +234,13 @@ function collectBrowserFeatures() {
 {
   key: string,            // localStorage[security-sdk/s_sdk_cert_key].data 去 "pub." 前缀；空串表示未捕获
   keyUpdatedAt: number,   // Date.now()；key 为空时为 0
-  signatures: {           // 五路签名缓存的摘要（键与缓存一一对应）
-    detail / following / post / favorite / collection:
-      { value: "k=v&k=v", updatedAt }   // value 为缓存全参数拼接；updatedAt 来自 Map.__dyCaptureTime
+  signatures: {           // 六路捕获缓存的摘要（键与缓存一一对应）
+    detail / following / profile / post / favorite / collection:
+      { value, updatedAt, captured, webSign }
+      // value 为剥除 SDK_INJECT_KEYS 后的业务/环境参数拼接（代签策略下签名键无展示价值）；
+      // captured 与 value 分离——捕获可能仅含签名键，此时 value 为空仍算已捕获；
+      // webSign = 捕获是否含 x-secsdk-web-signature（面板显示标记，用于观察端点风控策略变化）；
+      // updatedAt 来自 Map.__dyCaptureTime
   },
   hooks: { fetch: bool, xhr: bool },    // __dyManagerFetchHooked / __dyManagerXhrHooked 标志位
 }

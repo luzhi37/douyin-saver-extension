@@ -20,6 +20,10 @@ export class Detail {
   #mediaBreakUntil = 0;
   #imgProbeToken = 0;
   #bgProbeToken = 0;
+  #rmQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  #reduceMotion() {
+    return this.#rmQuery.matches;
+  }
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
@@ -297,6 +301,25 @@ export class Detail {
     tryNext(0);
   }
 
+  // 焦点是否落在可交互控件上（按钮/输入框/链接/滑块/文本域）：是则放行原生键盘行为
+  #isInteractiveTarget(target) {
+    return (
+      target instanceof Element &&
+      !!target.closest("button, input, a[href], textarea, select")
+    );
+  }
+
+  // F 全屏：按当前可见媒体类型选择全屏容器（视频区 / 大图容器）
+  #toggleFullscreen() {
+    const isVideo = !dom.detailVideoContainer.classList.contains("hidden");
+    const target = isVideo ? dom.detailVideoContainer : dom.detailImageContainer;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      target.requestFullscreen?.().catch(() => {});
+    }
+  }
+
   // Tab 焦点圈定（建议21）：焦点在 overlay 内循环。
   // 可见性用 rects 判断而非 offsetParent——fixed 定位元素（如右上关闭钮）的 offsetParent 恒为 null
   #trapFocus(e) {
@@ -335,14 +358,12 @@ export class Detail {
     if (isSwitch) {
       body.classList.add("detail-transitioning");
     }
-    // 方向感入场（建议15）：先清旧类再强制 reflow，保证同向连续切换也能重放动画
+    // 方向感入场（建议15）：先清旧类再强制 reflow，保证同向连续切换也能重放动画；
+    // prefers-reduced-motion 时跳过位移，只保留容器淡入（CSS 侧已把动画压到不可感知）
     body.classList.remove("enter-down", "enter-up");
-    if (dir > 0) {
+    if (dir !== 0 && !this.#reduceMotion()) {
       void body.offsetWidth;
-      body.classList.add("enter-down");
-    } else if (dir < 0) {
-      void body.offsetWidth;
-      body.classList.add("enter-up");
+      body.classList.add(dir > 0 ? "enter-down" : "enter-up");
     }
     this.#transitionToNext(body, isSwitch);
   }
@@ -626,6 +647,33 @@ export class Detail {
         e.preventDefault();
         this.nextDetail(1);
       }
+      // 播放控制快捷键（P0-3）：焦点在控件上时不拦截——Space 应触发聚焦按钮的原生点击、
+      // 滑块应保留原生步进，避免与详情层交互冲突
+      if (!this.#isInteractiveTarget(e.target) && work) {
+        if (e.key === " " || e.code === "Space") {
+          e.preventDefault();
+          if (work.type === "note" && work.images?.length > 0) this.#toggleNoteAutoPlay();
+          else this.toggleDetailVideoPlay();
+          return;
+        }
+        if (e.key === "m" || e.key === "M") {
+          e.preventDefault();
+          if (work.type === "note" && work.music) this.#toggleNoteMute();
+          else if (work.type === "video") this.toggleDetailVideoMute();
+          return;
+        }
+        if (e.key === "l" || e.key === "L") {
+          e.preventDefault();
+          this.cycleLoopMode();
+          this.updateLoopBtn(work?.type === "video" && utils.getVideoUrl(work));
+          return;
+        }
+        if (e.key === "f" || e.key === "F") {
+          e.preventDefault();
+          this.#toggleFullscreen();
+          return;
+        }
+      }
       if (work?.type === "note" && work.images?.length > 1) {
         if (e.key === "ArrowLeft" && this.#noteImgIndex > 0) {
           e.preventDefault();
@@ -659,7 +707,7 @@ export class Detail {
           text: "移除",
           danger: true,
           callback: async () => {
-            dialog.updateDialog("正在移除…", utils.SPINNER_HTML);
+            dialog.updateDialog("正在移除…", "");
             state.preventDialogClose = true;
             try {
               await this.removeWork(work.awemeId);

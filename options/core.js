@@ -238,7 +238,6 @@ export const store = {
 
 // ---------- utils ----------
 export const utils = {
-  SPINNER_HTML: '<div class="spinner"></div>',
   pickHttpsUrl(url) {
     if (!url) return "";
     return url.startsWith("//") ? "https:" + url : url;

@@ -152,12 +152,12 @@ export class FollowingsGrid extends VirtualGrid {
 
     if (event.target.closest(".following-checkbox")) {
       event.stopPropagation();
-      batch.toggleBatchSelect(following.uid, checkbox);
+      batch.toggleBatchSelect(following.uid, checkbox, event.shiftKey);
       return;
     }
 
     if (state.batchMode) {
-      batch.toggleBatchSelect(following.uid, checkbox);
+      batch.toggleBatchSelect(following.uid, checkbox, event.shiftKey);
       return;
     }
     sidebar.openSidebar(following);
