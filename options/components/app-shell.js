@@ -7,8 +7,10 @@ import { sidebar } from './sidebar.js';
 import { settings } from './settings.js';
 import { dialog } from './dialog.js';
 
-// ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 ----------
+// ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 / 左侧边栏折叠 ----------
 export class AppShell {
+  static LEFT_SIDEBAR_KEY = "douyin_left_sidebar_collapsed";
+
   constructor() {
     this.#bindEvents();
   }
@@ -18,10 +20,36 @@ export class AppShell {
     if (!btn || !dom.dsSlider || !dom.domainSwitch) return;
     const parentRect = dom.domainSwitch.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
-    const left = btnRect.left - parentRect.left;
-    const width = btnRect.width;
-    dom.dsSlider.style.transform = `translateX(${left}px)`;
-    dom.dsSlider.style.width = `${width}px`;
+    // 纵向排列：滑块按 Y 位移 + 高度指示当前域
+    const top = btnRect.top - parentRect.top;
+    const height = btnRect.height;
+    dom.dsSlider.style.transform = `translateY(${top}px)`;
+    dom.dsSlider.style.height = `${height}px`;
+  }
+
+  toggleLeftSidebar() {
+    const collapsed = !dom.leftSidebar.classList.contains("collapsed");
+    // 左侧边栏折叠同样改变主网格宽度，auto-fill 跨列阈值时卡片跳位：
+    // 锚定视口内最上方卡片，折叠前后保持其视口 Y
+    const anchor = this.#topVisibleGridCard();
+    sidebar.preserveGridAnchor(anchor, () => {
+      dom.leftSidebar.classList.toggle("collapsed", collapsed);
+      localStorage.setItem(AppShell.LEFT_SIDEBAR_KEY, collapsed ? "1" : "");
+    });
+  }
+
+  // 四域统一的网格锚点：视口内最上方可见卡片（骨架/完整卡均参与网格流、位置真实）
+  #topVisibleGridCard() {
+    const gridTop = dom.mainGrid.getBoundingClientRect().top;
+    for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {
+      if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
+    }
+    return null;
+  }
+
+  initLeftSidebar() {
+    const collapsed = localStorage.getItem(AppShell.LEFT_SIDEBAR_KEY) === "1";
+    dom.leftSidebar.classList.toggle("collapsed", collapsed);
   }
 
   switchDomain(domain) {
@@ -83,6 +111,7 @@ export class AppShell {
   }
 
   #bindEvents() {
+    dom.btnSidebarToggle?.addEventListener("click", () => this.toggleLeftSidebar());
     document.querySelectorAll(".ds-btn").forEach((tab) => {
       tab.addEventListener("click", () => this.switchDomain(tab.dataset.domain));
     });

@@ -52,8 +52,9 @@ optgroup {
   --dy-radius-lg: 10px;
   --dy-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   --dy-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --dy-card-size: 261px;
-  --topbar-height: 56px;
+  --dy-card-size: 249px;
+  --dy-following-card-size: 212px;
+  --topbar-height: 50px;
   --dy-danger: #f5222d;
   --dy-transition: 0.1s cubic-bezier(0.4, 0, 0.2, 1);
   --dy-font-size-sm: 13px;
@@ -177,8 +178,30 @@ optgroup {
   opacity: 0.5;
 }
 
+/* 侧边栏折叠按钮（顶栏最右 ☰） */
+.btn-sidebar-toggle {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--dy-radius);
+  border: none;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--dy-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dy-transition), color var(--dy-transition);
+}
+
+.btn-sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dy-text);
+}
+
+/* 域切换（左侧边栏内，纵向排列；滑块纵向滑动指示） */
 .domain-switch {
   display: flex;
+  flex-direction: column;
   background: rgba(255, 255, 255, 0.08);
   border-radius: var(--dy-radius);
   padding: 3px;
@@ -189,12 +212,13 @@ optgroup {
 
 .ds-slider {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 0;
+  left: 3px;
+  right: 3px;
+  top: 0;
+  height: 0;
   border-radius: var(--dy-radius);
   background: rgba(255, 255, 255, 0.12);
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s;
   pointer-events: none;
   z-index: 0;
 }
@@ -203,7 +227,8 @@ optgroup {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px 14px;
+  width: 100%;
+  padding: 6px 8px;
   font-size: var(--dy-font-size-sm);
   font-weight: 500;
   border-radius: var(--dy-radius);
@@ -214,6 +239,8 @@ optgroup {
   transition: color 0.15s;
   position: relative;
   z-index: 1;
+  /* 56px 侧边栏下内容区窄：禁止折行，靠内边距缩到可容纳 */
+  white-space: nowrap;
 }
 
 .ds-btn:hover {
@@ -228,7 +255,6 @@ optgroup {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  margin-left: 4px;
   position: relative;
 }
 
@@ -262,7 +288,7 @@ optgroup {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 14px;
+  padding: 6px 12px;
   font-size: var(--dy-font-size-sm);
   border-radius: var(--dy-radius);
   cursor: pointer;
@@ -290,6 +316,7 @@ optgroup {
   flex-shrink: 0;
 }
 
+/* 批量操作按钮：常驻顶栏 .topbar-right，仅批量模式显示（body.batch-mode 驱动，纯 CSS 显隐） */
 .batch-action {
   display: none;
 }
@@ -316,27 +343,56 @@ optgroup {
   display: inline;
 }
 
-.menu-container {
-  position: relative;
+/* 批量模式激活时顶栏「批量」按钮高亮 */
+body.batch-mode #btnBatch {
+  color: var(--dy-primary);
+  border-color: var(--dy-primary);
 }
 
-.menu-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  min-width: 90px;
-  background: var(--dy-surface-elevated);
-  border: 1px solid var(--dy-border);
-  border-radius: var(--dy-radius);
-  z-index: 200;
-  padding: 6px;
+/* ===== 主体布局 ===== */
+#appBody {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ===== 最右侧边栏（上：域切换组；中：弹性占位 + 分割线；下：功能按钮；可折叠）。
+    位于 #appBody 最右（比关注域作者作品侧边栏更靠右），☰ 按钮在顶栏最右折叠/展开 */
+.left-sidebar {
+  width: 56px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--dy-surface);
+  border-left: 1px solid var(--dy-border);
+  /* 折叠/展开不做宽度过渡：width 动画逐帧改变 #appBody 布局，四域 auto-fill 网格
+     每帧重排且跨列阈值时跳列导致卡顿；瞬时切换只发生一次重排（跨列跳位由
+     Sidebar.preserveGridAnchor 锚点补偿拉回原视口 Y） */
+}
+
+.left-sidebar.collapsed {
+  width: 0;
+  border-left-width: 0;
+}
+
+/* 内层固定宽度容器：折叠（width 0 + overflow hidden）时内容被裁切而非挤压 */
+.left-sidebar-inner {
+  width: 56px;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-.menu-dropdown.hidden {
-  display: none;
+/* 菜单项（原下拉菜单各项，现为侧边栏窄列按钮，文字居中） */
+.left-sidebar-menu {
+  gap: 2px;
+}
+
+/* 中部功能组与底部重置/容量之间的弹性占位：吸收剩余高度，把底部区块推到底 */
+.menu-spacer {
+  flex: 1;
 }
 
 .menu-item {
@@ -344,14 +400,15 @@ optgroup {
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 8px 14px;
-  border: 1px solid var(--dy-border);
-  background: var(--dy-bg);
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
   color: var(--dy-text);
   cursor: pointer;
   font-size: var(--dy-font-size-sm);
   border-radius: var(--dy-radius);
   white-space: nowrap;
+  text-align: center;
   transition: background var(--dy-transition), color var(--dy-transition);
 }
 
@@ -367,35 +424,30 @@ optgroup {
   background: rgba(245, 34, 45, 0.1);
 }
 
+/* 容量使用：功能区最后一行 */
 .menu-storage {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 14px;
+  padding: 6px 8px;
   font-size: 11px;
   color: var(--dy-text-muted);
   user-select: none;
-}
-
-/* ===== 主体布局 ===== */
-#appBody {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
+  white-space: nowrap;
 }
 
 #mainGrid {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 10px;
+  padding: 18px 10px;
   background: var(--dy-bg);
 }
 
 .main-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, var(--dy-card-size));
-  gap: 10px;
+  gap: 11px;
   justify-content: center;
 }
 
@@ -413,9 +465,12 @@ body[data-domain="followings"] .main-container {
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  padding: 10px 20px;
+  /* 固定卡宽：侧边栏开关只改列数不改卡尺寸（尺寸即侧边栏展开态应有大小）；
+     auto-fill 保证窄容器自动减列、永不横向溢出 */
+  grid-template-columns: repeat(auto-fill, var(--dy-following-card-size));
+  justify-content: center;
+  gap: 11px;
+  padding: 0px 0px;
 }
 
 body[data-domain="followings"] .main-container.hidden {
@@ -476,7 +531,8 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 .work-card:hover {
-  transform: translateY(-4px) scale(1.02);
+  /* 纯中心缩放：translateY 会把中心上移导致放大只向上挤占，去掉后上下对称放大 */
+  transform: scale(1.02);
   border-color: rgba(254, 44, 85, 0.45);
 }
 
@@ -734,6 +790,13 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .batch-mode .work-thumb.video-hidden {
   opacity: 1 !important;
+}
+
+/* 批量模式 Shift 快速多选时禁止卡片文本被浏览器选中高亮 */
+.batch-mode .work-card,
+.batch-mode .following-card {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .work-syncing svg {
@@ -1033,7 +1096,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .dy-btn {
   gap: 6px;
-  padding: 8px 16px;
+  padding: 6px 12px;
   font-size: 14px;
   border: 1px solid var(--dy-border);
   border-radius: var(--dy-radius);
@@ -1104,6 +1167,19 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .dy-btn .btn-icon {
   margin-right: 4px;
+}
+
+/* 图标按钮变体：去文本按钮的水平大内边距呈方形，固定 31px 与相邻文本按钮（全选/批量）等高；
+   svg 去行内基线空隙，顶栏批量栏图标按钮（移除/存入/移动/下载/全选）专用 */
+.dy-btn-icon {
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  line-height: 1;
+}
+
+.dy-btn-icon svg {
+  display: block;
 }
 
 /* ===== 详情覆盖层 ===== */
@@ -1213,20 +1289,8 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   pointer-events: none;
 }
 
-/* 计数徽章与导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，
+/* 导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，
    保证切换作品时位置与透明度恒定；几何上媒体容器填满 body，两者坐标系一致 */
-#detailImgCounter {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  pointer-events: none;
-}
-
 .detail-nav-btn {
   position: absolute;
   left: 16px;
@@ -1387,7 +1451,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 .detail-bar-author {
-  color: rgba(255, 255, 255, 0.65);
+  color: #fff;
   text-decoration: none;
   cursor: pointer;
   transition: color var(--dy-transition);
@@ -1398,7 +1462,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 .detail-bar-title {
-  color: #fff;
+  color: rgba(255, 255, 255, 0.65);
   flex: 1;
   min-width: 0;
   text-decoration: none;
@@ -1568,18 +1632,19 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* ===== 工具提示 ===== */
+/* 尺寸规格与 content.js Toast（抖音页注入）保持一致，改动需两侧同步 */
 .toast {
   position: fixed;
-  top: 60px;
+  top: 20px;
   left: 50%;
   transform: translateX(-50%) translateY(-16px);
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: #fff;
-  padding: 10px 24px;
-  border-radius: 8px;
-  font-size: 14px;
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 13px;
   z-index: 999999;
   pointer-events: none;
   opacity: 0;
@@ -1913,11 +1978,11 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   color: var(--dy-text);
 }
 
-/* ====== 菜单分隔线 ====== */
+/* ====== 菜单分隔线（侧边栏中段占位：auto 上边距把功能按钮区压到底部） ====== */
 .menu-divider {
   height: 1px;
   background: var(--dy-border);
-  margin: 4px 8px;
+  margin: auto 8px 4px;
 }
 
 /* ====== 模板工具类 ====== */
@@ -2263,15 +2328,10 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   pointer-events: none;
 }
 
-/* ====== 键盘焦点可见性（建议7） ====== */
+/* ====== 焦点指示：全局抑制（用户明确不需要键盘焦点可见性，含浏览器默认焦点环） ====== */
+:focus,
 :focus-visible {
-  outline: 2px solid rgba(254, 44, 85, 0.7);
-  outline-offset: 2px;
-}
-
-.work-card:focus-visible,
-.following-card:focus-visible {
-  border-color: rgba(254, 44, 85, 0.45);
+  outline: none;
 }
 
 /* ====== 搜索栏清除按钮（搜索栏内「清除」与旧筛选状态条共用同形） ====== */

@@ -52,7 +52,7 @@ class IndependentTasks {
             setTimeout(r, runtimeConfig.delayRange("syncFollowings").MIN + Math.random() * (runtimeConfig.delayRange("syncFollowings").MAX - runtimeConfig.delayRange("syncFollowings").MIN)),
           );
       }
-      if (!cancelled && all.length > 0 && independentClient.isCalibrateEnabled()) {
+      if (!cancelled && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
         await scanTasks.calibrateStats(
           all,
           async (secUid) => {

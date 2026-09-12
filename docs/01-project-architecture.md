@@ -281,7 +281,7 @@ DOMAIN_CONFIG = {
 
 ### `runtimeConfig`（chrome.storage.local，设置面板可改，RELOAD_CONFIG 热加载进 CONFIG）
 
-键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。
+键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数（含校准开关）随存随恢复，重开扩展（非重载）不回退编译期默认值；`IndependentClient.isCalibrateEnabled` 另有 storage 惰性加载兜底（首次调用才读，跨 SW 重建仍生效）。
 
 ### options/core.js 顶层 `config`（UI 侧，35 键）
 
