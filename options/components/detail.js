@@ -213,6 +213,7 @@ export class Detail {
       state.selectedIds.delete(awemeId);
       search.activeWorkLikeGrid().removeItems(new Set([awemeId]));
       store.refreshGroups();
+      search.syncCount();
       return;
     }
     await services.bgMsg({ type: "DELETE_WORKS", awemeIds: [awemeId] });
@@ -241,13 +242,14 @@ export class Detail {
 
   // ===== 详情层 UI 增强（docs/UI_IMPROVEMENTS.md 建议10-21）=====
 
-  // 计数展示（建议12 修订版）：图集页数保留右上徽章，作品序号回归底栏最右端
+  // 计数展示：底栏时间位显示媒体指示——视频为播放时间（updateVideoProgress 维护），
+  // 图片类型/图集为 [K/N] 图片页序；底栏最右端仍为作品序号
   #updateCounters(work) {
     const total = search.getWorksView().length;
-    // 右上：仅多图图集显示页数
-    const isMultiNote = work.type === "note" && work.images?.length > 1;
-    dom.detailImgCounter.textContent = isMultiNote ? `${this.#noteImgIndex + 1}/${work.images.length}` : "";
-    dom.detailImgCounter.classList.toggle("hidden", !isMultiNote);
+    // 底栏时间位：图片类型显示 [K/N]（视频在此位显示播放时间，不由此处写入）
+    if (work.type === "note" && work.images?.length) {
+      dom.detailTime.textContent = `${this.#noteImgIndex + 1}/${work.images.length}`;
+    }
     // 底栏右侧：作品序号
     if (total > 1) {
       dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${total}`;
@@ -409,7 +411,7 @@ export class Detail {
       if (isVideo) {
         dom.detailTime.textContent = "0:00 / 0:00";
       } else {
-        // 图集/纯图计数统一走右上徽章（建议12），时间位不再复用
+        // 图片类型的时间位由 #updateCounters 写入 [K/N]，此处先清空避免残留
         dom.detailTime.textContent = "";
       }
 
@@ -560,35 +562,53 @@ export class Detail {
       readyFired = true;
       readyFn();
     };
-    img.alt = work.desc || "";
+    img.alt = "";
     // 切到新作品先清空上个作品的图，避免链接失效时残留上一作品内容
     this.#clearDetailImage();
-    // 探针先行：失败 URL 不落可见节点（裂图无载体）；成功后经缓存落 src，load 时结束过渡
-    const firstUrl = work.images[0] || work.cover || "";
-    const token = ++this.#imgProbeToken;
-    if (!firstUrl) {
+    // 先加载 cover：网格卡已加载过同一 cover 大概率命中缓存，探针通过即先落为占位，
+    // 再换高清首帧。候选去重防 cover 与首帧同 URL 重复加载；全部失败才进失效态。
+    // 期间 img 无 src 不写 alt，杜绝中央区闪现作品标题文本（见 #clearDetailImage）
+    const candidates = [...new Set([
+      utils.pickHttpsUrl(work.cover || ""),
+      utils.pickHttpsUrl(work.images?.[0] || ""),
+    ].filter(Boolean))];
+    if (!candidates.length) {
       this.#showImageFailed();
       fireReady();
     } else {
-      const probe = new Image();
-      probe.onload = () => {
-        if (token !== this.#imgProbeToken) return;
-        this.markMediaOk();
+      const token = ++this.#imgProbeToken;
+      const loadUrl = (url) => {
+        // 无障碍标注在图片真正加载成功后才落，避免失效时以文本展示标题
+        img.addEventListener("load", () => { img.alt = work.desc || ""; }, { once: true });
         img.addEventListener("load", fireReady, { once: true });
         img.addEventListener("error", fireReady, { once: true });
-        img.src = firstUrl;
+        img.src = url;
       };
-      probe.onerror = () => {
-        if (token !== this.#imgProbeToken) return;
-        this.markMediaFail();
-        // 链接失效：保持清空并显示失效态，绝不回退到上一个作品
-        this.#showImageFailed();
-        fireReady();
+      const tryCandidate = (i) => {
+        if (i >= candidates.length) {
+          // 全部失效：保持清空并显示失效态，绝不回退到上一个作品
+          this.markMediaFail();
+          this.#showImageFailed();
+          fireReady();
+          return;
+        }
+        const probe = new Image();
+        probe.onload = () => {
+          if (token !== this.#imgProbeToken) return;
+          this.markMediaOk();
+          loadUrl(candidates[i]);
+        };
+        probe.onerror = () => {
+          if (token !== this.#imgProbeToken) return;
+          // 单条候选失效不计数，整体失效兜底分支才 markMediaFail
+          tryCandidate(i + 1);
+        };
+        probe.src = candidates[i];
       };
-      probe.src = firstUrl;
+      tryCandidate(0);
     }
 
-    // 图集/作品计数统一走计数展示逻辑（右上页数徽章 + 底栏作品序号）
+    // 图集/作品计数统一走计数展示逻辑（底栏 [K/N] 图片页序 + 作品序号）
     this.#updateCounters(work);
 
     if (work.music) {
@@ -832,21 +852,22 @@ export class Detail {
   }
 
   closeDetail() {
+    // 先在索引复位前记录原位置，供关闭后滚动卡片回到相应位置（closeDetailIndex 会清空 #index）
+    const restoredIndex = this.getDetailIndex();
     this.closeDetailIndex();
     this.resetMediaElements();
     // 复位增强态 UI：加载指示隐藏，下次打开从干净状态开始
     dom.detailLoader.classList.add("hidden");
     dom.detailProgressSlider.classList.add("hidden");
-    // 导航箭头/计数徽章已不在媒体容器内，须随关闭显式隐藏
+    // 导航箭头已不在媒体容器内，须随关闭显式隐藏
     dom.detailNavLeft.classList.add("hidden");
     dom.detailNavRight.classList.add("hidden");
-    dom.detailImgCounter.classList.add("hidden");
     dom.detailVideoContainer.classList.add("hidden");
     dom.detailImageContainer.classList.add("hidden");
     dom.detailOverlay.style.removeProperty("--bg-url");
     dom.detailOverlay.classList.add("hidden");
     document.body.style.overflow = "";
-    worksGrid.restoreGridScroll();
+    worksGrid.restoreGridScroll(restoredIndex);
   }
 
   resetVideo() {
@@ -868,6 +889,8 @@ export class Detail {
   // 切作品时清空详情主图，杜绝链接失效时残留上一作品的内容
   #clearDetailImage() {
     dom.detailImage.removeAttribute("src");
+    // 无 src 的 <img> 会以文本渲染 alt 属性——清空 alt，杜绝加载期中央区闪现作品标题
+    dom.detailImage.alt = "";
     this.#hideImageFailed();
   }
 
@@ -994,11 +1017,12 @@ export class Detail {
     setTimeout(() => URL.revokeObjectURL(blobUrl), config.BLOB_REVOKE_DELAY);
   }
 
-  async downloadWork(work) {
-    await this.#downloadWithRetry(work, 0);
+  // silent=true 时抑制单条失败 toast 并返回成功布尔（批量下载用，聚合汇报由调用方负责）
+  async downloadWork(work, { silent = false } = {}) {
+    return this.#downloadWithRetry(work, 0, silent);
   }
 
-  async #downloadWithRetry(w, attempt) {
+  async #downloadWithRetry(w, attempt, silent) {
     try {
       if (w.type === "video" && utils.getVideoUrl(w)) {
         const { blob, ext } = await this.fetchBlob(utils.getVideoUrl(w));
@@ -1010,14 +1034,15 @@ export class Detail {
           this.triggerDownload(blob, this.getFilename(w, `${i + 1}.${ext}`));
         }
       }
+      return true;
     } catch (err) {
       console.error("[DY] download failed:", err);
       if (attempt >= config.DOWNLOAD_MAX_RETRY) {
-        dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
-        return;
+        if (!silent) dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
+        return false;
       }
       await new Promise((r) => setTimeout(r, config.FETCH_RETRY_DELAY));
-      await this.#downloadWithRetry(w, attempt + 1);
+      return this.#downloadWithRetry(w, attempt + 1, silent);
     }
   }
 }

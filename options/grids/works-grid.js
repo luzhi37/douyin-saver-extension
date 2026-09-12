@@ -14,6 +14,8 @@ export class WorksGrid extends VirtualGrid {
   #coverDrainRafId = 0;
   #videoStates = new WeakMap();
   #currentMediaCard = null;
+  // 预览音量全局联动标志：切换任意卡片的静音作用于三域全部卡片预览；详情覆盖层播放器独立不共享
+  #previewMuted = false;
   #emptyMsg;
   #emptyHint;
   constructor({ emptyMsg, emptyHint } = {}) {
@@ -71,7 +73,6 @@ export class WorksGrid extends VirtualGrid {
       checkbox = document.createElement("div");
       checkbox.className = "work-checkbox";
       checkbox.setAttribute("role", "checkbox");
-      checkbox.tabIndex = 0;
       checkbox.setAttribute("aria-checked", "false");
       checkbox.setAttribute("aria-label", "选择作品");
       card.querySelector(".work-media").after(checkbox);
@@ -102,6 +103,10 @@ export class WorksGrid extends VirtualGrid {
         controls: controls,
       };
       this.#videoStates.set(video, st);
+      // 预览音量全局联动：新填充卡片继承当前共享静音标志（含按钮图标），
+      // 保证经「播放」按钮直启而非悬停起播的路径音量口径一致
+      video.muted = this.#previewMuted;
+      st.muteBtn.innerHTML = this.#previewMuted ? config.icons.mute : config.icons.unmute;
       this.#bindVideoMediaEvents(video, st);
     } else if (work.type === "note") {
       const imgUrl = utils.pickHttpsUrl(work.images?.[0] || work.cover || "");
@@ -110,6 +115,15 @@ export class WorksGrid extends VirtualGrid {
     }
 
     titleText.textContent = work.desc || "无文案";
+  }
+
+  #togglePreviewMute() {
+    this.#previewMuted = !this.#previewMuted;
+    for (const video of this.#container.querySelectorAll(".work-video-player")) {
+      const st = this.#videoStates.get(video);
+      video.muted = this.#previewMuted;
+      if (st?.muteBtn) st.muteBtn.innerHTML = this.#previewMuted ? config.icons.mute : config.icons.unmute;
+    }
   }
 
   // 停止某张卡的悬停预览并复位 UI。卡片任何摘除/降级路径必须先走这里：
@@ -181,8 +195,8 @@ export class WorksGrid extends VirtualGrid {
     }
     if (event.target.closest(".video-mute-btn")) {
       event.stopPropagation();
-      const video = el.querySelector(".work-video-player");
-      if (video) detail.toggleVideoMute(video, el.querySelector(".video-mute-btn"));
+      // 预览音量全局联动：切换任意卡片的静音作用于三域全部卡片预览（详情覆盖层独立）
+      this.#togglePreviewMute();
       return;
     }
     if (event.target.closest(".video-play-btn")) {
@@ -223,8 +237,7 @@ export class WorksGrid extends VirtualGrid {
     btn.disabled = false;
   }
 
-  restoreGridScroll() {
-    const idx = detail.getDetailIndex();
+  restoreGridScroll(idx = detail.getDetailIndex()) {
     const view = search.getWorksView();
     if (idx < 0 || idx >= view.length) return;
     requestAnimationFrame(() => {
@@ -236,8 +249,9 @@ export class WorksGrid extends VirtualGrid {
       const cols = Math.max(1, Math.floor((grid.clientWidth + gap) / (cardW + gap)));
       const row = Math.floor(idx / cols);
       const cardH = (cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET;
-      const target = row * (cardH + gap) - Math.min(window.innerHeight / 3, row * (cardH + gap));
-      window.scrollTo({ top: Math.max(0, target) });
+      const target = row * (cardH + gap) - Math.min(grid.clientHeight / 3, row * (cardH + gap));
+      // 滚动容器是 #mainGrid 自身（overflow-y:auto），对 window 调 scrollTo 不生效
+      grid.scrollTo({ top: Math.max(0, target) });
     });
   }
 
@@ -272,8 +286,8 @@ export class WorksGrid extends VirtualGrid {
         video.dataset.hovered = "1";
         video.src = card.dataset.videoUrl || "";
         video.currentTime = 0;
-        video.muted = false;
-        st.muteBtn.innerHTML = config.icons.unmute;
+        video.muted = this.#previewMuted;
+        st.muteBtn.innerHTML = this.#previewMuted ? config.icons.mute : config.icons.unmute;
         video.load();
         const onCanPlay = () => {
           if (!video.dataset.hovered) return;

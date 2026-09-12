@@ -10,6 +10,10 @@
 
 ### VirtualGrid 渲染管线（双向虚拟化 + 分圈观察）
 
+分组切换不清场（`currentGroupId` 事件不 wipe、不铺占位骨架）：旧分组卡片保留到新数据到达，
+数据到达后由下方 render(items) 整批 wipe 重建替换；域切换仍走 `switchDomain` 同步清场
+（abortRender×4 + 容器 wipe，保持"只清不铺"）：
+
 ```
 render(items)
   → 容器 wipe（render()/abortRender() 重置时必须同时清 #pendingSkeletons / #sentinelCard / observers）
@@ -229,6 +233,8 @@ probe.onerror = () => {
 | 媒体重试自行计数 | 与熔断窗口叠加放大请求量 | 一律接 `Detail.markMediaFail/mediaRetryBlocked` |
 | 在途探针回调不校验代际 | 旧 URL 提交到已换人槽位（错图） | 先验 fillGen/coverGen/gen/imgProbeToken 再提交 |
 | hover 预览改用 pointerenter/leave | 功能静默失效 | 只用冒泡的 pointerover/out 委托 |
+| 分组切换期间对保留的旧卡片做 wipe 式增量更新 | 与新数据 render() 的整批重建冲突 | 分组切换不清场，旧卡保留到数据到达后由 render() 整批重建 |
+| 只改 options 或 content 任意一侧的 toast 样式 | 两侧视觉漂移（options `.toast` 与 content.js `Toast` 内联样式是两处同款实现） | 两侧同步：13px 字号 / `7px 16px` 内边距 / 6px 圆角 / `top:20px` / info`#60a5fa`·success`#4ade80`·error`#f5222d` 左色条 / info·success 2s、error 4.5s / `max-width:80vw` 允许换行；文案不带 emoji |
 
 ## 配置项说明
 

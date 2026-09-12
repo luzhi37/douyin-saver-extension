@@ -70,14 +70,22 @@
   };
 
   // ---------- Toast ----------
-  // 轻量提示：复用单元素，自动 2s 后淡出。
+  // 轻量提示：复用单元素，info/success 2s、error 4.5s 后淡出。
+  // 尺寸规格与 options.css .toast 保持一致，改动需两侧同步。
+  const TOAST_TYPES = {
+    info: "#60a5fa",
+    success: "#4ade80",
+    error: "#f5222d",
+  };
+
   class Toast {
     #timer = null;
     #el = null;
 
-    show(message) {
+    show(message, type = "info") {
       const el = this.#ensureEl();
       el.textContent = message;
+      el.style.borderLeftColor = TOAST_TYPES[type] || TOAST_TYPES.info;
       el.style.opacity = "1";
       el.style.transform = "translateX(-50%) translateY(0)";
 
@@ -85,7 +93,7 @@
       this.#timer = setTimeout(() => {
         el.style.opacity = "0";
         el.style.transform = "translateX(-50%) translateY(-20px)";
-      }, 2000);
+      }, type === "error" ? 4500 : 2000);
     }
 
     #ensureEl() {
@@ -95,20 +103,23 @@
         el.id = "dy-saver-toast";
         Object.assign(el.style, {
           position: "fixed",
-          top: "60px",
+          top: "20px",
           left: "50%",
           transform: "translateX(-50%) translateY(-20px)",
           background: "rgba(0,0,0,0.85)",
           color: "#fff",
-          padding: "10px 24px",
-          borderRadius: "8px",
-          fontSize: "14px",
+          padding: "7px 16px",
+          borderRadius: "6px",
+          fontSize: "13px",
           fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif',
+          borderLeft: "3px solid transparent",
+          maxWidth: "80vw",
           zIndex: "999999",
           pointerEvents: "none",
           opacity: "0",
           transition: "opacity 0.3s, transform 0.3s",
-          whiteSpace: "nowrap",
+          whiteSpace: "normal",
+          textAlign: "center",
         });
         document.body.appendChild(el);
       }
@@ -249,7 +260,7 @@
       let video = (fullWork?.video || apiData?.video || "").trim();
 
       if (!video && fullWork.type === "video") {
-        toast.show("⏳ 正在获取视频链接…");
+        toast.show("正在获取视频链接…");
         video = await this.#fetchDetailByAwemeId(fullWork.awemeId);
       }
 
@@ -260,9 +271,9 @@
         if (chrome.runtime.lastError) return;
         if (response?.ok) {
           captureCache.delete(fullWork.awemeId);
-          toast.show("✅ 已保存: " + (fullWork.desc || fullWork.awemeId).slice(0, 20));
+          toast.show("已保存: " + (fullWork.desc || fullWork.awemeId).slice(0, 20), "success");
         } else {
-          toast.show("❌ 保存失败");
+          toast.show("保存失败", "error");
         }
       });
     }
@@ -274,7 +285,7 @@
     #onButtonClick(e) {
       const { fullWork } = e.detail || {};
       if (!fullWork || !fullWork.awemeId) {
-        toast.show("❌ 无法获取作品信息");
+        toast.show("无法获取作品信息", "error");
         return;
       }
       this.saveWork(fullWork).catch((err) => console.warn("[DY] save failed:", err));

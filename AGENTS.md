@@ -87,7 +87,7 @@ DOMAIN_CONFIG = {
 | `'followings'`     | `followingsGrid.renderFollowingCards()`（仅 domain=followings）                                          |
 | `'groups'`         | `groups.renderGroupTabs()`                                                                               |
 | `'currentGroupId'` | `groups.renderGroupTabs()` + 加载域数据                                                                  |
-| `'batchMode'`      | toggle body `.batch-mode` class                                                                          |
+| `'batchMode'`      | toggle body `.batch-mode` class + 批量栏 `#batchBar` 显隐与「批量」按钮文案（`Batch.syncBatchBar`）        |
 | `'work-updated'`   | `worksGrid.updateCardDOM(awemeId)` + 若详情打开则重渲染                                                  |
 
 ## Class 职责概览
@@ -99,7 +99,7 @@ DOMAIN_CONFIG = {
 | `Dialog`         | 弹窗管理                                                          |
 | `FollowingsGrid` | 关注卡片网格                                                      |
 | `Groups`         | 分组 tab + 管理                                                   |
-| `Batch`          | 批量操作（勾选、全选、删除、移动）                                |
+| `Batch`          | 批量操作（勾选、全选、删除、移动、下载；批量下载仅作品/点赞/收藏域） |
 | `ImportExport`   | 导入导出                                                          |
 | `Sidebar`        | 侧边栏（作者作品分页 + 条目升降级虚拟化）                                            |
 | `Sync`           | 同步状态机（作品/关注）                                           |
@@ -114,7 +114,7 @@ DOMAIN_CONFIG = {
 
 | 类 / 对象              | 文件                         | 职责                                                                                                                                                  |
 |------------------------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `runtimeConfig` (对象) | `core.js`                    | 运行时配置：从 `chrome.storage.local` 读 `runtimeConfig` 叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient` |
+| `runtimeConfig` (对象) | `core.js`                    | 运行时配置：从 `chrome.storage.local` 读 `runtimeConfig` 叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient`；SW 冷启动（main.js init）补一次 reload 恢复全部运行参数，重开扩展不回退默认值，`isCalibrateEnabled` 惰性加载兜底 |
 | `utils` (对象)         | `core.js`                    | 纯函数集：`parseExpire` / `urlExpireAt` / `isLongLivedVideoUrl` / `extractMsTokenFromCookie` / `asyncHandler` / `sendSyncDone`                         |
 | `formatters` (对象)    | `core.js`                    | `formatWork` / `formatFollowing`                                                                                                                      |
 | `Crypto` (静态)        | `identity/crypto.js`        | 哈希/解析工具静态类：`md5Hex`（Argus webSign）/ `parseCookieToPairs` / `generateRandomMsToken`                                                        |
@@ -155,8 +155,10 @@ DOMAIN_CONFIG = {
 - **侧边栏是升降级式轻量虚拟化，且不用 `content-visibility:auto`** — observer root 必须显式传 `dom.sidebarBody`（null root 被祖先裁剪抵消致预填失效）；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；`.sidebar-work-item` 加 CV 只剩每帧 Layerize 抖动（详见 [docs/11](./docs/11-options-ui.md)）。
 - **VirtualGrid 填充观察者是分圈观察，不是全量 observe** — 新骨架进 `#pendingSkeletons` 队列逐批交给 IO，圈尾哨兵触发续批；哨兵被删须立刻续接，`render()`/`abortRender()` 重置须同清队列状态（成本依据与细则见 [docs/11](./docs/11-options-ui.md)）。
 - **网格卡片是双向虚拟化的** — 填充/卸载双 observer + 时间预算制分帧填充（勿改回固定张数/帧）；卸载圈远大于填充圈形成滞回勿调近；`populateItem` 负责 observe 完整卡的交接，`updateCardDOM` 已兼容骨架态（见 [docs/11](./docs/11-options-ui.md)）。
+- **分组切换不清场，域切换同步清场** — 分组切换在 `currentGroupId` 事件不 wipe、不铺骨架占位：旧分组卡片保留到新数据到达，数据到达后由域 store 事件触发 `render()` 整批重建（加载期间无网格 loading 指示）；域切换仍在 `switchDomain` 同步清场（abortRender×4 + 容器 wipe，只清不铺）。禁止改回「切换瞬间 wipe + 按视口铺骨架占位」（见 [docs/11](./docs/11-options-ui.md)）。
 - **填充/降级必须在骨架根节点上原地切换（禁止换根节点）** — grid 容器任一直接子节点被替换都触发 Blink 全量重排，成本随卡片总数线性；子类只允许改类名与增删根节点后代，骨架模板必须与完整卡根层同构（见 [docs/11](./docs/11-options-ui.md)）。
 - **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件（静默失效）；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断（见 [docs/11](./docs/11-options-ui.md)）。
+- **卡片预览静音是全局联动，详情播放器独立** — 作品/点赞/收藏域卡片静音切换走 `WorksGrid.#togglePreviewMute()`（共享 `#previewMuted` 标志，遍历容器内全部已渲染 `.work-video-player` 同步 `video.muted` 与按钮图标）；卡片填充与悬停起播都读该标志保证新卡继承。禁止改回单卡独立静音；`Detail.toggleVideoMute` 只服务详情覆盖层（`dom.detailVideo`/note 音频），勿与卡片联动。
 - **网格媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 四个槽位全是 `<div role="img">`（唯一例外详情大图 `<img>`+探针）；离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际再提交。各槽位失败语义、代际机制与清背景要求全文见 [docs/11](./docs/11-options-ui.md)。
 - **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被文件后部组件规则覆盖，hidden 静默失效、占位层常显（见 [docs/11](./docs/11-options-ui.md)）。
 - **搜索栏收起即重置，筛选不跨收起保留** — `closeSearchBar()` 必须先调 `clearSearchFilters()` 恢复默认初始状态（关键词/排序/归属勾选/逆序全部复位）；无「收起但筛选仍生效」的摘要条。域切换**不**重置（搜索栏展开期间改动按现态保留）。

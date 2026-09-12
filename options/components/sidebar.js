@@ -56,19 +56,28 @@ export class Sidebar {
     const finalWidth = this.#snapTo(
       dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width,
     );
-    this.setSidebarWidth(finalWidth);
-    this.saveSidebarWidth(finalWidth);
+    // 拖拽释放会吸附到吸附点（650/0），跨列阈值时同样锚定视口内最上方卡片
+    this.#preserveAnchor(this.#topVisibleCard(), () => {
+      this.setSidebarWidth(finalWidth);
+      this.saveSidebarWidth(finalWidth);
+    });
   };
 
-  // 点击分割条：收起（落盘 0，与拖拽收起语义一致）；展开恢复上次保存的宽度
+  // 点击分割条：收起（落盘 0，与拖拽收起语义一致）；展开恢复上次保存的宽度。
+  // 开关都会改变主网格列数（固定卡宽 auto-fill 跨列阈值时卡片跳位），
+  // 锚定视口内最上方卡片，开关前后保持其视口 Y，避免用户丢失视觉参考
   toggleSidebar() {
     if (dom.sidebar.classList.contains("sidebar-zero")) {
       const target = this.#loadWidth() || Sidebar.SNAP_POINTS[0];
-      this.setSidebarWidth(target);
-      this.saveSidebarWidth(target);
+      this.#preserveAnchor(this.#topVisibleCard(), () => {
+        this.setSidebarWidth(target);
+        this.saveSidebarWidth(target);
+      });
     } else {
-      this.setSidebarWidth(0);
-      this.saveSidebarWidth(0);
+      this.#preserveAnchor(this.#topVisibleCard(), () => {
+        this.setSidebarWidth(0);
+        this.saveSidebarWidth(0);
+      });
     }
   }
 
@@ -111,6 +120,13 @@ export class Sidebar {
     localStorage.setItem(Sidebar.STORAGE_KEY, String(width));
   }
 
+  // 网格滚动锚点补偿的公共入口：记录锚点卡视口 Y → 执行 mutate（任何会改变主网格
+  // 列数的布局变更）→ 调整 #mainGrid.scrollTop 把锚点卡拉回原视口 Y。
+  // 供 AppShell（左侧边栏折叠）等复用；锚点为 null 时仅执行 mutate
+  preserveGridAnchor(anchorEl, mutate) {
+    return this.#preserveAnchor(anchorEl, mutate);
+  }
+
   clearSidebarActive() {
     const active = dom.mainContainer.querySelector(".following-card.sidebar-active");
     if (active) active.classList.remove("sidebar-active");
@@ -128,8 +144,11 @@ export class Sidebar {
     const needsExpand = dom.sidebar.classList.contains("sidebar-zero");
     if (needsExpand) {
       const target = this.#loadWidth() || 650;
-      this.setSidebarWidth(target);
-      this.saveSidebarWidth(target);
+      // 锚定被点击卡片：展开使网格减列、该卡下移，补偿后保持在原视口 Y 供用户定位参考
+      this.#preserveAnchor(card, () => {
+        this.setSidebarWidth(target);
+        this.saveSidebarWidth(target);
+      });
     }
 
     this.#resetSidebarGrid();
@@ -229,6 +248,31 @@ export class Sidebar {
       if (Math.abs(Sidebar.SNAP_POINTS[i] - v) < Math.abs(n - v)) n = Sidebar.SNAP_POINTS[i];
     }
     return n;
+  }
+
+  // 锚点滚动补偿：侧边栏开关/拖拽释放改变主网格列数后，把锚点卡拉回原视口 Y
+  //（水平列位随重排必然漂移，垂直精确保持即"尽量不变"）。必须同步执行：
+  // setSidebarWidth 无宽度过渡，mutate 后一次 getBoundingClientRect 即读到新布局
+  #preserveAnchor(anchorEl, mutate) {
+    if (!anchorEl || !anchorEl.isConnected) return mutate();
+    const grid = dom.mainGrid;
+    const before = anchorEl.getBoundingClientRect().top;
+    const result = mutate();
+    if (!anchorEl.isConnected) return result;
+    const after = anchorEl.getBoundingClientRect().top;
+    const delta = after - before;
+    if (Math.abs(delta) > 1) grid.scrollTop += delta;
+    return result;
+  }
+
+  // 锚点兜底：取视口内最上方的卡片作锚（骨架/完整卡都参与网格流、几何位置真实，
+  // 视口顶部的卡处于填充圈内、通常为完整卡）；无卡片（空态/错误态）时返回 null
+  #topVisibleCard() {
+    const gridTop = dom.mainGrid.getBoundingClientRect().top;
+    for (const card of dom.mainContainer.querySelectorAll(".following-card")) {
+      if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
+    }
+    return null;
   }
 
   #initResize() {

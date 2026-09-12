@@ -126,7 +126,7 @@ class ScanTasks {
           await new Promise((r) => setTimeout(r, delay));
         }
       }
-      if (!cancelled && all.length > 0 && independentClient.isCalibrateEnabled()) {
+      if (!cancelled && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
         await this.calibrateStats(
           all,
           async (secUid) => {

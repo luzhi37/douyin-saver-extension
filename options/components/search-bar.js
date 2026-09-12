@@ -2,6 +2,7 @@
 import { config, dom, state } from '../core.js';
 import { followingsGrid } from '../grids/followings-grid.js';
 import { worksGrid, likesGrid, favoritesGrid } from '../grids/works-grid.js';
+import { batch } from '../data/batch.js';
 
 // ---------- 检索：搜索/排序 ----------
 // 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
@@ -159,6 +160,9 @@ export class SearchBar {
 
   // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数 + 筛选状态写入 URL hash（P1-8）
   refreshGridView() {
+    // 视图顺序可能已变（排序/关键词/归属/域/分组/同步）：旧 shift 锚点在新顺序中的
+    // 索引与点击时不一致，先清空锚点，防止区间按错误索引圈选
+    batch.resetRangeAnchor();
     if (this.#isWorkLikeDomain()) this.activeWorkLikeGrid().renderCards();
     else followingsGrid.renderFollowingCards();
     this.syncCount();
@@ -244,10 +248,6 @@ export class SearchBar {
     return !dom.searchBar.classList.contains("hidden");
   }
 
-  #updateSearchMenuLabel() {
-    dom.btnSearchMenu.textContent = this.#isSearchBarOpen() ? "收起搜索" : "搜索";
-  }
-
   // ---------- 展开 / 收起 ----------
   // 页面刷新后恢复：URL 带 #search?... 时展开搜索栏并套用 hash 中的筛选状态（P1-8）
   initFromHash() {
@@ -263,7 +263,6 @@ export class SearchBar {
     // 排序段随域显隐；逆序复选框两域共用
     this.syncForDomain();
     dom.searchInput.value = this.#searchState.keyword;
-    this.#updateSearchMenuLabel();
     if (restored) this.refreshGridView();
     dom.searchInput.focus();
     dom.searchInput.select();
@@ -275,7 +274,6 @@ export class SearchBar {
     // 网格恢复全量，下次展开从默认初始状态开始
     this.clearSearchFilters();
     dom.searchBar.classList.add("hidden");
-    this.#updateSearchMenuLabel();
   }
 
   toggleSearchBar() {

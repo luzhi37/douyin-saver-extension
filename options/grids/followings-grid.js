@@ -41,7 +41,6 @@ export class FollowingsGrid extends VirtualGrid {
       checkbox = document.createElement("div");
       checkbox.className = "following-checkbox";
       checkbox.setAttribute("role", "checkbox");
-      checkbox.tabIndex = 0;
       checkbox.setAttribute("aria-checked", "false");
       checkbox.setAttribute("aria-label", "选择关注者");
       card.prepend(checkbox);

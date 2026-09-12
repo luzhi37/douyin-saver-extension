@@ -20,15 +20,13 @@ import { appShell } from './components/app-shell.js';
 const SHORTCUT_ROWS = [
   ["Ctrl+K", "展开并聚焦搜索栏"],
   ["?", "打开快捷键速查"],
-  ["Esc", "关闭弹窗 / 详情 / 收起搜索"],
+  ["Esc", "关闭弹窗 / 详情 / 退出批量 / 收起搜索"],
   ["详情 · ↑/↓ 或 滚轮", "切换上/下一个作品"],
   ["详情 · Space", "播放 / 暂停"],
   ["详情 · M", "静音 / 取消静音"],
   ["详情 · L", "循环模式（单作品 / 分组 / 关闭）"],
   ["详情 · F", "全屏播放"],
   ["详情 · ←/→", "图集翻页（多图作品）"],
-  ["卡片 · Enter / Space", "打开 / 勾选"],
-  ["卡片 · ←/↑/→/↓", "方向键移动焦点"],
   ["批量 · Ctrl+A", "全选当前结果"],
   ["批量 · Shift+点击", "范围选择"],
 ];
@@ -67,7 +65,7 @@ chrome.runtime.onMessage.addListener((message) => {
 // ---------- DOM 事件绑定 ----------
 dom.dialogClose.addEventListener("click", () => appShell.requestDialogClose());
 
-// Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余收起搜索栏
+// Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余先退出批量、再收起搜索栏
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!dom.dialogOverlay.classList.contains("hidden")) {
@@ -75,6 +73,10 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (!dom.detailOverlay.classList.contains("hidden")) return;
+  if (state.batchMode) {
+    batch.handleBatchToggle();
+    return;
+  }
   search.closeSearchBar();
 });
 
@@ -111,17 +113,7 @@ dom.batchSelectAll.addEventListener("click", () => batch.handleBatchSelectAll())
 dom.batchDelete.addEventListener("click", () => batch.handleBatchDelete());
 dom.batchMove.addEventListener("click", () => batch.handleBatchMove());
 dom.batchSaveToWorks.addEventListener("click", () => batch.saveSelectedToWorks());
-
-dom.btnMenu.addEventListener("click", (e) => {
-  e.stopPropagation();
-  dom.menuDropdown.classList.toggle("hidden");
-});
-document.addEventListener("click", () => {
-  dom.menuDropdown.classList.add("hidden");
-});
-dom.menuDropdown.addEventListener("click", () => {
-  dom.menuDropdown.classList.add("hidden");
-});
+dom.batchDownload.addEventListener("click", () => batch.handleBatchDownload());
 
 dom.btnGroupManage.addEventListener("click", () => groups.showGroupManage());
 
@@ -191,6 +183,7 @@ dom.btnSync.addEventListener("click", async () => {
   }
 
   sidebar.initSidebar();
+  appShell.initLeftSidebar();
   detail.initDetailEvents();
   dom.groupTabs.addEventListener(
     "scroll",
@@ -232,6 +225,7 @@ dom.btnSync.addEventListener("click", async () => {
     if (state.domain === "favorites") search.refreshGridView();
   });
   store.on("groups", () => groups.renderGroupTabs());
+  // 切换分组保留旧分组卡片直到新数据到达：数据到达后由域 store 事件触发 render() 整批重建
   store.on("currentGroupId", async () => {
     await groups.renderGroupTabs();
     try {
