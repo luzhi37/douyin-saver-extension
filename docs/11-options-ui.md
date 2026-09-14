@@ -69,6 +69,9 @@ Batch.updateCheckboxDOM(checkboxEl, isSelected)
 Batch.handleBatchSelectAll()                  // 按域选择 checkbox 选择器
 Detail.markMediaFail() / markMediaOk() / mediaRetryBlocked()
 Detail.#scheduleCoverDrain / #showAvatarFallback / #imgProbeToken
+Detail.#renderVideoProgress / #resetVideoProgressUI / #applySeek(frac)
+Detail.#buildNoteSegs / #renderNoteSegs(cur, total) / #onNoteAudioTimeUpdate / #onNoteAudioEnded
+Detail.#markDetailActive()                    // 闲置 2.6s 隐藏播放条/切换器的复位入口
 Sync.#followingsRequestId                     // 关注进度过滤（可 === null）
 ```
 
@@ -205,6 +208,28 @@ probe.onerror = () => {
 ### 同步进度过滤的 requestId 时序差异
 
 `SYNC_WORKS` **立即**返回 requestId；`FETCH_FOLLOWING` 等**收集完成才**返回。关注进度过滤因此必须兼容 `Sync.#followingsRequestId === null`（列表阶段尚未拿到 requestId 时不得按 requestId 过滤丢弃进度消息）。进度消息载荷见 01。
+
+### 详情层双形态进度条（视频轨道 / 图集分段）
+
+`#detailProgress` 贴播放条顶缘通栏，一个容器两种形态，由 `note-mode` 类切换：
+
+- **视频模式**：`.track-wrap` 连续轨道（buffered/played/thumb + hover 时间气泡），由 `#detailVideo` 的 `timeupdate` 驱动 `#renderVideoProgress`；`#detailTime`（bar-controls 信息位）同源更新。
+- **图集模式**：`#noteSegs` 分段进度接管同一位置（`note-mode` 下 `.track-wrap` 隐藏），N 段对应 N 张图，段内渐进填充。驱动分两路：有音乐时 `#detailAudio` 的 `timeupdate` 驱动（总时长=音乐真实时长，`loadedmetadata` 后接管）；无音乐兜底虚拟时钟（每图 `NOTE_AUTO_PLAY_INTERVAL`，收尾语义与旧定时轮播一致）。收尾均走 `nextOnEnd()` 的 single/group/off 循环模式语义。
+- **手动切图语义（方案A·音乐不跳段）**：箭头/键盘走 `#noteManualSwitch`——重定基周期偏移量 `#noteSegOffset`（周期时间 = `audio.currentTime - offset`）对齐目标段起点，指示器/`#noteVirtualElapsed` 同步，**音乐本身不 seek**；驱动按重定基后的周期时间继续推进，手动位置不被弹回。进度条 seek 同样只重定基偏移量。周期提前耗尽（前跳）或音乐先结束（后跳）均按 `nextOnEnd()` 收尾；'off' 播完后音频停在末尾，再点播放先清零 `currentTime/offset`（否则 play 后立即又触发 ended，播放键失灵）。
+- 键盘可达：容器 `role="slider"` + `tabindex="0"`，左右键 ±5%、Home/End 到两端；`seek` 统一走 `#applySeek`（视频=currentTime，图集=音乐进度且段落随位置切换）。
+- 悬浮特效：整段加高 6px + 指针段 `scaleY(1.8)` 提亮（`transform-origin: top` 向下伸展不遮画面）。
+- 图集切图时模糊背景跟随当前图（`#noteShowImage` 内 `#applyDetailBg([当前图])`），视频模式模糊背景=封面。
+
+### 详情层闲置隐藏与几何（对齐抖音播放界面）
+
+- **闲置隐藏**：overlay 内 mousemove/wheel/keydown 活动即复位 2.6s 定时器（`#markDetailActive`），超时挂 `#detailOverlay.idle`——CSS 淡出 `#detailBottomBar` 与 `#detailSwitcher`（opacity+pointer-events）。**红线：`:focus-within` 豁免必须保留**，键盘 Tab 聚焦到控件时不允许消失。
+- **几何**：`.detail-body` 全屏宽、`flex:1`（高度=视口−56px 播放条，零重叠）；`.media-view` 居中 39.3vw，视频/大图 `object-fit: cover` 裁切铺满（有意放弃 contain，两侧裁切属既定视觉），两侧由 `#detailOverlay::before` 模糊背景填充（`brightness(0.8)`，非旧版 0.4）。
+- **⌃⌄ 切换器**（`#detailSwitcher`）：右缘垂直居中，只切上一个/下一个作品（接 `prevDetail/nextDetail`），不参与图集翻页——图集翻页归左右箭头（56px、锚定 10vw、悬浮/聚焦常显）、分段条 seek 与自动轮播。
+- **bar-controls 信息位**：视频=`#detailTime`（0:00/0:00），图集=`#detailOrder`（K/N），由 `#updateCounters` 分工写入；`#detailCounter`（作品序号）仍在最右端。
+- **`#detailTitle` 全文**：描述不再 JS 截断（`DETAIL_TITLE_MAX_LEN` 仅剩移除确认框使用），CSS 单行省略。
+- `.detail-bar-btn` 仍被卡片预览按钮复用（options.html `.video-play-btn/.video-mute-btn`），调整其尺寸参数时须回归卡片预览。
+
+### 同步进度过滤的 requestId 时序差异
 
 ### CSS 协同约定（.hidden 成对声明）
 

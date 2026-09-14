@@ -129,47 +129,74 @@
     </aside>
   </div>
 
-  <!-- ====== 详情报覆盖层（类似抖音刷作品） ====== -->
+  <!-- ====== 详情报覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ====== -->
   <div id="detailOverlay" class="flex-col hidden">
     <button id="detailClose" class="flex-center" aria-label="关闭详情">
-      <svg width="20" height="20">
-        <use href="#icon-close" />
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round">
+        <path d="M5 5l14 14M19 5L5 19" />
       </svg>
     </button>
     <div class="detail-body">
-      <div id="detailVideoContainer" class="flex-col hidden">
-        <div id="detailVideoWrap" class="flex-center">
-          <video id="detailVideo" playsinline></video>
-          <!-- 加载中指示（建议17） -->
-          <div id="detailLoader" class="detail-loader hidden flex-center">
-            <div class="spinner"></div>
+      <!-- 清晰画面区（居中 39.3vw 裁切铺满，两侧由 overlay 模糊背景填充） -->
+      <div class="media-view">
+        <div id="detailVideoContainer" class="flex-col hidden">
+          <div id="detailVideoWrap" class="flex-center">
+            <video id="detailVideo" playsinline></video>
+            <!-- 加载中指示（建议17） -->
+            <div id="detailLoader" class="detail-loader hidden flex-center">
+              <div class="spinner"></div>
+            </div>
           </div>
         </div>
-      </div>
-      <div id="detailImageContainer" class="hidden">
-        <div class="detail-image-container flex-center">
-          <img id="detailImage" style="transition: opacity 0.2s" />
-          <audio id="detailAudio" style="display: none" loop></audio>
+        <div id="detailImageContainer" class="hidden">
+          <div class="detail-image-container flex-center">
+            <img id="detailImage" style="transition: opacity 0.2s" />
+            <audio id="detailAudio" style="display: none"></audio>
+          </div>
         </div>
       </div>
       <!-- 导航箭头挂 .detail-body 直下：不参与作品切换动效（容器淡入淡出与媒体滑动） -->
       <div id="detailNavLeft" class="detail-nav-btn flex-center hidden" aria-label="上一张">
-        <svg width="24" height="24">
-          <use href="#icon-nav-left" />
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2">
+          <path d="M15 18l-6-6 6-6" />
         </svg>
       </div>
       <div id="detailNavRight" class="detail-nav-btn detail-nav-right flex-center hidden" aria-label="下一张">
-        <svg width="24" height="24">
-          <use href="#icon-nav-right" />
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2">
+          <path d="M9 6l6 6-6 6" />
         </svg>
       </div>
     </div>
+    <!-- 上/下作品切换胶囊（对齐抖音 ⌃⌄：右缘垂直居中，切上一个/下一个作品） -->
+    <div id="detailSwitcher" class="detail-switcher">
+      <button id="detailSwitchPrev" class="flex-center" aria-label="上一个作品">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 15l-6-6-6 6" />
+        </svg>
+      </button>
+      <button id="detailSwitchNext" class="flex-center" aria-label="下一个作品">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+    </div>
     <div id="detailBottomBar">
-      <!-- 进度条并入底栏顶缘（建议16），通栏绝对定位 -->
-      <input type="range" id="detailProgressSlider" class="detail-progress-slider hidden" min="0" max="100" value="0" aria-label="播放进度" />
+      <!-- 进度条贴播放条顶缘（通栏）：视频=连续轨道+时间气泡，图集=分段进度（与音乐同步） -->
+      <div id="detailProgress" role="slider" aria-label="播放进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+        <div class="track-wrap video-mode">
+          <div class="track">
+            <div class="track-buffered"></div>
+            <div class="track-played"></div>
+            <div class="track-thumb"></div>
+          </div>
+          <span class="time-tip">0:00 / 0:00</span>
+        </div>
+        <div id="noteSegs" class="hidden"></div>
+      </div>
       <div class="bar-group bar-controls flex-row">
         <button id="detailPlayBtn" class="detail-bar-btn icon-btn flex-center" aria-label="播放"></button>
-        <span id="detailTime" class="detail-bar-text detail-bar-time">0:00 / 0:00</span>
+        <span id="detailTime" class="detail-bar-text detail-bar-time hidden">0:00 / 0:00</span>
+        <span id="detailOrder" class="detail-bar-text detail-bar-order hidden">1/1</span>
       </div>
       <span class="bar-divider"></span>
       <div class="bar-group bar-meta flex-row">

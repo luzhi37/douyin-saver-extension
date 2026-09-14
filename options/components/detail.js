@@ -13,8 +13,15 @@ export class Detail {
   #noteWork = null;
   #noteImgIndex = 0;
   #noteAutoPlayTimer = null;
-  #detailSliderRaf = 0;
   #noteIsPlaying = false;
+  #noteMode = "virtual";        // 图集进度驱动：music=音频 timeupdate / virtual=定时器兜底
+  #noteVirtualElapsed = 0;      // virtual 模式当前轮播周期已播毫秒数
+  #noteSegOffset = 0;           // music 模式轮播周期偏移（ms）：周期时间 = audio.currentTime - offset。
+                                // 手动切图/进度条 seek 只重定基偏移量，音乐本身不跳
+  #trackPlayed = null;
+  #trackThumb = null;
+  #trackBuffered = null;
+  #timeTip = null;
   #mediaFailCount = 0;
   #mediaLastFailAt = 0;
   #mediaBreakUntil = 0;
@@ -27,6 +34,8 @@ export class Detail {
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
     const img = dom.detailImage;
+    // 模糊背景跟随当前图（对齐抖音：同画面放大模糊）
+    this.#applyDetailBg([this.#noteWork.images[idx]]);
     // 淡出当前图片
     img.style.opacity = '0';
     requestAnimationFrame(() => {
@@ -55,35 +64,176 @@ export class Detail {
     });
     this.#updateCounters(this.#noteWork);
   }
+  // 图集分段进度条：N 段对应 N 张图（仅在段数变化时重建，避免 resume 时清空填充）
+  #buildNoteSegs() {
+    const work = this.#noteWork;
+    if (!work?.images?.length) return;
+    if (dom.noteSegs.children.length === work.images.length) return;
+    dom.noteSegs.innerHTML = "";
+    for (let i = 0; i < work.images.length; i++) {
+      const seg = document.createElement("div");
+      seg.className = "seg";
+      const fill = document.createElement("div");
+      fill.className = "seg-fill";
+      seg.appendChild(fill);
+      dom.noteSegs.appendChild(seg);
+    }
+  }
+
+  // 渐进填充：前段播满、当前段按 cur/total 推进、后段未播
+  #renderNoteSegs(cur, total) {
+    const work = this.#noteWork;
+    if (!work?.images?.length || !total) return;
+    const segDur = total / work.images.length;
+    [...dom.noteSegs.children].forEach((seg, k) => {
+      const fill = seg.querySelector(".seg-fill");
+      if (!fill) return;
+      const frac = Math.min(Math.max((cur - k * segDur) / segDur, 0), 1);
+      fill.style.width = frac * 100 + "%";
+    });
+  }
+
+  // 图集自动轮播驱动：有音乐=音频 timeupdate 驱动（总时长=音乐真实时长），
+  // 无音乐=虚拟时钟兜底（每图 NOTE_AUTO_PLAY_INTERVAL，行为与旧定时轮播一致）
   #noteStartAutoPlay() {
-    const AUTO_PLAY_INTERVAL = config.NOTE_AUTO_PLAY_INTERVAL;
+    const work = this.#noteWork;
+    if (!work?.images?.length) return;
     this.#noteStopAutoPlay();
-    const tick = () => {
-      this.#noteAutoPlayTimer = setTimeout(() => {
-        if (this.#noteImgIndex < this.#noteWork.images.length - 1) {
-          this.#noteShowImage(this.#noteImgIndex + 1);
-          tick();
-        } else {
-          const mode = this.nextOnEnd();
-          if (mode === "single") {
-            this.#noteShowImage(0);
-            tick();
-          } else if (mode === "group") {
-            this.renderDetail();
-          } else {
-            this.#noteIsPlaying = false;
-            this.#noteUpdatePlayBtn();
-          }
-        }
-      }, AUTO_PLAY_INTERVAL);
-    };
-    tick();
+    this.#buildNoteSegs();
+    this.#noteIsPlaying = true;
+    if (work.music) {
+      this.#noteMode = "music";
+      const audio = dom.detailAudio;
+      // 'off' 播完后音频停在末尾：再点播放需从头部重来，否则 play 后立即又触发 ended
+      if (audio.ended) {
+        audio.currentTime = 0;
+        this.#noteSegOffset = 0;
+      }
+      audio.play().catch(() => {});
+    } else {
+      this.#noteMode = "virtual";
+      this.#noteVirtualElapsed = 0;
+      this.#noteAutoPlayTimer = setInterval(() => this.#onNoteVirtualTick(), 250);
+    }
+    this.#noteUpdatePlayBtn();
   }
   #noteStopAutoPlay() {
     if (this.#noteAutoPlayTimer) {
-      clearTimeout(this.#noteAutoPlayTimer);
+      clearInterval(this.#noteAutoPlayTimer);
       this.#noteAutoPlayTimer = null;
     }
+    if (this.#noteMode === "music") dom.detailAudio.pause();
+    this.#noteIsPlaying = false;
+  }
+  // 图集周期时间线辅助：total=周期总时长；cycle=周期内已播时间（music 模式=音频时钟减偏移）
+  #noteTotal() {
+    const work = this.#noteWork;
+    if (this.#noteMode === "music") {
+      const dur = dom.detailAudio.duration;
+      return dur && isFinite(dur) ? dur : work.images.length * config.NOTE_AUTO_PLAY_INTERVAL;
+    }
+    return work.images.length * config.NOTE_AUTO_PLAY_INTERVAL;
+  }
+  #noteCycleTime() {
+    if (this.#noteMode === "music") {
+      return Math.min(Math.max(dom.detailAudio.currentTime - this.#noteSegOffset, 0), this.#noteTotal());
+    }
+    return this.#noteVirtualElapsed;
+  }
+
+  // 手动切图（箭头/键盘）：重定基周期偏移量对齐目标段起点——
+  // 指示器/进度时间线随动，音乐本身不跳（方案A定案）；驱动继续按各自时钟推进
+  #noteManualSwitch(idx) {
+    const work = this.#noteWork;
+    if (!work?.images?.length) return;
+    idx = Math.min(Math.max(idx, 0), work.images.length - 1);
+    if (this.#noteMode === "music" && dom.detailAudio.duration && isFinite(dom.detailAudio.duration)) {
+      this.#noteSegOffset = dom.detailAudio.currentTime - (idx * dom.detailAudio.duration) / work.images.length;
+    } else if (this.#noteMode === "virtual") {
+      this.#noteVirtualElapsed = (idx * this.#noteTotal()) / work.images.length;
+    }
+    this.#noteShowImage(idx);
+    this.#renderNoteSegs(this.#noteCycleTime(), this.#noteTotal());
+  }
+
+  // 音乐 timeupdate（initDetailEvents 绑定一次）：按重定基后的周期时间渐进填充 + 段满切图。
+  // 手动切图后由偏移量保证不回弹（音乐不跳段）
+  #onNoteAudioTimeUpdate() {
+    if (dom.detailOverlay.classList.contains("hidden")) return;
+    if (this.#noteMode !== "music") return;
+    const work = this.#noteWork;
+    const audio = dom.detailAudio;
+    if (!work?.images?.length || !audio.duration || !isFinite(audio.duration)) return;
+    const total = audio.duration;
+    const cycle = audio.currentTime - this.#noteSegOffset;
+    if (cycle >= total) {
+      // 周期走完（含手动前跳提前耗尽剩余音乐）：按循环模式收尾
+      const end = this.nextOnEnd();
+      if (end === "single") {
+        this.#noteSegOffset = audio.currentTime;
+        this.#noteShowImage(0);
+        this.#renderNoteSegs(0, total);
+        return;
+      }
+      if (end === "group") {
+        this.renderDetail();
+        return;
+      }
+      this.#noteStopAutoPlay();
+      this.#noteUpdatePlayBtn();
+      return;
+    }
+    const clamped = Math.max(cycle, 0);
+    this.#renderNoteSegs(clamped, total);
+    const seg = Math.min(Math.floor(clamped / (total / work.images.length)), work.images.length - 1);
+    if (seg !== this.#noteImgIndex) this.#noteShowImage(seg);
+  }
+  // 音乐播完：按循环模式收尾（single=重播，group=下一作品，off=停）。
+  // 手动后跳会使周期未走完音乐先结束，故重播时同时清零偏移量
+  #onNoteAudioEnded() {
+    if (this.#noteMode !== "music") return;
+    const end = this.nextOnEnd();
+    if (end === "single") {
+      this.#noteSegOffset = 0;
+      dom.detailAudio.currentTime = 0;
+      dom.detailAudio.play().catch(() => {});
+      this.#noteShowImage(0);
+      this.#renderNoteSegs(0, this.#noteTotal());
+      return;
+    }
+    if (end === "group") {
+      this.renderDetail();
+      return;
+    }
+    this.#noteStopAutoPlay();
+    this.#noteUpdatePlayBtn();
+  }
+  // 无音乐兜底 tick：虚拟时钟推进，收尾语义与旧定时轮播一致
+  #onNoteVirtualTick() {
+    const work = this.#noteWork;
+    if (!work?.images?.length) return;
+    const interval = config.NOTE_AUTO_PLAY_INTERVAL;
+    const total = work.images.length * interval;
+    this.#noteVirtualElapsed += 250;
+    if (this.#noteVirtualElapsed >= total) {
+      const end = this.nextOnEnd();
+      if (end === "single") {
+        this.#noteVirtualElapsed = 0;
+        this.#noteShowImage(0);
+        this.#renderNoteSegs(0, total);
+        return;
+      }
+      if (end === "group") {
+        this.renderDetail();
+        return;
+      }
+      this.#noteStopAutoPlay();
+      this.#noteUpdatePlayBtn();
+      return;
+    }
+    this.#renderNoteSegs(this.#noteVirtualElapsed, total);
+    const seg = Math.floor(this.#noteVirtualElapsed / interval);
+    if (seg !== this.#noteImgIndex) this.#noteShowImage(seg);
   }
   #noteUpdatePlayBtn() {
     if (this.#noteIsPlaying) {
@@ -99,15 +249,10 @@ export class Detail {
     }
   }
   #toggleNoteAutoPlay() {
-    const audio = dom.detailAudio;
     if (this.#noteIsPlaying) {
       this.#noteStopAutoPlay();
-      audio?.pause();
-      this.#noteIsPlaying = false;
     } else {
       this.#noteStartAutoPlay();
-      audio?.play().catch(() => {});
-      this.#noteIsPlaying = true;
     }
     this.#noteUpdatePlayBtn();
   }
@@ -242,15 +387,15 @@ export class Detail {
 
   // ===== 详情层 UI 增强（docs/UI_IMPROVEMENTS.md 建议10-21）=====
 
-  // 计数展示：底栏时间位显示媒体指示——视频为播放时间（updateVideoProgress 维护），
-  // 图片类型/图集为 [K/N] 图片页序；底栏最右端仍为作品序号
+  // 计数展示：bar-controls 信息位——视频为播放时间（#renderVideoProgress 维护 detailTime），
+  // 图集为 K/N 图片顺序（#detailOrder，随 #noteShowImage 更新）；播放条最右端仍为作品序号
   #updateCounters(work) {
     const total = search.getWorksView().length;
-    // 底栏时间位：图片类型显示 [K/N]（视频在此位显示播放时间，不由此处写入）
+    // 图集顺序位（视频模式此位显示 detailTime，不由此处写入）
     if (work.type === "note" && work.images?.length) {
-      dom.detailTime.textContent = `${this.#noteImgIndex + 1}/${work.images.length}`;
+      dom.detailOrder.textContent = `${this.#noteImgIndex + 1}/${work.images.length}`;
     }
-    // 底栏右侧：作品序号
+    // 播放条最右端：作品序号
     if (total > 1) {
       dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${total}`;
       dom.detailCounter.classList.remove("hidden");
@@ -387,12 +532,6 @@ export class Detail {
         this.resetMediaElements();
       }
 
-      const bgUrl = work.cover || work.images?.[0] || "";
-      if (bgUrl) {
-        // 候选链探测：封面优先、图集各帧兜底；全部失效时降级为统一深色底（见 #applyDetailBg）
-        this.#applyDetailBg([work.cover, ...(work.images || [])]);
-      }
-
       const isNote = work.type === "note" && work.images?.length > 0;
 
       dom.detailPlayBtn.style.display = "";
@@ -400,7 +539,18 @@ export class Detail {
 
       dom.detailVideoContainer.classList.toggle("hidden", !isVideo);
       dom.detailImageContainer.classList.toggle("hidden", !isNote && (isVideo || !work.cover));
-      dom.detailProgressSlider.classList.toggle("hidden", !isVideo);
+      // 进度条双形态：视频=连续轨道，图集=分段进度（音乐/虚拟时钟驱动）
+      dom.detailProgress.classList.toggle("hidden", !isVideo && !isNote);
+      dom.detailProgress.classList.toggle("note-mode", isNote);
+      dom.noteSegs.classList.toggle("hidden", !isNote);
+
+      // 模糊背景（对齐抖音：同画面放大模糊）——视频=封面；图集=首图（#noteShowImage 切图跟随）
+      // 候选链探针与代际机制见 #applyDetailBg，全部失效时降级为统一深色底
+      if (isVideo) {
+        this.#applyDetailBg([work.cover]);
+      } else if (isNote) {
+        this.#applyDetailBg([work.images[0]]);
+      }
 
       // 导航箭头已上移至 .detail-body 直下（不随媒体容器切换动效），可见性须在此显式管理：
       // 仅多图图集出现，视频/单图路径不再依赖容器 hidden 连带隐藏
@@ -408,11 +558,10 @@ export class Detail {
       dom.detailNavLeft.classList.toggle("hidden", !hasNoteNav);
       dom.detailNavRight.classList.toggle("hidden", !hasNoteNav);
 
+      dom.detailTime.classList.toggle("hidden", !isVideo);
+      dom.detailOrder.classList.toggle("hidden", !isNote);
       if (isVideo) {
-        dom.detailTime.textContent = "0:00 / 0:00";
-      } else {
-        // 图片类型的时间位由 #updateCounters 写入 [K/N]，此处先清空避免残留
-        dom.detailTime.textContent = "";
+        this.#resetVideoProgressUI();
       }
 
       if (work.authorHomeUrl) {
@@ -426,7 +575,8 @@ export class Detail {
 
       const typePath = work.type === "note" ? "note" : "video";
       dom.detailTitle.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
-      dom.detailTitle.textContent = (work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN);
+      // 描述全文进入播放条（CSS 单行省略 + hover title 提示），不再 JS 截断
+      dom.detailTitle.textContent = work.desc || "无作品描述";
       dom.detailTitle.title = "在抖音打开作品页";
 
       this.updateLoopBtn(isVideo);
@@ -541,9 +691,7 @@ export class Detail {
 
     dom.detailPlayBtn.innerHTML = config.icons.pause;
 
-    const slider = dom.detailProgressSlider;
-    slider.value = 0;
-    slider.style.background = "linear-gradient(to right, #fff 0%, rgba(255,255,255,0.2) 0%)";
+    this.#resetVideoProgressUI();
   }
 
   renderDetailNote(work, onReady) {
@@ -551,6 +699,7 @@ export class Detail {
     this.#noteImgIndex = 0;
     this.#noteAutoPlayTimer = null;
     this.#noteIsPlaying = false;
+    this.#noteSegOffset = 0;
     const img = dom.detailImage;
     const audio = dom.detailAudio;
 
@@ -613,6 +762,7 @@ export class Detail {
 
     if (work.music) {
       audio.src = utils.pickHttpsUrl(work.music);
+      audio.currentTime = 0;
 
       dom.detailMuteBtn.innerHTML = audio.muted ? config.icons.mute : config.icons.unmute;
 
@@ -623,13 +773,13 @@ export class Detail {
           audio.play().catch(() => {});
         }
       });
+      // 初始分段填充兜底：metadata 就绪后由 timeupdate 按真实音乐时长接管
+      this.#renderNoteSegs(0, work.images.length * config.NOTE_AUTO_PLAY_INTERVAL);
     } else {
       dom.detailMuteBtn.style.display = "none";
     }
 
-    this.#noteIsPlaying = true;
     this.#noteStartAutoPlay();
-    this.#noteUpdatePlayBtn();
 
     this.addCleanup(() => this.#noteStopAutoPlay());
   }
@@ -695,13 +845,13 @@ export class Detail {
         }
       }
       if (work?.type === "note" && work.images?.length > 1) {
-        if (e.key === "ArrowLeft" && this.#noteImgIndex > 0) {
+        if (e.key === "ArrowLeft") {
           e.preventDefault();
-          this.#noteShowImage(this.#noteImgIndex - 1);
+          this.#noteManualSwitch(this.#noteImgIndex - 1);
         }
-        if (e.key === "ArrowRight" && this.#noteImgIndex < work.images.length - 1) {
+        if (e.key === "ArrowRight") {
           e.preventDefault();
-          this.#noteShowImage(this.#noteImgIndex + 1);
+          this.#noteManualSwitch(this.#noteImgIndex + 1);
         }
       }
     });
@@ -810,7 +960,7 @@ export class Detail {
     video.addEventListener("timeupdate", () => {
       if (video._lastProgressUpdate && Date.now() - video._lastProgressUpdate < 250) return;
       video._lastProgressUpdate = Date.now();
-      this.updateVideoProgress(video, dom.detailProgressSlider, dom.detailTime, "0.2");
+      this.#renderVideoProgress();
     });
     video.addEventListener("ended", () => {
       const mode = this.nextOnEnd();
@@ -818,22 +968,54 @@ export class Detail {
       else if (mode === "group") this.renderDetail();
     });
 
-    dom.detailProgressSlider.addEventListener("input", () => {
-      cancelAnimationFrame(this.#detailSliderRaf);
-      this.#detailSliderRaf = requestAnimationFrame(() => {
-        if (video.duration) video.currentTime = (dom.detailProgressSlider.value / 100) * video.duration;
-      });
+    // 进度条：点击 seek（视频=currentTime / 图集=音乐进度）；键盘 ±5% 与 Home/End（role=slider）
+    dom.detailProgress.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.#seekProgress(e.clientX);
+    });
+    dom.detailProgress.addEventListener("keydown", (e) => {
+      const video = dom.detailVideo;
+      const audio = dom.detailAudio;
+      const dur = dom.detailProgress.classList.contains("note-mode")
+        ? (this.#noteMode === "music" ? audio.duration : 0)
+        : video.duration;
+      if (!dur || !isFinite(dur)) return;
+      const cur = dom.detailProgress.classList.contains("note-mode") ? audio.currentTime : video.currentTime;
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        this.#applySeek(cur / dur + (e.key === "ArrowRight" ? 0.05 : -0.05));
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        this.#applySeek(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        this.#applySeek(1);
+      }
+    });
+
+    // 图集进度驱动（音乐）：metadata 就绪重画分段，timeupdate 渐进填充切图，ended 按循环模式收尾
+    dom.detailAudio.addEventListener("loadedmetadata", () => this.#onNoteAudioTimeUpdate());
+    dom.detailAudio.addEventListener("timeupdate", () => this.#onNoteAudioTimeUpdate());
+    dom.detailAudio.addEventListener("ended", () => this.#onNoteAudioEnded());
+
+    // 上/下作品切换胶囊（对齐抖音 ⌃⌄）：不参与图集翻页，只切作品
+    dom.detailSwitchPrev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.prevDetail();
+    });
+    dom.detailSwitchNext.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.nextDetail();
     });
 
     dom.detailNavLeft.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (this.#noteImgIndex > 0) this.#noteShowImage(this.#noteImgIndex - 1);
+      this.#noteManualSwitch(this.#noteImgIndex - 1);
     });
 
     dom.detailNavRight.addEventListener("click", (e) => {
       e.stopPropagation();
-      const maxIndex = (this.#noteWork?.images.length || 1) - 1;
-      if (this.#noteImgIndex < maxIndex) this.#noteShowImage(this.#noteImgIndex + 1);
+      this.#noteManualSwitch(this.#noteImgIndex + 1);
     });
 
     const noteContainer = dom.detailImageContainer.querySelector(".detail-image-container");
@@ -858,7 +1040,8 @@ export class Detail {
     this.resetMediaElements();
     // 复位增强态 UI：加载指示隐藏，下次打开从干净状态开始
     dom.detailLoader.classList.add("hidden");
-    dom.detailProgressSlider.classList.add("hidden");
+    dom.detailProgress.classList.add("hidden");
+    dom.noteSegs.classList.add("hidden");
     // 导航箭头已不在媒体容器内，须随关闭显式隐藏
     dom.detailNavLeft.classList.add("hidden");
     dom.detailNavRight.classList.add("hidden");
@@ -915,6 +1098,79 @@ export class Detail {
   toggleVideoMute(video, muteBtn) {
     video.muted = !video.muted;
     muteBtn.innerHTML = video.muted ? config.icons.mute : config.icons.unmute;
+  }
+
+  // ===== 详情播放条进度（视频模式：真实 currentTime/duration/buffered 驱动） =====
+  #ensureProgressEls() {
+    if (this.#trackPlayed) return;
+    this.#trackPlayed = dom.detailProgress.querySelector(".track-played");
+    this.#trackThumb = dom.detailProgress.querySelector(".track-thumb");
+    this.#trackBuffered = dom.detailProgress.querySelector(".track-buffered");
+    this.#timeTip = dom.detailProgress.querySelector(".time-tip");
+  }
+
+  #renderVideoProgress() {
+    const video = dom.detailVideo;
+    const dur = video.duration;
+    if (!dur || !isFinite(dur)) return;
+    this.#ensureProgressEls();
+    const pct = (video.currentTime / dur) * 100;
+    this.#trackPlayed.style.width = pct + "%";
+    this.#trackThumb.style.left = pct + "%";
+    this.#timeTip.style.left = pct + "%";
+    const info = `${this.formatTime(video.currentTime)} / ${this.formatTime(dur)}`;
+    this.#timeTip.textContent = info;
+    dom.detailTime.textContent = info;
+    dom.detailProgress.setAttribute("aria-valuenow", String(Math.round(pct)));
+    try {
+      if (video.buffered.length) {
+        this.#trackBuffered.style.width =
+          (video.buffered.end(video.buffered.length - 1) / dur) * 100 + "%";
+      }
+    } catch (_) {}
+  }
+
+  #resetVideoProgressUI() {
+    this.#ensureProgressEls();
+    this.#trackPlayed.style.width = "0%";
+    this.#trackThumb.style.left = "0%";
+    this.#timeTip.style.left = "0%";
+    this.#trackBuffered.style.width = "0%";
+    this.#timeTip.textContent = "0:00 / 0:00";
+    dom.detailTime.textContent = "0:00 / 0:00";
+    dom.detailProgress.setAttribute("aria-valuenow", "0");
+  }
+
+  // seek：视频=currentTime；图集=音乐进度（music）或虚拟时钟（virtual），段落随位置切换
+  #applySeek(frac) {
+    frac = Math.min(Math.max(frac, 0), 1);
+    if (dom.detailProgress.classList.contains("note-mode")) {
+      const work = this.#noteWork;
+      if (!work?.images?.length) return;
+      // seek 只重定位轮播周期（music 模式重定基偏移量），音乐本身不跳
+      const total = this.#noteTotal();
+      if (!total) return;
+      if (this.#noteMode === "music") {
+        this.#noteSegOffset = dom.detailAudio.currentTime - frac * total;
+      } else {
+        this.#noteVirtualElapsed = frac * total;
+      }
+      this.#renderNoteSegs(frac * total, total);
+      const seg = Math.min(Math.floor((frac * total) / (total / work.images.length)), work.images.length - 1);
+      if (seg !== this.#noteImgIndex) this.#noteShowImage(seg);
+      return;
+    }
+    const video = dom.detailVideo;
+    if (video.duration) {
+      video.currentTime = frac * video.duration;
+      this.#renderVideoProgress();
+    }
+  }
+
+  #seekProgress(clientX) {
+    const rect = dom.detailProgress.getBoundingClientRect();
+    const frac = Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+    this.#applySeek(frac);
   }
 
   updateVideoProgress(video, slider, timeSpan, opacity) {

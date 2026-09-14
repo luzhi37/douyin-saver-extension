@@ -704,8 +704,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
    + scale(1.1)），与详情底栏按钮一致。.video-play-btn / .video-mute-btn 仅作 JS 选取钩子，
    不再单独定义外观，避免与底栏按钮样式分叉 */
 
-.video-progress,
-.detail-progress-slider {
+.video-progress {
   width: 100%;
   height: 3px;
   appearance: none;
@@ -715,8 +714,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   cursor: pointer;
 }
 
-.video-progress::-webkit-slider-thumb,
-.detail-progress-slider::-webkit-slider-thumb {
+.video-progress::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 10px;
   height: 10px;
@@ -728,7 +726,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 /* 卡片进度条已贴底（.work-video-controls padding-bottom:0），缩小拇指从 10px→7px，
    使其圆心在 3px 轨道上探出底缘的量降到约 2px，避免被 .work-card 的
-   overflow:hidden 把拇指下方切平（详情模式滑块贴底栏顶缘、下方有实体底栏故无需） */
+   overflow:hidden 把拇指下方切平（详情模式进度条贴底栏顶缘、下方有实体底栏故无需） */
 .video-progress::-webkit-slider-thumb {
   width: 7px;
   height: 7px;
@@ -1183,6 +1181,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* ===== 详情覆盖层 ===== */
+/* ===== 详情覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ===== */
 #detailOverlay {
   position: fixed;
   top: 0;
@@ -1206,7 +1205,8 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   background-image: var(--bg-url);
   background-size: cover;
   background-position: center;
-  filter: blur(60px) brightness(0.4);
+  /* 亮度 0.8：两侧模糊区可辨画面色彩（对齐抖音），仅轻压暗保证前景突出 */
+  filter: blur(70px) brightness(0.8);
   z-index: 0;
   contain: strict;
 }
@@ -1215,7 +1215,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(ellipse at center, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.25) 100%);
   z-index: 0;
   pointer-events: none;
 }
@@ -1225,22 +1225,29 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   z-index: 1;
 }
 
-#detailBottomBar {
-  animation: fadeIn 0.3s 0.15s ease both;
-}
-
 #detailOverlay.hidden {
   display: none;
 }
 
+/* 播放器层：全屏宽；flex:1 使其高度 = 视口 - 播放条，与底栏零重叠 */
 .detail-body {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  width: 100%;
   overflow: hidden;
   touch-action: pan-y;
   position: relative;
+}
+
+/* 清晰画面区：居中 39.3vw，媒体 cover 裁切铺满，两侧由 overlay 模糊背景填充 */
+.media-view {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 39.3vw;
+  overflow: hidden;
 }
 
 .detail-body.detail-transitioning #detailVideoContainer,
@@ -1256,15 +1263,15 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .detail-body video {
   width: 100%;
-  max-height: 100%;
+  height: 100%;
   outline: none;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .detail-body img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .detail-image-container {
@@ -1290,33 +1297,39 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* 导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，
-   保证切换作品时位置与透明度恒定；几何上媒体容器填满 body，两者坐标系一致 */
+   保证切换作品时位置与透明度恒定；悬浮/键盘聚焦时常显 */
 .detail-nav-btn {
   position: absolute;
-  left: 16px;
+  left: calc(10vw - 28px);
   top: 50%;
-  /* 垂直居中修复（建议14）：此前 translateY 被注释导致箭头顶边对齐中线 */
   transform: translateY(-50%);
-  width: 40px;
-  height: 40px;
-  border-radius: var(--dy-radius);
-  background: rgba(0, 0, 0, 0.4);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(8px);
   color: #fff;
   cursor: pointer;
-  z-index: 2;
+  border: none;
+  z-index: 5;
   user-select: none;
   touch-action: manipulation;
-  transition: background var(--dy-transition);
+  opacity: 0;
+  transition: opacity 0.2s, background var(--dy-transition);
+}
+
+.detail-body:hover .detail-nav-btn,
+.detail-nav-btn:focus-visible {
+  opacity: 1;
 }
 
 .detail-nav-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .detail-nav-btn.detail-nav-right {
   left: auto;
-  right: 16px;
+  right: calc(10vw - 28px);
 }
 
 .detail-nav-btn.hidden {
@@ -1324,7 +1337,8 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 #detailVideoContainer {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
@@ -1334,27 +1348,28 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 #detailImageContainer {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
 
 #detailVideoWrap {
-  flex: 1;
-  overflow: hidden;
   position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
-/* 关闭按钮（建议14 修订版）：保持左上角与抖音一致，仅做 SVG 化与 aria 补齐 */
+/* 关闭按钮（对齐抖音：68px 圆形 + 细线 ✕） */
 #detailClose {
   position: fixed;
-  top: 16px;
-  left: 16px;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--dy-radius);
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(8px);
+  top: 40px;
+  left: 40px;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.22);
   cursor: pointer;
   border: none;
   color: #fff;
@@ -1367,22 +1382,20 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 #detailClose:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.4);
 }
 
+/* 播放条：56px 通栏贴底，三分区（controls/meta/actions）沿旧结构 */
 #detailBottomBar {
-  /* 三段式底栏（建议11）：进度条绝对定位于顶缘（建议16），分组由 .bar-group 承担 */
   position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(12px);
-  padding: 0 12px;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 0 20px;
   flex-shrink: 0;
   z-index: 30;
-  height: 52px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  height: 56px;
 }
 
 .bar-group {
@@ -1412,24 +1425,184 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   flex-shrink: 0;
 }
 
-/* 进度条并入底栏（建议16）：通栏贴顶缘，hover 加粗放大热区 */
-.detail-progress-slider {
+/* 进度条：贴播放条顶缘通栏，键盘可达（role=slider + tabindex）。
+   视频模式 .track-wrap 连续轨道；图集模式 #noteSegs 分段进度（由 JS 生成段落） */
+#detailProgress {
   position: absolute;
   left: 0;
   right: 0;
-  top: -3px;
-  margin: 0;
+  top: 0;
+  height: 16px;
+  cursor: pointer;
   z-index: 31;
-  transition: height 0.15s ease, top 0.15s ease;
+  outline: none;
 }
 
-#detailBottomBar:hover .detail-progress-slider {
-  top: -5px;
+#detailProgress.hidden {
+  display: none;
+}
+
+#detailProgress .track-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+/* 图集模式：隐藏连续轨道（分段进度接管同一位置） */
+#detailProgress.note-mode .track-wrap {
+  display: none;
+}
+
+#detailProgress .track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 0 0 2px 2px;
+  background: rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  transition: height 0.12s;
+}
+
+#detailProgress:hover .track,
+#detailProgress:focus-visible .track {
+  height: 5px;
+}
+
+#detailProgress .track-buffered {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+#detailProgress .track-played {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: #fff;
+}
+
+#detailProgress .track-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  transform: translate(-50%, -50%) scale(0);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dy-primary);
+  transition: transform 0.12s;
+}
+
+#detailProgress:hover .track-thumb,
+#detailProgress:focus-visible .track-thumb {
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* 时间气泡：hover/聚焦进度条时浮出，位置由 JS 按 played 百分比写入 */
+#detailProgress .time-tip {
+  position: absolute;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+#detailProgress:hover .time-tip,
+#detailProgress:focus-visible .time-tip {
+  opacity: 1;
+}
+
+/* 图集分段进度（N 段对应 N 张图，段内渐进填充）：与视频轨道同位同形。
+   悬浮特效：整条加高 + 指针段 scaleY 放大提亮（origin top 向下伸展不遮画面） */
+#noteSegs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: 6px;
+}
+
+#noteSegs.hidden {
+  display: none;
+}
+
+#noteSegs .seg {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+  transform-origin: top center;
+  transition: height 0.12s, transform 0.15s, background 0.15s;
+}
+
+#detailProgress:hover #noteSegs .seg,
+#detailProgress:focus-visible #noteSegs .seg {
   height: 6px;
 }
 
-#detailBottomBar:hover .detail-progress-slider::-webkit-slider-thumb {
-  transform: scale(1.4);
+#noteSegs .seg:hover {
+  transform: scaleY(1.8);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+#noteSegs .seg .seg-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0%;
+  background: #fff;
+}
+
+/* 上/下作品切换胶囊（对齐抖音 ⌃⌄）：右缘垂直居中。
+   必须用 ID 选择器：#detailOverlay>*（1,0,0）会覆盖类选择器的 position:fixed，
+   导致切换器跌回流内布局、把播放条顶下来，内容区底部与进度条之间出现空隙。
+   底色/hover 对齐左上角关闭钮（轻透明圆底，无毛玻璃） */
+#detailSwitcher {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+#detailSwitcher.hidden {
+  display: none;
+}
+
+#detailSwitcher button {
+  width: 40px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  /* options 页无全局 button 外观重置（仅 font-family），必须显式清掉 UA 默认底色/边框，
+     否则浅色 ButtonFace 盖住容器的透明深色底（曾渲染成白色胶囊） */
+  background: none;
+  border: none;
+  padding: 0;
+  color: #fff;
+  cursor: pointer;
+}
+
+#detailSwitcher button:hover {
+  background: rgba(0, 0, 0, 0.4);
 }
 
 .detail-bar-btn {
@@ -1446,6 +1619,12 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 .detail-bar-time {
+  color: rgba(255, 255, 255, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 图集顺序位（K/N）：bar-controls 内、时间位旁 */
+.detail-bar-order {
   color: rgba(255, 255, 255, 0.7);
   font-variant-numeric: tabular-nums;
 }
@@ -1474,7 +1653,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   color: var(--dy-primary);
 }
 
-/* 作品序号（建议12 修订版）：底栏最右端 */
+/* 作品序号（建议12 修订版）：播放条最右端 */
 .detail-bar-counter {
   color: rgba(255, 255, 255, 0.5);
   padding: 0 4px;
@@ -1499,7 +1678,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* ===== 方向感过渡（建议15）：入场方向随切换方向变化，仅合成属性。
-   动画只作用于媒体本体（视频区/大图）；导航箭头与图集计数徽章挂 .detail-body 直下，
+   动画只作用于媒体本体（视频区/大图）；导航箭头挂 .detail-body 直下，
    不参与切换动效，也不随媒体容器的 detail-transitioning 淡入淡出。
    keyframes 不含 opacity：淡入由容器过渡承担，且大图行内 opacity 淡入不可被动画覆盖 */
 @keyframes detailSlideDown {

@@ -243,14 +243,27 @@ export class WorksGrid extends VirtualGrid {
     requestAnimationFrame(() => {
       const grid = dom.mainGrid;
       if (!grid) return;
+      const awemeId = view[idx].awemeId;
+      // 优先用 DOM 实测位置（content-visibility:auto 下骨架态仍有准确布局框）
+      const card = dom.mainContainer.querySelector(`[data-aweme-id="${awemeId}"]`);
+      if (card) {
+        const gridRect = grid.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const cardTopInScroll = cardRect.top - gridRect.top + grid.scrollTop;
+        const target = cardTopInScroll - Math.min(grid.clientHeight / 3, cardTopInScroll);
+        // 滚动容器是 #mainGrid 自身（overflow-y:auto），对 window 调 scrollTo 不生效
+        grid.scrollTo({ top: Math.max(0, target) });
+        return;
+      }
+      // 兜底：卡片尚未创建（分块渲染未完成），用数学估算
       const root = getComputedStyle(document.documentElement);
       const cardW = parseInt(root.getPropertyValue("--dy-card-size")) || config.CARD_SIZE_FALLBACK;
       const gap = config.CARD_GAP;
-      const cols = Math.max(1, Math.floor((grid.clientWidth + gap) / (cardW + gap)));
+      const cols = Math.max(1, Math.floor((dom.mainContainer.clientWidth + gap) / (cardW + gap)));
       const row = Math.floor(idx / cols);
       const cardH = (cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET;
-      const target = row * (cardH + gap) - Math.min(grid.clientHeight / 3, row * (cardH + gap));
-      // 滚动容器是 #mainGrid 自身（overflow-y:auto），对 window 调 scrollTo 不生效
+      const cardTopInScroll = row * (cardH + gap);
+      const target = cardTopInScroll - Math.min(grid.clientHeight / 3, cardTopInScroll);
       grid.scrollTo({ top: Math.max(0, target) });
     });
   }

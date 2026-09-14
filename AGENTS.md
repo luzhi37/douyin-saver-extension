@@ -105,7 +105,7 @@ DOMAIN_CONFIG = {
 | `Sync`           | 同步状态机（作品/关注）                                           |
 | `Favorites`      | 点赞/收藏扫描、未关注作品批量入库（添加按钮）与取消               |
 | `WorksGrid`      | 作品卡片网格                                                      |
-| `Detail`         | 详情播放器                                                        |
+| `Detail`         | 详情播放器（对齐抖音播放界面：全宽播放器 + .media-view 居中 39.3vw cover 裁切、双形态进度条（视频连续轨道/图集分段音乐驱动）、⌃⌄ 作品切换胶囊） |
 | `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；ds-btn/resize/btnRetry 事件构造器内自绑定） |
 
 ### background/ 类单例（按职责分模块，与 options 侧类模块同构）
@@ -149,6 +149,7 @@ DOMAIN_CONFIG = {
 - **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）见 [docs/02](./docs/02-independent-sync-works.md) / [docs/09](./docs/09-inject-tab-mode.md)。
 - **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名 403 `Signature Not Found`；算法、线格式与盐轮换处置见 [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md)。aweme/post（侧边栏作者作品）亦被风控间歇强制同款校验，故 webSign 已在 `IndependentClient.request` 默认开启（`options.webSign !== false`），独立模式全端点生效（见 docs/05/07）。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送（长操作 X 恒可点）。机制见 [docs/11](./docs/11-options-ui.md)。
+- **详情层双形态进度条（docs/11 定案）** — `#detailProgress` 一个容器两种形态（`note-mode` 类切换）：视频=连续轨道（`#renderVideoProgress` 真实媒体事件驱动），图集=`#noteSegs` 分段进度（有音乐=音频 timeupdate 驱动、无音乐=虚拟时钟兜底，收尾走 `nextOnEnd()`）；seek 统一 `#applySeek`，键盘 role=slider ±5%/Home/End。`.media-view` 39.3vw cover 裁切与模糊背景 `brightness(0.8)` 为既定视觉，勿改回 contain/0.4。
 - **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject 六个 API 请求函数经 Fetch Hook 但不被捕获；走 `origFetch.call(window, ...)` 绕过 Hook 会错过页面包装器注入的签名参数（见 [docs/09](./docs/09-inject-tab-mode.md)）。
 - **媒体加载有全局熔断** — 视频/封面失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`，不要自行计数（见 [docs/11](./docs/11-options-ui.md)）。
 - **侧边栏封面必须走"视口门控 + 分帧队列"** — 条目创建只挂 meta 不发探针，进视口由 `#promoteItem` 经 `#enqueueCover` 每帧限量 rAF 发出；整页 DOM 用单个 fragment 追加。禁止改回创建即全量急切加载（见 [docs/11](./docs/11-options-ui.md)）。
@@ -176,7 +177,7 @@ DOMAIN_CONFIG = {
 | 详情页     | `DETAIL_TITLE_MAX_LEN` `40` / `TOAST_DURATION` `2000` / `DOWNLOAD_MAX_RETRY` `1`                                              |
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000`                                  |
 | 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
-| 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `9` / `CARD_HEIGHT_OFFSET` `35`                                                       |
+| 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `11` / `CARD_HEIGHT_OFFSET` `35`                                                       |
 | 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `OBSERVER_ROOT_MARGIN` `'200px'` / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'1200px'`    |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                    |
