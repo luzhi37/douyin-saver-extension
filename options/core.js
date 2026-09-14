@@ -34,7 +34,7 @@ export const config = {
 
   // 卡片
   CARD_SIZE_FALLBACK: 261,
-  CARD_GAP: 9,
+  CARD_GAP: 11,
   CARD_HEIGHT_OFFSET: 35,
 
   // 详情页
@@ -100,7 +100,11 @@ export const dom = {
   detailNavLeft: document.querySelector("#detailNavLeft"),
   detailNavRight: document.querySelector("#detailNavRight"),
   detailLoader: document.querySelector("#detailLoader"),
-  detailProgressSlider: document.querySelector("#detailProgressSlider"),
+  detailProgress: document.querySelector("#detailProgress"),
+  noteSegs: document.querySelector("#noteSegs"),
+  detailOrder: document.querySelector("#detailOrder"),
+  detailSwitchPrev: document.querySelector("#detailSwitchPrev"),
+  detailSwitchNext: document.querySelector("#detailSwitchNext"),
   detailPlayBtn: document.querySelector("#detailPlayBtn"),
   detailTime: document.querySelector("#detailTime"),
   detailAuthor: document.querySelector("#detailAuthor"),
@@ -335,6 +339,12 @@ export const services = {
   },
 
   async findSecUid() {
+    // 配置面板填写的本地 secUid 优先（两模式通用）：它是用户显式指定的本人身份，
+    // 比任意打开的 /user/* 标签页更可靠（后者可能是他人主页，同步「我的关注」会命中 2096）。
+    const { independentMode, secUid } = await chrome.storage.local.get(["independentMode", "secUid"]);
+    if (secUid && secUid !== "self") return secUid;
+
+    // 未显式填写时，tab 模式回退到已打开的 /user/* 页面 URL
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tabs[0]?.url) {
       try {
@@ -350,8 +360,7 @@ export const services = {
         if (m2) return m2[1];
       } catch (_) {}
     }
-    const { independentMode, secUid } = await chrome.storage.local.get(["independentMode", "secUid"]);
-    if (independentMode && secUid && secUid !== "self") return secUid;
+    // 独立模式回退：background 经 uid cookie + im/user/info 兑换本人 sec_uid
     if (independentMode) {
       const res = await this.bgMsg({ type: "RESOLVE_SEC_UID" }).catch(() => {});
       if (res?.ok && res.secUid) return res.secUid;

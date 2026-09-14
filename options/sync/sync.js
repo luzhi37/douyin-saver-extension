@@ -179,12 +179,9 @@ export class Sync {
     if (state.domain !== "followings") return null;
     this.#running = true;
 
-    // 独立模式不依赖打开的抖音标签页：此处显式传 "self"，交由 background 经
-    // storage.secUid → resolveSelfSecUid 解析登录账号自身的 sec_uid。
-    // 否则 findSecUid 会优先返回任意打开的 /user/* 标签页 sec_uid（可能是他人账号），
-    // 导致同步「我的关注」时请求了他人列表而命中 2096「列表不可见」。
-    const { independentMode } = await chrome.storage.local.get("independentMode");
-    const secUid = independentMode ? "self" : await services.findSecUid();
+    // 两模式统一取完整本人 sec_uid（不用 "self" 哨兵）：优先配置面板填写的本地 secUid，
+    // 未填写时由 findSecUid 按模式回退（tab=打开的 /user/* 页面，独立=RESOLVE_SEC_UID 兑换）。
+    const secUid = await services.findSecUid();
     if (!secUid) {
       this.#running = false;
       return "NO_SEC_UID";
