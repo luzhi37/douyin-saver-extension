@@ -47,15 +47,15 @@
 ## 接口 / 方法签名
 
 ```js
-// background.js —— 作品合并
+// background/data/domain-store.js —— 作品合并
 function mergeWork(w, old) -> Work              // 纯函数：字段覆盖 + 三项保护（见代码片段）
 async function mergeAndSaveWorks(works) -> Promise<{ added, updated, total }>
 
-// background.js —— 关注合并
+// background/data/domain-store.js —— 关注合并
 async function handleSaveFollowings(followings, sendResponse, isImport = false)
 // 出参：{ ok:true, added, updated, lost, lostUids: string[], total } | { ok:false, error:"EMPTY" }
 
-// background.js —— 导入
+// background/data/data-tools.js —— 导入
 function extractImportItems(data, domain) -> any[]     // data[cfg.itemKey] 或空数组
 async function reconcileImportGroups(domain, data, items) -> void   // 就地改写 item.groupId
 async function handleImportData(data, domain, sendResponse)
@@ -139,15 +139,15 @@ for (const item of items) {
 |------|------|------|
 | `CONFIG.GROUPS.DEFAULT_ID` | `"uncategorized"` | 所有分组失效路径的最终回退目标 |
 | `CONFIG.GROUPS.ID_PREFIX` | `"custom_"` | ADD_GROUP 生成的自定义分组 id 前缀 |
-| `config.STORAGE_MAX_BYTES`（options.js） | 10MB | 导入体积门禁提示（UI 侧校验） |
-| `config.TRASH_GROUP_NAME`（options.js） | `'稍后删除'` | 丢失关注手动移入的目标分组名 |
-| 默认分组定义 | `DEFAULT_WORKS_GROUPS` / `DEFAULT_FOLLOWINGS_GROUPS` | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源 |
+| `config.STORAGE_MAX_BYTES`（options/core.js） | 10MB | 导入体积门禁提示（UI 侧校验） |
+| `config.TRASH_GROUP_NAME`（options/core.js） | `'稍后删除'` | 丢失关注手动移入的目标分组名 |
+| 默认分组定义 | `CONFIG.DEFAULT_GROUPS`（四域共用一份） | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源；消费处 `.map` 拷贝避免污染共享引用 |
 
 ## 相关文档
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | IndexedDB 结构、DOMAIN_CONFIG、storage.js 封装 API、chrome.storage.local 键表 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | IndexedDB 结构、DOMAIN_CONFIG、data/storage.js 封装 API、chrome.storage.local 键表 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_WORKS 循环末尾调用 mergeAndSaveWorks 的位置与时序 |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | 关注列表采集产出的 6 字段形状（本册负责怎么落） |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 计数 >0 才写入规则的上游：校准写入权威计数 |

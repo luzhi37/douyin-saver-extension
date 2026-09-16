@@ -17,7 +17,7 @@ options Sidebar 滚动近底
         │    ├─ ensureABogus()
         │    └─ data = independentRequest(API.POST, buildBaseParams({
         │           sec_user_id, max_cursor: String(cursor||0), count: String(PAGE.AUTHOR=20) }))
-        │         // GET /aweme/v1/web/aweme/post/，仅 a_bogus，无 webSign
+        │         // GET /aweme/v1/web/aweme/post/，webSign 由 request 默认叠加
         │       works = (data.aweme_list||[]).map(formatWork).filter(Boolean)
         │       sendResponse({ ok:true, works,
         │                     hasMore: has_more===true|1, maxCursor: data.max_cursor || "" })
@@ -28,7 +28,7 @@ options Sidebar 滚动近底
              → content BRIDGE（固定 60s 兜底超时）→ DY_FETCH_WORKS_REQUEST
              → inject fetchAuthorWorks(secUid, maxCursor, count)
                   url = buildUrl(API.POST, DEVICE_PARAMS + { sec_user_id, max_cursor, count })
-                  merged = mergeParams(url, stripPageKeys(__capturedPostQuery))   // 复用页面捕获签名
+                  merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)))   // 剥签名键+分页键，包装器代签
                   window.fetch(merged, { _dyInternal:true })                      // 15s 超时
              → 结果事件回传 → sendResponse 同形状
 
@@ -41,7 +41,7 @@ options 收到结果：
 ## 接口 / 方法签名
 
 ```js
-// background.js（独立分支）
+// background/tasks/independent-tasks.js（独立分支）
 async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse)
 // 出参：{ ok:true, works: Work[], hasMore: boolean, maxCursor: string }
 //     | { ok:false, error }
@@ -90,9 +90,12 @@ async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
 ### Tab 分支的签名复用点
 
 ```js
-const merged = mergeParams(url, stripPageKeys(__capturedPostQuery));
-// __capturedPostQuery 为空时 mergeParams 原样返回 —— post 端点不像 following/favorite 那样
-// 在签名缓存缺失时直接报 NO_SIGNATURE，而是发出仅含基础参数的请求，成败取决于页面包装器是否补签。
+const merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)));
+// 剥签名键（stripSdkKeys）+ 分页键（stripPageKeys）后仅合并业务/环境参数，签名由页面
+// 包装器代签——post 端点已被风控强制 Argus webSign 校验，复用捕获的旧
+// x-secsdk-web-signature 会被原样重放、包装器不再重签 → Blocked by ArgusSecurityPlugin
+// Sign Invalid（详见 09 签名策略节）。__capturedPostQuery 为空时 mergeParams 原样返回，
+// 发裸参数请求由包装器从零补签，不报错。
 ```
 
 ## 链接拼装实例（真实数据走查）
@@ -113,7 +116,8 @@ GET https://www.douyin.com/aweme/v1/web/aweme/post/
      &uifid=<uifid>&odin_tt=<odin_tt>
      &sec_user_id=MS4wLjABAAAA1Y94tsS-DdoR4Ky9mMY7TghX-mvm0NDMjS9cxby5B1Y
      &max_cursor=0&count=20
-     &msToken=<msToken>&a_bogus=<a_bogus>
+     &msToken=<msToken>&a_bogus=<a_bogus>&timestamp=<ts秒>&x-secsdk-web-signature=<sig>
+     // 另带请求头三件套：uifid / x-secsdk-web-signature / x-secsdk-web-expire（同 05）
 ```
 
 | 业务参数 | 示例值 | 含义 |
@@ -135,7 +139,7 @@ has_more=false → options 置 sidebarCursor=null 停止监听滚动
 
 对照：[03](./03-independent-sync-followings.md) 的 following/list 用 `offset += 20` 自行推进；本文游标完全由服务端掌舵。响应 `aweme_list[]` 每条经 `formatWork` 三级取链（直链解剖见 [02](./02-independent-sync-works.md) 第四步）。
 
-Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 URL 后 `mergeParams(url, stripPageKeys(__capturedPostQuery))` 合并页面捕获的环境键，签名由页面包装器代注入——缓存缺失时不报错、发裸参数请求碰运气（已知偏差见异常表）。
+Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 URL 后 `mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)))` 合并页面捕获的业务/环境键（签名键已剥离），签名由页面包装器代注入——缓存缺失时不报错、发裸参数请求由包装器从零补签（已知偏差见异常表）。
 
 ## 异常场景及处理
 
@@ -143,6 +147,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 |------|------|------|
 | 独立模式 `savedCookie` 缺失 / HTTP 错误 | `{ ok:false, error:"NO_COOKIE"/"HTTP_*" }` | options 侧边栏停止追加；无自动重试 |
 | a_bogus 被拒 `web_id_sign_invalid` | independentRequest 内部刷新 webid 重试一次 | 内建恢复 |
+| Argus 风控间歇强制 webSign（403 `Signature Not Found`） | request 默认叠加 webSign 后消除；盐轮换会复发 | 按 [05](./05-independent-scan-collection.md) 复发处置指南更新 `CONFIG.WEB_SIGN_SALT` |
 | Tab模式签名缓存缺失（冷启动未浏览过作者页） | 发出裸参数请求，服务端大概率拒绝或返回错误码 | **待补充**：可对齐 following/favorite 的做法在缓存缺失时显式回 `NO_SIGNATURE` 引导用户先浏览页面 |
 | 双层超时（Tab） | sendToTab 先 TIMEOUT 并补发 CANCEL_ACTIVE_TASK | content 60s 兜底仅在 background 未及时应答时生效 |
 | 无限递归保护 | — | 依赖 `sidebarLoading` 标志 + `hasMore=false` 终止；cursor 不前进的服务端异常响应会自然停摆（待补充：可加连续空页熔断） |
@@ -152,7 +157,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | 配置 | 默认 | 作用 |
 |------|------|------|
 | `CONFIG.PAGE.AUTHOR` | 20 | 每页条数 |
-| `config.SIDEBAR_SCROLL_THRESHOLD`（options.js） | 100px | 触发加载的距底阈值 |
+| `config.SIDEBAR_SCROLL_THRESHOLD`（options/core.js） | 100px | 触发加载的距底阈值 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 独立模式单请求超时；Tab模式 msg.timeout 同源 |
 | `inject CONFIG.TIMEOUT.FETCH_PAGE` | 15000ms | Tab模式 inject 侧 fetch 超时 |
 | content BRIDGE FETCH_WORKS_PAGE timeout | 60000ms 固定 | 事件桥兜底超时 |

@@ -52,8 +52,9 @@ optgroup {
   --dy-radius-lg: 10px;
   --dy-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   --dy-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --dy-card-size: 261px;
-  --topbar-height: 56px;
+  --dy-card-size: 249px;
+  --dy-following-card-size: 212px;
+  --topbar-height: 50px;
   --dy-danger: #f5222d;
   --dy-transition: 0.1s cubic-bezier(0.4, 0, 0.2, 1);
   --dy-font-size-sm: 13px;
@@ -177,8 +178,30 @@ optgroup {
   opacity: 0.5;
 }
 
+/* 侧边栏折叠按钮（顶栏最右 ☰） */
+.btn-sidebar-toggle {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--dy-radius);
+  border: none;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--dy-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dy-transition), color var(--dy-transition);
+}
+
+.btn-sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dy-text);
+}
+
+/* 域切换（左侧边栏内，纵向排列；滑块纵向滑动指示） */
 .domain-switch {
   display: flex;
+  flex-direction: column;
   background: rgba(255, 255, 255, 0.08);
   border-radius: var(--dy-radius);
   padding: 3px;
@@ -189,12 +212,13 @@ optgroup {
 
 .ds-slider {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 0;
+  left: 3px;
+  right: 3px;
+  top: 0;
+  height: 0;
   border-radius: var(--dy-radius);
   background: rgba(255, 255, 255, 0.12);
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s;
   pointer-events: none;
   z-index: 0;
 }
@@ -203,7 +227,8 @@ optgroup {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px 18px;
+  width: 100%;
+  padding: 6px 8px;
   font-size: var(--dy-font-size-sm);
   font-weight: 500;
   border-radius: var(--dy-radius);
@@ -214,6 +239,8 @@ optgroup {
   transition: color 0.15s;
   position: relative;
   z-index: 1;
+  /* 56px 侧边栏下内容区窄：禁止折行，靠内边距缩到可容纳 */
+  white-space: nowrap;
 }
 
 .ds-btn:hover {
@@ -228,7 +255,6 @@ optgroup {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  margin-left: 4px;
   position: relative;
 }
 
@@ -262,7 +288,7 @@ optgroup {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 14px;
+  padding: 6px 12px;
   font-size: var(--dy-font-size-sm);
   border-radius: var(--dy-radius);
   cursor: pointer;
@@ -290,6 +316,7 @@ optgroup {
   flex-shrink: 0;
 }
 
+/* 批量操作按钮：常驻顶栏 .topbar-right，仅批量模式显示（body.batch-mode 驱动，纯 CSS 显隐） */
 .batch-action {
   display: none;
 }
@@ -298,41 +325,74 @@ optgroup {
   display: inline-flex;
 }
 
-/* 批量已选计数（建议4）：仅批量模式显示 */
+/* 存入作品按钮仅点赞/收藏域显示：hidden 需压过 batch-mode 显示规则（同 .hidden 被覆盖坑） */
+.batch-mode .batch-action.hidden {
+  display: none;
+}
+
+/* 批量已选计数：仅批量模式显示，纯数字置于移除按钮左侧 */
 .batch-count {
   display: none;
-  align-items: center;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--dy-text-secondary);
   white-space: nowrap;
   padding: 0 2px;
 }
 
 .batch-mode .batch-count {
-  display: inline-flex;
+  display: inline;
 }
 
-.menu-container {
-  position: relative;
+/* 批量模式激活时顶栏「批量」按钮高亮 */
+body.batch-mode #btnBatch {
+  color: var(--dy-primary);
+  border-color: var(--dy-primary);
 }
 
-.menu-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  min-width: 120px;
-  background: var(--dy-surface-elevated);
-  border: 1px solid var(--dy-border);
-  border-radius: var(--dy-radius);
-  z-index: 200;
-  padding: 6px;
+/* ===== 主体布局 ===== */
+#appBody {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ===== 最右侧边栏（上：域切换组；中：弹性占位 + 分割线；下：功能按钮；可折叠）。
+    位于 #appBody 最右（比关注域作者作品侧边栏更靠右），☰ 按钮在顶栏最右折叠/展开 */
+.left-sidebar {
+  width: 56px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--dy-surface);
+  border-left: 1px solid var(--dy-border);
+  /* 折叠/展开不做宽度过渡：width 动画逐帧改变 #appBody 布局，四域 auto-fill 网格
+     每帧重排且跨列阈值时跳列导致卡顿；瞬时切换只发生一次重排（跨列跳位由
+     Sidebar.preserveGridAnchor 锚点补偿拉回原视口 Y） */
+}
+
+.left-sidebar.collapsed {
+  width: 0;
+  border-left-width: 0;
+}
+
+/* 内层固定宽度容器：折叠（width 0 + overflow hidden）时内容被裁切而非挤压 */
+.left-sidebar-inner {
+  width: 56px;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-.menu-dropdown.hidden {
-  display: none;
+/* 菜单项（原下拉菜单各项，现为侧边栏窄列按钮，文字居中） */
+.left-sidebar-menu {
+  gap: 2px;
+}
+
+/* 中部功能组与底部重置/容量之间的弹性占位：吸收剩余高度，把底部区块推到底 */
+.menu-spacer {
+  flex: 1;
 }
 
 .menu-item {
@@ -340,14 +400,15 @@ optgroup {
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 8px 14px;
-  border: 1px solid var(--dy-border);
-  background: var(--dy-bg);
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
   color: var(--dy-text);
   cursor: pointer;
   font-size: var(--dy-font-size-sm);
   border-radius: var(--dy-radius);
   white-space: nowrap;
+  text-align: center;
   transition: background var(--dy-transition), color var(--dy-transition);
 }
 
@@ -363,35 +424,30 @@ optgroup {
   background: rgba(245, 34, 45, 0.1);
 }
 
+/* 容量使用：功能区最后一行 */
 .menu-storage {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 14px;
+  padding: 6px 8px;
   font-size: 11px;
   color: var(--dy-text-muted);
   user-select: none;
-}
-
-/* ===== 主体布局 ===== */
-#appBody {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
+  white-space: nowrap;
 }
 
 #mainGrid {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 10px;
+  padding: 18px 10px;
   background: var(--dy-bg);
 }
 
 .main-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, var(--dy-card-size));
-  gap: 10px;
+  gap: 11px;
   justify-content: center;
 }
 
@@ -399,33 +455,37 @@ optgroup {
   display: none;
 }
 
-body.domain-followings #mainGrid {
+body[data-domain="followings"] #mainGrid {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
 }
 
-body.domain-followings .main-container {
+body[data-domain="followings"] .main-container {
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  padding: 10px 20px;
+  /* 固定卡宽：侧边栏开关只改列数不改卡尺寸（尺寸即侧边栏展开态应有大小）；
+     auto-fill 保证窄容器自动减列、永不横向溢出 */
+  grid-template-columns: repeat(auto-fill, var(--dy-following-card-size));
+  justify-content: center;
+  gap: 11px;
+  padding: 0px 0px;
 }
 
-body.domain-followings .main-container.hidden {
+body[data-domain="followings"] .main-container.hidden {
   display: none;
 }
 
-body.domain-followings .state-message {
+body[data-domain="followings"] .state-message {
   flex: 1 1 0;
   min-width: 0;
   width: 100%;
 }
 
-body.domain-works #sidebar,
-body.domain-works #sidebarResizeHandle {
+/* 侧边栏是关注域专属：作品型三域（works/likes/favorites）统一隐藏 */
+body:not([data-domain="followings"]) #sidebar,
+body:not([data-domain="followings"]) #sidebarResizeHandle {
   display: none;
 }
 
@@ -471,7 +531,8 @@ body.domain-works #sidebarResizeHandle {
 }
 
 .work-card:hover {
-  transform: translateY(-4px) scale(1.02);
+  /* 纯中心缩放：translateY 会把中心上移导致放大只向上挤占，去掉后上下对称放大 */
+  transform: scale(1.02);
   border-color: rgba(254, 44, 85, 0.45);
 }
 
@@ -608,7 +669,12 @@ body.domain-works #sidebarResizeHandle {
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 8px 6px 6px;
+  /* 进度条贴合底栏：底部留白归零，进度条直抵卡片底缘（同详情模式通栏贴底）；
+     左右内缩收到 3px 让控件尽量贴边框（卡片圆角 dy-radius-lg=10px，7px 拇指在
+     进度条极端位置距圆角切线约 0.6px，肉眼不可见）；拇指裁切由
+     .video-progress::-webkit-slider-thumb 缩小到 7px 抵消（10px 圆心在 3px 轨道
+     上会探出底缘 3.5px 被 overflow:hidden 切平） */
+  padding: 8px 3px 0;
   display: none;
   flex-direction: column;
   gap: 4px;
@@ -633,24 +699,12 @@ body.domain-works #sidebarResizeHandle {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
-.video-play-btn,
-.video-mute-btn {
-  border-radius: 50%;
-  width: auto;
-  height: auto;
-  color: #fff;
-}
+/* 卡片预览的播放/静音按钮直接复用详情模式底栏按钮样式：HTML 上加 .detail-bar-btn
+   .icon-btn .flex-center，外观完全由这两者提供（32px 高、圆角矩形、悬浮 rgba(255,255,255,0.1)
+   + scale(1.1)），与详情底栏按钮一致。.video-play-btn / .video-mute-btn 仅作 JS 选取钩子，
+   不再单独定义外观，避免与底栏按钮样式分叉 */
 
-.video-play-btn {
-  padding: 4px 6px;
-}
-
-.video-mute-btn {
-  padding: 4px 10px;
-}
-
-.video-progress,
-.detail-progress-slider {
+.video-progress {
   width: 100%;
   height: 3px;
   appearance: none;
@@ -660,8 +714,7 @@ body.domain-works #sidebarResizeHandle {
   cursor: pointer;
 }
 
-.video-progress::-webkit-slider-thumb,
-.detail-progress-slider::-webkit-slider-thumb {
+.video-progress::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 10px;
   height: 10px;
@@ -669,6 +722,14 @@ body.domain-works #sidebarResizeHandle {
   border-radius: 50%;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
+}
+
+/* 卡片进度条已贴底（.work-video-controls padding-bottom:0），缩小拇指从 10px→7px，
+   使其圆心在 3px 轨道上探出底缘的量降到约 2px，避免被 .work-card 的
+   overflow:hidden 把拇指下方切平（详情模式进度条贴底栏顶缘、下方有实体底栏故无需） */
+.video-progress::-webkit-slider-thumb {
+  width: 7px;
+  height: 7px;
 }
 
 .work-title {
@@ -716,12 +777,24 @@ body.domain-works #sidebarResizeHandle {
   display: none !important;
 }
 
+/* 批量模式下按钮隐藏后底栏回落到 min-height，需保持普通模式的 40px 高度防跳变 */
+.batch-mode .work-title {
+  min-height: 40px;
+}
+
 .batch-mode .work-video-player.video-ready {
   opacity: 0 !important;
 }
 
 .batch-mode .work-thumb.video-hidden {
   opacity: 1 !important;
+}
+
+/* 批量模式 Shift 快速多选时禁止卡片文本被浏览器选中高亮 */
+.batch-mode .work-card,
+.batch-mode .following-card {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .work-syncing svg {
@@ -1021,7 +1094,7 @@ body.domain-works #sidebarResizeHandle {
 
 .dy-btn {
   gap: 6px;
-  padding: 8px 16px;
+  padding: 6px 12px;
   font-size: 14px;
   border: 1px solid var(--dy-border);
   border-radius: var(--dy-radius);
@@ -1094,7 +1167,21 @@ body.domain-works #sidebarResizeHandle {
   margin-right: 4px;
 }
 
+/* 图标按钮变体：去文本按钮的水平大内边距呈方形，固定 31px 与相邻文本按钮（全选/批量）等高；
+   svg 去行内基线空隙，顶栏批量栏图标按钮（移除/存入/移动/下载/全选）专用 */
+.dy-btn-icon {
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  line-height: 1;
+}
+
+.dy-btn-icon svg {
+  display: block;
+}
+
 /* ===== 详情覆盖层 ===== */
+/* ===== 详情覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ===== */
 #detailOverlay {
   position: fixed;
   top: 0;
@@ -1118,7 +1205,8 @@ body.domain-works #sidebarResizeHandle {
   background-image: var(--bg-url);
   background-size: cover;
   background-position: center;
-  filter: blur(60px) brightness(0.4);
+  /* 亮度 0.8：两侧模糊区可辨画面色彩（对齐抖音），仅轻压暗保证前景突出 */
+  filter: blur(70px) brightness(0.8);
   z-index: 0;
   contain: strict;
 }
@@ -1127,7 +1215,7 @@ body.domain-works #sidebarResizeHandle {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(ellipse at center, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.25) 100%);
   z-index: 0;
   pointer-events: none;
 }
@@ -1137,22 +1225,29 @@ body.domain-works #sidebarResizeHandle {
   z-index: 1;
 }
 
-#detailBottomBar {
-  animation: fadeIn 0.3s 0.15s ease both;
-}
-
 #detailOverlay.hidden {
   display: none;
 }
 
+/* 播放器层：全屏宽；flex:1 使其高度 = 视口 - 播放条，与底栏零重叠 */
 .detail-body {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  width: 100%;
   overflow: hidden;
   touch-action: pan-y;
   position: relative;
+}
+
+/* 清晰画面区：居中 39.3vw，媒体 cover 裁切铺满，两侧由 overlay 模糊背景填充 */
+.media-view {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 39.3vw;
+  overflow: hidden;
 }
 
 .detail-body.detail-transitioning #detailVideoContainer,
@@ -1168,15 +1263,15 @@ body.domain-works #sidebarResizeHandle {
 
 .detail-body video {
   width: 100%;
-  max-height: 100%;
+  height: 100%;
   outline: none;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .detail-body img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .detail-image-container {
@@ -1186,46 +1281,55 @@ body.domain-works #sidebarResizeHandle {
   overflow: hidden;
 }
 
-/* 计数徽章与导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，
-   保证切换作品时位置与透明度恒定；几何上媒体容器填满 body，两者坐标系一致 */
-#detailImgCounter {
+/* 主图链接失效态：详情主图已清空，叠加「链接已失效」提示，绝不回退显示上一作品 */
+.detail-image-container.detail-image-failed::after {
+  content: "链接已失效";
   position: absolute;
-  top: 16px;
-  right: 16px;
-  background: rgba(0, 0, 0, 0.5);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   color: #fff;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 8px 16px;
+  border-radius: var(--dy-radius);
+  font-size: 14px;
   pointer-events: none;
 }
 
+/* 导航箭头（元素在 .detail-body 直下）：有意锚定 body 而非媒体容器，
+   保证切换作品时位置与透明度恒定；悬浮/键盘聚焦时常显 */
 .detail-nav-btn {
   position: absolute;
-  left: 16px;
+  left: calc(10vw - 28px);
   top: 50%;
-  /* 垂直居中修复（建议14）：此前 translateY 被注释导致箭头顶边对齐中线 */
   transform: translateY(-50%);
-  width: 40px;
-  height: 40px;
-  border-radius: var(--dy-radius);
-  background: rgba(0, 0, 0, 0.4);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(8px);
   color: #fff;
   cursor: pointer;
-  z-index: 2;
+  border: none;
+  z-index: 5;
   user-select: none;
   touch-action: manipulation;
-  transition: background var(--dy-transition);
+  opacity: 0;
+  transition: opacity 0.2s, background var(--dy-transition);
+}
+
+.detail-body:hover .detail-nav-btn,
+.detail-nav-btn:focus-visible {
+  opacity: 1;
 }
 
 .detail-nav-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .detail-nav-btn.detail-nav-right {
   left: auto;
-  right: 16px;
+  right: calc(10vw - 28px);
 }
 
 .detail-nav-btn.hidden {
@@ -1233,7 +1337,8 @@ body.domain-works #sidebarResizeHandle {
 }
 
 #detailVideoContainer {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
@@ -1243,27 +1348,28 @@ body.domain-works #sidebarResizeHandle {
 }
 
 #detailImageContainer {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
 
 #detailVideoWrap {
-  flex: 1;
-  overflow: hidden;
   position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
-/* 关闭按钮（建议14 修订版）：保持左上角与抖音一致，仅做 SVG 化与 aria 补齐 */
+/* 关闭按钮（对齐抖音：68px 圆形 + 细线 ✕） */
 #detailClose {
   position: fixed;
-  top: 16px;
-  left: 16px;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--dy-radius);
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(8px);
+  top: 40px;
+  left: 40px;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.22);
   cursor: pointer;
   border: none;
   color: #fff;
@@ -1276,22 +1382,20 @@ body.domain-works #sidebarResizeHandle {
 }
 
 #detailClose:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.4);
 }
 
+/* 播放条：56px 通栏贴底，三分区（controls/meta/actions）沿旧结构 */
 #detailBottomBar {
-  /* 三段式底栏（建议11）：进度条绝对定位于顶缘（建议16），分组由 .bar-group 承担 */
   position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(12px);
-  padding: 0 12px;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 0 20px;
   flex-shrink: 0;
   z-index: 30;
-  height: 52px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  height: 56px;
 }
 
 .bar-group {
@@ -1321,24 +1425,184 @@ body.domain-works #sidebarResizeHandle {
   flex-shrink: 0;
 }
 
-/* 进度条并入底栏（建议16）：通栏贴顶缘，hover 加粗放大热区 */
-.detail-progress-slider {
+/* 进度条：贴播放条顶缘通栏，键盘可达（role=slider + tabindex）。
+   视频模式 .track-wrap 连续轨道；图集模式 #noteSegs 分段进度（由 JS 生成段落） */
+#detailProgress {
   position: absolute;
   left: 0;
   right: 0;
-  top: -3px;
-  margin: 0;
+  top: 0;
+  height: 16px;
+  cursor: pointer;
   z-index: 31;
-  transition: height 0.15s ease, top 0.15s ease;
+  outline: none;
 }
 
-#detailBottomBar:hover .detail-progress-slider {
-  top: -5px;
+#detailProgress.hidden {
+  display: none;
+}
+
+#detailProgress .track-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+/* 图集模式：隐藏连续轨道（分段进度接管同一位置） */
+#detailProgress.note-mode .track-wrap {
+  display: none;
+}
+
+#detailProgress .track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 0 0 2px 2px;
+  background: rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  transition: height 0.12s;
+}
+
+#detailProgress:hover .track,
+#detailProgress:focus-visible .track {
+  height: 5px;
+}
+
+#detailProgress .track-buffered {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+#detailProgress .track-played {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: #fff;
+}
+
+#detailProgress .track-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  transform: translate(-50%, -50%) scale(0);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dy-primary);
+  transition: transform 0.12s;
+}
+
+#detailProgress:hover .track-thumb,
+#detailProgress:focus-visible .track-thumb {
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* 时间气泡：hover/聚焦进度条时浮出，位置由 JS 按 played 百分比写入 */
+#detailProgress .time-tip {
+  position: absolute;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+#detailProgress:hover .time-tip,
+#detailProgress:focus-visible .time-tip {
+  opacity: 1;
+}
+
+/* 图集分段进度（N 段对应 N 张图，段内渐进填充）：与视频轨道同位同形。
+   悬浮特效：整条加高 + 指针段 scaleY 放大提亮（origin top 向下伸展不遮画面） */
+#noteSegs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: 6px;
+}
+
+#noteSegs.hidden {
+  display: none;
+}
+
+#noteSegs .seg {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+  transform-origin: top center;
+  transition: height 0.12s, transform 0.15s, background 0.15s;
+}
+
+#detailProgress:hover #noteSegs .seg,
+#detailProgress:focus-visible #noteSegs .seg {
   height: 6px;
 }
 
-#detailBottomBar:hover .detail-progress-slider::-webkit-slider-thumb {
-  transform: scale(1.4);
+#noteSegs .seg:hover {
+  transform: scaleY(1.8);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+#noteSegs .seg .seg-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0%;
+  background: #fff;
+}
+
+/* 上/下作品切换胶囊（对齐抖音 ⌃⌄）：右缘垂直居中。
+   必须用 ID 选择器：#detailOverlay>*（1,0,0）会覆盖类选择器的 position:fixed，
+   导致切换器跌回流内布局、把播放条顶下来，内容区底部与进度条之间出现空隙。
+   底色/hover 对齐左上角关闭钮（轻透明圆底，无毛玻璃） */
+#detailSwitcher {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+#detailSwitcher.hidden {
+  display: none;
+}
+
+#detailSwitcher button {
+  width: 40px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  /* options 页无全局 button 外观重置（仅 font-family），必须显式清掉 UA 默认底色/边框，
+     否则浅色 ButtonFace 盖住容器的透明深色底（曾渲染成白色胶囊） */
+  background: none;
+  border: none;
+  padding: 0;
+  color: #fff;
+  cursor: pointer;
+}
+
+#detailSwitcher button:hover {
+  background: rgba(0, 0, 0, 0.4);
 }
 
 .detail-bar-btn {
@@ -1359,8 +1623,14 @@ body.domain-works #sidebarResizeHandle {
   font-variant-numeric: tabular-nums;
 }
 
+/* 图集顺序位（K/N）：bar-controls 内、时间位旁 */
+.detail-bar-order {
+  color: rgba(255, 255, 255, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
 .detail-bar-author {
-  color: rgba(255, 255, 255, 0.65);
+  color: #fff;
   text-decoration: none;
   cursor: pointer;
   transition: color var(--dy-transition);
@@ -1371,7 +1641,7 @@ body.domain-works #sidebarResizeHandle {
 }
 
 .detail-bar-title {
-  color: #fff;
+  color: rgba(255, 255, 255, 0.65);
   flex: 1;
   min-width: 0;
   text-decoration: none;
@@ -1383,7 +1653,7 @@ body.domain-works #sidebarResizeHandle {
   color: var(--dy-primary);
 }
 
-/* 作品序号（建议12 修订版）：底栏最右端 */
+/* 作品序号（建议12 修订版）：播放条最右端 */
 .detail-bar-counter {
   color: rgba(255, 255, 255, 0.5);
   padding: 0 4px;
@@ -1408,7 +1678,7 @@ body.domain-works #sidebarResizeHandle {
 }
 
 /* ===== 方向感过渡（建议15）：入场方向随切换方向变化，仅合成属性。
-   动画只作用于媒体本体（视频区/大图）；导航箭头与图集计数徽章挂 .detail-body 直下，
+   动画只作用于媒体本体（视频区/大图）；导航箭头挂 .detail-body 直下，
    不参与切换动效，也不随媒体容器的 detail-transitioning 淡入淡出。
    keyframes 不含 opacity：淡入由容器过渡承担，且大图行内 opacity 淡入不可被动画覆盖 */
 @keyframes detailSlideDown {
@@ -1492,36 +1762,6 @@ body.domain-works #sidebarResizeHandle {
   gap: 8px;
 }
 
-/* ===== 点赞/收藏弹窗 ===== */
-.fav-stats {
-  font-size: var(--dy-font-size-sm);
-  color: var(--dy-text-secondary);
-}
-
-.fav-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 8px;
-  max-height: 50vh;
-  overflow-y: auto;
-}
-
-.fav-work-item {
-  position: relative;
-  aspect-ratio: 3 / 4;
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--dy-surface);
-}
-
-.fav-work-thumb {
-  width: 100%;
-  height: 100%;
-  /* div+background-image：裂图无载体；失败时露出 .fav-work-item 底色 */
-  background-size: cover;
-  background-position: center;
-}
-
 /* ===== 同步弹窗 ===== */
 .sync-line {
   display: flex;
@@ -1541,18 +1781,19 @@ body.domain-works #sidebarResizeHandle {
 }
 
 /* ===== 工具提示 ===== */
+/* 尺寸规格与 content.js Toast（抖音页注入）保持一致，改动需两侧同步 */
 .toast {
   position: fixed;
-  top: 60px;
+  top: 20px;
   left: 50%;
   transform: translateX(-50%) translateY(-16px);
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: #fff;
-  padding: 10px 24px;
-  border-radius: 8px;
-  font-size: 14px;
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 13px;
   z-index: 999999;
   pointer-events: none;
   opacity: 0;
@@ -1788,25 +2029,6 @@ body.domain-works #sidebarResizeHandle {
   animation: spin 0.6s linear infinite;
 }
 
-.dy-btn-loading {
-  position: relative;
-}
-
-.dy-btn-loading::before {
-  content: '';
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  margin-right: 6px;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-  flex-shrink: 0;
-}
-
-
-
 .sec-item {
   display: flex;
   align-items: center;
@@ -1886,11 +2108,11 @@ body.domain-works #sidebarResizeHandle {
   color: var(--dy-text);
 }
 
-/* ====== 菜单分隔线 ====== */
+/* ====== 菜单分隔线（侧边栏中段占位：auto 上边距把功能按钮区压到底部） ====== */
 .menu-divider {
   height: 1px;
   background: var(--dy-border);
-  margin: 4px 8px;
+  margin: auto 8px 4px;
 }
 
 /* ====== 模板工具类 ====== */
@@ -1898,17 +2120,6 @@ body.domain-works #sidebarResizeHandle {
   display: block;
   width: 100%;
   height: 100%;
-}
-
-.fav-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.fav-timeout-hint {
-  margin: 4px 0 0;
-  font-size: 13px;
 }
 
 /* ====== 设置面板 ====== */
@@ -2236,41 +2447,13 @@ body.domain-works #sidebarResizeHandle {
   pointer-events: none;
 }
 
-/* ====== 键盘焦点可见性（建议7） ====== */
+/* ====== 焦点指示：全局抑制（用户明确不需要键盘焦点可见性，含浏览器默认焦点环） ====== */
+:focus,
 :focus-visible {
-  outline: 2px solid rgba(254, 44, 85, 0.7);
-  outline-offset: 2px;
+  outline: none;
 }
 
-.work-card:focus-visible,
-.following-card:focus-visible {
-  border-color: rgba(254, 44, 85, 0.45);
-}
-
-/* ====== 筛选状态条（建议5）：仅筛选生效期间存在 ====== */
-.filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 14px;
-  background: var(--dy-surface);
-  border-bottom: 1px solid var(--dy-border);
-  font-size: 12px;
-  color: var(--dy-text-secondary);
-  flex-shrink: 0;
-}
-
-.filter-bar.hidden {
-  display: none;
-}
-
-.filter-bar-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* ====== 搜索栏清除按钮（搜索栏内「清除」与旧筛选状态条共用同形） ====== */
 .filter-clear-btn {
   font-size: 11px;
   background: none;
@@ -2288,8 +2471,7 @@ body.domain-works #sidebarResizeHandle {
   border-color: var(--dy-border);
 }
 
-/* ====== 搜索栏（建议5）：菜单「搜索」在顶栏下方展开的内联工具条，无快捷键；
-   收起但筛选仍生效时由 .filter-bar 显示摘要 ====== */
+/* ====== 搜索栏（菜单「搜索」在顶栏下方展开的内联工具条；收起即重置，筛选不跨收起保留） ====== */
 .search-bar {
   display: flex;
   align-items: center;
@@ -2335,12 +2517,15 @@ body.domain-works #sidebarResizeHandle {
   display: none;
 }
 
-.sb-filter-label {
+/* 搜索应用后的结果数（随筛选实时刷新） */
+.sb-count {
   font-size: 12px;
-  color: var(--dy-text-muted);
+  color: var(--dy-text-secondary);
+  white-space: nowrap;
 }
 
-.sb-reverse {
+/* 搜索栏勾选项（逆序 / 已关注 / 未关注）共用 */
+.sb-check {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2351,7 +2536,7 @@ body.domain-works #sidebarResizeHandle {
   white-space: nowrap;
 }
 
-.sb-reverse input {
+.sb-check input {
   /* 中性白勾选，不用主题红（--dy-primary） */
   accent-color: var(--dy-text);
   margin: 0;
@@ -2394,4 +2579,50 @@ body.domain-works #sidebarResizeHandle {
   color: var(--dy-text-secondary);
   font-size: 14px;
   flex-shrink: 0;
+}
+/* ===== 快捷键速查弹窗 ===== */
+.shortcut-help {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 18px;
+  font-size: 13px;
+  line-height: 1.9;
+}
+.shortcut-help kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 7px;
+  border: 1px solid var(--dy-border-light);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--dy-surface-hover);
+  color: var(--dy-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+.shortcut-help .sh-desc {
+  color: var(--dy-text-secondary);
+}
+
+/* ===== 减少动效（prefers-reduced-motion） ===== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* 骨架扫描光带：直接停用，避免停在 translateX(100%) 的残留亮条 */
+  .work-skeleton::after,
+  .following-skeleton::after {
+    animation: none !important;
+  }
+  /* spinner 旋转保留：加载反馈必需，其余装饰性动效已压到不可感知 */
+  .spinner {
+    animation-duration: 0.6s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

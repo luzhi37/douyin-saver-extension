@@ -28,8 +28,7 @@ options: findSecUid() → bgMsg({ type:"FETCH_FOLLOWING", secUid })
         └─ while (hasMore && !cancelled):
              params = { sec_user_id, count:PAGE.FOLLOWING(20), offset,
                         min_time:"0", max_time:"0", source_type:"4",
-                        gps_access:"0", address_book_access:"0", is_top:"1",
-                        user_id? }                       // 有 userId 时附加
+                        gps_access:"0", address_book_access:"0", is_top:"1" }
              data = independentRequest(API.FOLLOWING, buildBaseParams(params))   // GET + a_bogus
              data.status_code===0 且 followings 为数组？
                ├─ 空数组 → break（自然到底）
@@ -62,7 +61,7 @@ uid cookie (douyin.com jar) → savedCookie 正则提取 uid
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/tasks/independent-tasks.js
 async function handleIndependentFetchFollowing(secUid, sendResponse)
 // 出参：{ ok:true, requestId, followings: Following[], total } | { ok:false, error }
 // 进度：FOLLOWING_PROGRESS（列表阶段无 phase 字段）
@@ -88,7 +87,6 @@ while (hasMore && !cancelled) {
   const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset),
                    min_time: "0", max_time: "0", source_type: "4",
                    gps_access: "0", address_book_access: "0", is_top: "1" };
-  if (userId) params.user_id = userId;
   const data = await independentRequest(CONFIG.API.FOLLOWING, await buildBaseParams(params));
   if (data.status_code === 0 && Array.isArray(data.followings)) {
     if (data.followings.length === 0) break;
@@ -140,7 +138,6 @@ query 键序 = 对象插入序：环境参数全集在前（同 [02](./02-indepe
 | 业务参数 | 示例值 | 含义 |
 |---|---|---|
 | `sec_user_id` | `MS4wLjABAAAARrc8…NQb667` | 目标用户——翻**谁的**关注列表 |
-| `user_id` | `1002380664252222` | 我方数字 uid（Cookie `uid`），取到才带 |
 | `count` | `20` | 每页条数 = `PAGE.FOLLOWING` |
 | `offset` | `0 → 20 → 40 …` | 翻页游标（简单偏移量，步长=count） |
 | `min_time` / `max_time` | `0` / `0` | 时间窗过滤占位（对齐页面真实请求） |
@@ -148,19 +145,21 @@ query 键序 = 对象插入序：环境参数全集在前（同 [02](./02-indepe
 | `gps_access` / `address_book_access` | `0` / `0` | 关闭 GPS/通讯录授权过滤 |
 | `is_top` | `1` | 包含置顶关注 |
 
+> **不传 `user_id`**：关注列表归属由 Cookie 决定（与收藏扫描同款）。旧实现曾从 `uid` cookie 取第一个值附加 `user_id`，但多账号/过期 cookie 下该值可能与当前会话 uid 不一致；私密账号会据此判定为「他人查看」而返回 `status_code:2096`，故移除。
+
 完整形态（截去环境中段）：
 
 ```text
 GET https://www.douyin.com/aweme/v1/web/user/following/list
     ?device_platform=webapp&aid=6383&channel=channel_pc_web&…&webid=<webid>
      &uifid=<uifid>&odin_tt=<odin_tt>
-     &sec_user_id=MS4wLjABAAAARrc8…&user_id=1002380664252222
+     &sec_user_id=MS4wLjABAAAARrc8…
      &count=20&offset=0&min_time=0&max_time=0&source_type=4
      &gps_access=0&address_book_access=0&is_top=1
      &msToken=<msToken>&a_bogus=<a_bogus>
 ```
 
-Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键并合并页面捕获 query（`stripPageKeys` 剔除 offset/count 后补环境），签名由页面包装器代注入。
+Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键并合并页面捕获 query（`stripSdkKeys` 剥签名键、`stripPageKeys` 剔除 offset/count 后补业务/环境参数），签名由页面包装器代签注入。
 
 ### 第三步：翻页推进演示
 
@@ -208,6 +207,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | sec_uid 无法解析（self 且无存储值、im/user/info 失败） | `{ ok:false, error:"NO_SEC_UID" }` | options 弹窗引导打开抖音用户页面或填写独立模式 secUid |
+| 目标账号关注列表不可见（抖音 `status_code:2096`「由于该用户隐私设置，列表不可见」） | 独立模式 `IndependentClient.request` 抛 `API_ERROR` 并带 `statusCode:2096`，`handleIndependentFetchFollowing` 捕获后返回 `{ ok:false, error:"FOLLOWING_LIST_PRIVATE" }` | options 状态栏提示「关注列表不可见（账号隐私设置）」；最常见诱因是 self 解析落到他人 sec_uid（如独立模式仍打开了某 `/user/*` 标签页）——`vmSyncFollowings` 现已对独立模式强制传 `"self"` 经 background 自解析链路规避 |
 | `savedCookie` 缺失 | 首次请求抛 `NO_COOKIE` | 设置面板刷新 Cookie |
 | 服务端返回非 0 status_code / HTTP 错误 | 抛 `API_ERROR` / `HTTP_*` | 外层 catch → `{ ok:false, error }`（此时 all 为空，无部分成功语义） |
 | 首页即失败但已收集部分数据 | Tab 模式分支特有 `lastError` 判定：`all.length===0 && lastError` 才报错，否则按部分结果返回 | 独立模式请求异常直接整体失败 |

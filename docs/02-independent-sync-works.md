@@ -7,7 +7,7 @@
 同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口有三：`sync.syncCurrentGroup()`（当前分组全量刷新）、关注卡片/侧边栏的按需同步、以及**详情页下载兜底**（视频直链失效时单条 `SYNC_WORKS` 重取，受 `runtimeConfig.timeoutRequest` 约束等待 `SYNC_DONE`）。background 按 `loadIndependentMode()` 分流到 `handleIndependentSyncWorks`。该 handler：
 
 - 先**立即 ack** `{ ok, true, requestId, total }`（长任务协议：结果经进度消息异步回报）；
-- 循环逐条 `independentRequest(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，仅 a_bogus 签名，无 webSign）；
+- 循环逐条 `independentRequest(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，a_bogus + webSign，后者由 request 默认叠加）；
 - 每条经 `formatWork` 归一化后暂存，全部完成后一次性 `mergeAndSaveWorks(allWorks)` 落库；
 - 失败条目记入 errors 不中断批次。
 
@@ -62,7 +62,7 @@ options: 监听 SYNC_PROGRESS / SYNC_DONE（按 requestId 匹配）更新弹窗�
 ## 接口 / 方法签名
 
 ```js
-// background.js
+// background/tasks/independent-tasks.js
 async function handleIndependentSyncWorks(awemeIds, sendResponse)
 // 入参：awemeIds: string[]（非空）；立即 sendResponse({ok,requestId,total}) 后不再使用 sendResponse
 // 出参（ack）：{ ok: true, requestId: string, total: number }
@@ -86,7 +86,7 @@ async function independentRequest(apiPath, params, options = {}) {
   const qs = new URLSearchParams(params).toString();        // qs 即最终查询串（不含 a_bogus），键序即发送序
   const a_bogus = abOgus.getValue(qs, method, await getClockSkew());
   let urlQuery = qs + "&a_bogus=" + a_bogus;
-  // options.webSign === true 时追加 timestamp + x-secsdk-web-signature（仅扫描收藏用，见 05）
+  // webSign 默认开启（options.webSign !== false）：追加 timestamp + x-secsdk-web-signature（算法见 05）
   // … fetch(url, { credentials:"include", referrer, UA=abOgus.userAgent, signal }) …
   // 非 2xx：argus_security_code === "web_id_sign_invalid" 且未重试过
   //        → refreshWebIdChain() 刷新 webid 后整体重试一次（_webIdRetried 标志防死循环）
@@ -276,7 +276,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、双域存储模型、FATAL_ERRORS 分类 |
 | 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / mergeAndSaveWorks 的合并语义（本册只讲调用时序） |
-| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentRequest 的 webSign 分支（本流程不启用） |
+| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentRequest 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式同款链路（FETCH_SINGLE_WORK → fetchOneDetail）；extractVideo 双实现同步约束 |
 | — | [TIKTOK_REFERENCE.md](./TIKTOK_REFERENCE.md) | `/aweme/detail/` 端点参数表 |

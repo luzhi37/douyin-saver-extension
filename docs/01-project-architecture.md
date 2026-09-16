@@ -22,10 +22,10 @@ inject.js (主世界)            — fetch/XHR Hook、签名捕获、按钮注�
     ↓ CustomEvent（DY_* 事件对）
 content.js (隔离世界)         — 主世界脚本加载器、requestResponse 事件桥、作品捕获 LRU 缓存
     ↓ chrome.runtime.sendMessage
-background/background.js      — Service Worker：消息路由、IndexedDB 存储、循环长任务；
-  (+ storage.js / crypto.js)                      独立模式下直接 fetch API
+background/ (ES 模块化)        — Service Worker：main.js 组合根 + 入口（消息路由 App.route、初始化）；core.js 共享基础（CONFIG/DOMAIN_CONFIG/utils/formatters/runtimeConfig）；
+  identity/（Crypto/ABogus/Credentials/IndependentClient/TabBridge）+ data/（Storage/DomainStore/DomainHandlers/Groups/DataTools）+ tasks/（ScanTasks/IndependentTasks）；独立模式下直接 fetch API
     ↑↓ chrome.runtime.sendMessage
-options/options.js            — 管理 UI：store 响应式渲染、网格/弹窗/侧边栏、扫描触发入口
+options/ (main.js 组合根)      — 管理 UI（ES 模块化）：core.js 共享基础（config/dom/state/store/utils/runtimeConfig/services）+ grids/components/data/sync 类模块 + main.js 事件绑定/订阅/init
 ```
 
 manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douyin.com/*` 且排除 `creator.douyin.com`，`run_at: document_start`；`inject.js` 经 `web_accessible_resources` 以 `<script src>` 注入主世界；权限含 `storage / declarativeNetRequest / tabs / scripting / unlimitedStorage / cookies`。
@@ -35,26 +35,26 @@ manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douy
 ### 双模消息路由（background 唯一入口）
 
 ```
-chrome.runtime.onMessage (background.js switch)
+chrome.runtime.onMessage (background/main.js App.route switch)
   │
   ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORK
   │                            SAVE_FOLLOWINGS / GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS
   │                            GET_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / RELOAD_CONFIG
   │
-  ├─ 按模式分支（读 loadIndependentMode()）──→
-  │     SYNC_WORKS          → im ? handleIndependentSyncWorks        : handleSyncWorks（逐条 sendToTabAsync）
-  │     FETCH_FOLLOWING     → im ? handleIndependentFetchFollowing   : handleFetchFollowing
-  │     FETCH_COLLECTION    → im ? handleIndependentFetchCollection  : handleFetchCollection
-  │     FETCH_WORKS_PAGE    → im ? handleIndependentFetchWorksPage   : sendToTab("FETCH_WORKS_PAGE")
-  │     CANCEL_COLLECTION   → im ? handleIndependentCancel           : runCancelBatch(CANCEL_ONE_COLLECTION)
+  ├─ 按模式分支（读 independentClient.loadMode()）──→
+  │     SYNC_WORKS          → im ? independentTasks.syncWorks         : scanTasks.syncWorks（逐条 tabBridge.sendAsync）
+  │     FETCH_FOLLOWING     → im ? independentTasks.fetchFollowing   : scanTasks.fetchFollowing
+  │     FETCH_COLLECTION    → im ? independentTasks.fetchCollection  : scanTasks.fetchCollection
+  │     FETCH_WORKS_PAGE    → im ? independentTasks.fetchWorksPage   : tabBridge.fetchWorksPage
+  │     CANCEL_COLLECTION   → im ? independentTasks.cancel           : scanTasks.runCancelBatch(CANCEL_ONE_COLLECTION)
   │
   ├─ 仅 Tab 模式（无独立分支）──→
-  │     FETCH_FAVORITES     → handleFetchFavorites（独立模式不支持点赞扫描）
-  │     CANCEL_LIKE         → runCancelBatch(CANCEL_ONE_LIKE)
-  │     GET_SECURITY_STATUS → sendToTab（恒走 Tab，需检查 Hook 注入）
+  │     FETCH_FAVORITES     → scanTasks.fetchFavorites（独立模式不支持点赞扫描）
+  │     CANCEL_LIKE         → scanTasks.runCancelBatch(CANCEL_ONE_LIKE)
+  │     GET_SECURITY_STATUS → tabBridge.getSecurityStatus（恒走 Tab，需检查 Hook 注入）
   │
-  ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → handleCalibrateFollowing
+  ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → scanTasks.calibrateOne
   │
   └─ 凭据/配置管理 ──→ SET_MODE / CAPTURE_BROWSER_FEATURES / GET_COOKIE_INFO / REFRESH_COOKIE
                        GET_BROWSER_FEATURES / REFRESH_BROWSER_FEATURES / GET_CACHE_TIMES
@@ -69,7 +69,7 @@ options 触发（如 SYNC_WORKS）
   → background 循环 handler：逐条(页)请求 → chrome.runtime.sendMessage(进度消息) → 页间随机延迟
   → 结束发完成消息（SYNC_DONE / CANCEL_DONE）或一次性返回全量结果（FETCH_* 类）
 取消：options 弹窗关闭 → CANCEL_ACTIVE_TASK
-       ├─ Tab 模式：background → withDouyinTab → content → DY_CANCEL_ACTIVE_TASK → inject activeTask.abort()
+       ├─ Tab 模式：background → tabBridge.find → content → DY_CANCEL_ACTIVE_TASK → inject activeTask.abort()
        └─ 独立模式：background 循环内自挂 cancelHandler 监听同名消息，置 cancelled 标志
 ```
 
@@ -106,15 +106,15 @@ options 设置面板开关 → SET_MODE { enabled }
 ### background 消息转发原语（Tab模式专用）
 
 ```js
-// background.js —— 定位一个可用抖音标签页（排除 creator 子域，要求 status === "complete"）
-async function withDouyinTab() -> Promise<Tab|null>
+// background/identity/tab-bridge.js TabBridge —— 定位一个可用抖音标签页（排除 creator 子域，要求 status === "complete"）
+async find() -> Promise<Tab|null>
 
 // 向抖音 tab 发消息并等待 inject 结果；生成 requestId；超时 CONFIG.TIMEOUT.REQUEST（可被 data.timeout 覆盖）
 // 错误码：NO_DOUYIN_TAB / TAB_QUERY_FAILED / TIMEOUT / NO_LISTENER / EMPTY_RESPONSE
-function sendToTab(type, data, sendResponse) -> void   // 回调式，仅调用一次 sendResponse
+send(type, data, sendResponse) -> void   // 回调式，仅调用一次 sendResponse
 
-// sendToTab 的 Promise 封装；background 循环 handler 中逐条/逐页请求均用此形态
-function sendToTabAsync(type, data) -> Promise<{ok, error?, ...}>
+// send 的 Promise 封装；background 循环 handler 中逐条/逐页请求均用此形态
+sendAsync(type, data) -> Promise<{ok, error?, ...}>
 ```
 
 ### content.js 事件桥
@@ -141,7 +141,7 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 
 ## 关键代码片段
 
-### 模式分支路由（background.js 消息 switch 内）
+### 模式分支路由（background/main.js 消息 switch 内）
 
 ```js
 case "SYNC_WORKS":
@@ -152,7 +152,7 @@ case "SYNC_WORKS":
   }, sendResponse);
 ```
 
-### sendToTab（超时后主动杀灭 inject 在途任务）
+### TabBridge.send（超时后主动杀灭 inject 在途任务）
 
 ```js
 const timer = setTimeout(() => {
@@ -184,13 +184,13 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 1. **从上到下、先声明后使用**。config/const 必须在文件最顶部；执行语句不得出现在声明之前。
 2. **class 定义与实例化成对出现**——类定义后紧跟 `const name = new Class()`，不允许先集中列出所有 class 再集中实例化。
 3. 大段分隔用边框注释 `// ---------- 标签 ----------`。
-4. options.js 顶层集中定义 `config / dom / state / store / utils / services`，所有 class 直接引用这些模块级变量；类内部自引用必须用 `this.xxx()`，不得用单例变量名。
+4. options/core.js 顶层集中定义并 export `config / dom / state / store / utils / runtimeConfig / services`，所有类模块经 ES import 引用这些模块级变量；类内部自引用必须用 `this.xxx()`，不得用单例变量名。
 5. 私有方法使用 `#` 语法；**class field 箭头函数仅用于 add/remove 对称的事件回调**（如 `Detail.#noteKeyHandler`）。
-6. options.js 启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建。
+6. options/main.js 组合根启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建。
 
 ## 双域存储模型
 
-### IndexedDB（storage.js 封装，库名 `douyin-saver` v1）
+### IndexedDB（data/storage.js 封装，库名 `douyin-saver` v1）
 
 | store | keyPath | 索引 | 内容 |
 |-------|---------|------|------|
@@ -263,7 +263,7 @@ DOMAIN_CONFIG = {
 
 ## 配置项说明
 
-### background.js `CONFIG`（编译期默认值，部分被 runtimeConfig 覆盖）
+### background/core.js `CONFIG`（编译期默认值，部分被 runtimeConfig 覆盖）
 
 | 分组 | 键 |
 |------|----|
@@ -281,9 +281,9 @@ DOMAIN_CONFIG = {
 
 ### `runtimeConfig`（chrome.storage.local，设置面板可改，RELOAD_CONFIG 热加载进 CONFIG）
 
-键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。
+键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数（含校准开关）随存随恢复，重开扩展（非重载）不回退编译期默认值；`IndependentClient.isCalibrateEnabled` 另有 storage 惰性加载兜底（首次调用才读，跨 SW 重建仍生效）。
 
-### options.js 顶层 `config`（UI 侧，35 键）
+### options/core.js 顶层 `config`（UI 侧，35 键）
 
 按分组速查：视频重试（`VIDEO_RETRY_DELAYS:[200,400,600]` 等）、媒体熔断（`MEDIA_FAIL_WINDOW:5000` / `MEDIA_FAIL_MAX:10` / `MEDIA_BREAK_COOLDOWN:15000`）、超时（`FETCH_RETRY_DELAY/SYNC_TIMEOUT/VIDEO_FALLBACK_TIMEOUT`）、详情页（`DETAIL_TITLE_MAX_LEN:40` / `TOAST_DURATION:2000` / `DOWNLOAD_MAX_RETRY:1`）、UI 延迟（`HOVER_PREVIEW_DELAY:200` / `BLOB_REVOKE_DELAY:10000` / `NOTE_AUTO_PLAY_INTERVAL:3000`）、侧边栏（`SIDEBAR_SNAP_POINTS:[650,0]` 等 5 键）、网格项尺寸（`CARD_SIZE_FALLBACK:261` 等 3 键）、分块渲染（`RENDER_CHUNK_SIZE:50` / `OBSERVER_ROOT_MARGIN:'200px'` / `OBSERVE_CHUNK_SIZE:48` / `FILL_FRAME_BUDGET_MS:8` / `UNLOAD_ROOT_MARGIN:'1200px'`）、分组/存储（`GROUP_NAME_MAX_LEN:20` / `STORAGE_MAX_BYTES:10MB` / `TRASH_GROUP_NAME:'稍后删除'`）、Tab 滚动（`TAB_SCROLL_THRESHOLD:2`）、抖音 URL 与正则/图标（`URL_BASE` / `SEC_UID_REGEX` / `icons`）。
 

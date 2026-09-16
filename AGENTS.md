@@ -26,6 +26,7 @@ config/const 定义          ┐ 常量在最顶部
 2. **class 定义与实例化成对出现** — 每个 class 定义后紧跟 `const name = new Class()`，不允许先集中列出所有 class 再集中实例化
 3. **执行语句不得出现在声明之前** — 函数调用、事件绑定必须在所有配置和定义之后
 4. **大段分隔用 `// ---------- 标签 ----------`** — 每个逻辑段的开头用带边框的注释标记
+5. **`background/` 目录按职责分子目录、每类/对象独立成文件** — 共享基础（CONFIG/DOMAIN_CONFIG/utils/formatters/runtimeConfig）合入 `core.js`；签名与标签页通信归 `identity/`（crypto/credentials/independent-client/tab-bridge）；域数据管理归 `data/`（storage/domain-store/domain-handlers/groups/data-tools）；批量长任务归 `tasks/`（scan-tasks/independent-tasks）；`main.js` 为组合根 + 入口（App 类 + 实例化 + `init`/onMessage 监听，manifest `service_worker` 指向），文件名 = kebab-case 类名，类间循环 import 靠 live binding 在调用时安全消解
 
 ## 四层架构
 
@@ -34,9 +35,9 @@ inject.js (主世界)          — fetch hook, 按钮注入, 抓取逻辑
     ↓ CustomEvent
 content.js (隔离世界)       — 桥接, requestResponse 模式
     ↓ chrome.runtime.sendMessage
-background.js (Service Worker) — 消息路由, 存储操作, sendToTab 转发
+background/ (Service Worker) — ES 模块化：core.js 共享基础 + identity/data/tasks 子目录类模块 + main.js 组合根（消息路由 App.route）
     ↓ chrome.runtime.sendMessage
-options.js (管理 UI)        — store 响应式, 弹窗/侧边栏/网格/导出导入
+options/ (管理 UI)          — ES 模块化：core.js 共享基础（7 全局对象）+ 类模块（grids/components/data/sync）+ main.js 组合根（事件绑定/订阅/init）
 ```
 
 ## 双域存储模型
@@ -55,22 +56,22 @@ DOMAIN_CONFIG = {
 
 ## 消息协议
 
-background.js switch 分发所有 `chrome.runtime.sendMessage`。
+`App.route()`（`background/main.js`）switch 分发所有 `chrome.runtime.sendMessage`。
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS`                                                                                                                          |
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_LIKES` / `DELETE_LIKES` / `MOVE_LIKES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES`（likes/favorites 落库经 `SAVE_WORKS` 跨域保存与 `persistScan` 的 `domainStore.mergeAndSave`，无独立保存消息） |
 | 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
-| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准：打开侧边栏触发，background 按模式取 profile/other 后直接落库）                                                                                                                            |
-| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options.js 触发 background 的循环扫描；background 内逐页请求后透传进度。`FETCH_FOLLOWING` 列表收集完成后自动进入校准阶段（`calibrateFollowingStats` 逐用户请求 profile/other，覆盖 awemeCount/followerCount），受运行参数 `calibrateFollowings` 开关门控                              |
-| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options.js 触发 background 的批量取消；tab 模式下逐条派发 `CANCEL_ONE_*` 到 inject；独立模式下由 `handleIndependentCancel` 直接在 background 循环 POST                                                                                                     |
+| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准：打开侧边栏触发，background 按模式取 profile/other 后直接落库） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
+| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options/（main.js 触发）background 的循环扫描；background 内逐页请求后透传进度。`FETCH_FOLLOWING` 列表收集完成后自动进入校准阶段（`scanTasks.calibrateStats` 逐用户请求 profile/other，覆盖 awemeCount/followerCount），受运行参数 `calibrateFollowings` 开关门控                              |
+| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options/ 触发 background 的批量取消；tab 模式下逐条派发 `CANCEL_ONE_*` 到 inject；独立模式下由 `independentTasks.cancel` 直接在 background 循环 POST                                                                                                     |
 | 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环；仅在长操作弹窗关闭时发送（无 `state.activeDialog` 时不发送）                                                                                              |
 | Tab 转发（background→tab） | `FETCH_SINGLE_WORK` / `FETCH_FOLLOWING_PAGE` / `FETCH_USER_PROFILE` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_LIKE` / `CANCEL_ONE_COLLECTION`（tab 模式下经 content→inject；独立模式下由 background 直接 POST） / `FETCH_WORKS_PAGE`（独立模式下由 background 直接处理） / `GET_SECURITY_STATUS` |
 | 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发（`FOLLOWING_PROGRESS` 带 `phase:"calibrate"` 表示关注校准阶段）                                                                                                |
 
 **长任务链路模式**：
-- `sendToTab`：background 生成 `requestId`，向抖音标签页发消息，等待超时 `CONFIG.TIMEOUT.REQUEST`（默认 30s，`GET_SECURITY_STATUS` 5s）。`sendToTab` 内部 `.catch()` 处理 `withDouyinTab()` 极端异常路径。
-- `sendToTabAsync`：`sendToTab` 的 Promise 封装，用于 background 循环 handler 中逐条/逐页请求（`SYNC_WORKS`、`FETCH_FOLLOWING`、`FETCH_FAVORITES`、`FETCH_COLLECTION` 的 background 循环均使用此模式；独立模式下 `CANCEL_LIKE`/`CANCEL_COLLECTION` 由 `handleIndependentCancel` 在 background 内直接循环，不走此路径）。
+- `tabBridge.send`（`sendToTab`）：`TabBridge` 生成 `requestId`，向抖音标签页发消息，等待超时 `CONFIG.TIMEOUT.REQUEST`（默认 30s，`GET_SECURITY_STATUS` 5s）。内部 `.catch()` 处理 `find()` 极端异常路径。
+- `tabBridge.sendAsync`（`sendToTabAsync`）：`send` 的 Promise 封装，用于 background 循环 handler 中逐条/逐页请求（`SYNC_WORKS`、`FETCH_FOLLOWING`、`FETCH_FAVORITES`、`FETCH_COLLECTION` 的 background 循环均使用此模式；独立模式下 `CANCEL_LIKE`/`CANCEL_COLLECTION` 由 `independentTasks.cancel` 在 background 内直接循环，不走此路径）。
 - `requestResponse`：content.js **先 `addEventListener(resultEvent)` 再 `dispatchEvent(requestEvent)`**，消除同步 handler 的 `setTimeout(0)` workaround 需求。
 
 > 同步/扫描/取消的完整链路、时序差异、分页参数见 docs/02–09 各分册（索引见文末「文档索引」）。
@@ -86,32 +87,55 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | `'followings'`     | `followingsGrid.renderFollowingCards()`（仅 domain=followings）                                          |
 | `'groups'`         | `groups.renderGroupTabs()`                                                                               |
 | `'currentGroupId'` | `groups.renderGroupTabs()` + 加载域数据                                                                  |
-| `'batchMode'`      | toggle body `.batch-mode` class                                                                          |
+| `'batchMode'`      | toggle body `.batch-mode` class + 批量栏 `#batchBar` 显隐与「批量」按钮文案（`Batch.syncBatchBar`）        |
 | `'work-updated'`   | `worksGrid.updateCardDOM(awemeId)` + 若详情打开则重渲染                                                  |
 
 ## Class 职责概览
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
-| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；检索状态封装为 `#searchState` 私有实例字段，标签常量为类静态字段；元素事件在构造器内自绑定） |
+| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView/isFilterActive + 搜索栏 UI 同步与开关；检索状态封装为 `#searchState` 私有实例字段；作品型三域带「已关注/未关注」作者归属勾选；**收起即重置**——所有筛选/排序改动不跨收起保留，无筛选摘要条；元素事件在构造器内自绑定） |
 | `VirtualGrid`    | 网格渲染基类（骨架 + 双向虚拟化：填充/卸载双 observer + 分时间预算填充 + 事件委托） |
 | `Dialog`         | 弹窗管理                                                          |
 | `FollowingsGrid` | 关注卡片网格                                                      |
 | `Groups`         | 分组 tab + 管理                                                   |
-| `Batch`          | 批量操作（勾选、全选、删除、移动）                                |
+| `Batch`          | 批量操作（勾选、全选、删除、移动、下载；批量下载仅作品/点赞/收藏域） |
 | `ImportExport`   | 导入导出                                                          |
 | `Sidebar`        | 侧边栏（作者作品分页 + 条目升降级虚拟化）                                            |
 | `Sync`           | 同步状态机（作品/关注）                                           |
 | `Favorites`      | 点赞/收藏扫描、未关注作品批量入库（添加按钮）与取消               |
 | `WorksGrid`      | 作品卡片网格                                                      |
-| `Detail`         | 详情播放器                                                        |
+| `Detail`         | 详情播放器（对齐抖音播放界面：全宽播放器 + .media-view 居中 39.3vw cover 裁切、双形态进度条（视频连续轨道/图集分段音乐驱动）、⌃⌄ 作品切换胶囊） |
 | `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；ds-btn/resize/btnRetry 事件构造器内自绑定） |
+
+### background/ 类单例（按职责分模块，与 options 侧类模块同构）
+
+`background/` 已按本仓库拆分方案拆为 `core.js`（共享基础）+ `identity/` + `data/` + `tasks/` 子目录 + `main.js`（组合根 + 入口），每个类/对象独立成文件、类定义后紧跟实例化，状态全部塌缩为类私有字段；`App.route()` 吸收原 `route` 内全部分支（含 11 个内联处理器）。拆分方案见 [plans/background-module-split-plan.md](./plans/background-module-split-plan.md)。
+
+| 类 / 对象              | 文件                         | 职责                                                                                                                                                  |
+|------------------------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `runtimeConfig` (对象) | `core.js`                    | 运行时配置：从 `chrome.storage.local` 读 `runtimeConfig` 叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient`；SW 冷启动（main.js init）补一次 reload 恢复全部运行参数，重开扩展不回退默认值，`isCalibrateEnabled` 惰性加载兜底 |
+| `utils` (对象)         | `core.js`                    | 纯函数集：`parseExpire` / `urlExpireAt` / `isLongLivedVideoUrl` / `extractMsTokenFromCookie` / `asyncHandler` / `sendSyncDone`                         |
+| `formatters` (对象)    | `core.js`                    | `formatWork` / `formatFollowing`                                                                                                                      |
+| `Crypto` (静态)        | `identity/crypto.js`        | 哈希/解析工具静态类：`md5Hex`（Argus webSign）/ `parseCookieToPairs` / `generateRandomMsToken`                                                        |
+| `ABogus`               | `identity/crypto.js`        | a_bogus 签名算法类（按 UA/浏览器特性实例化，`Credentials.ensureABogus` 使用）；同文件导出 `MSSDK_STR_DATA`（mssdk 兑换载荷）                          |
+| `Credentials`          | `identity/credentials.js`    | 客户端凭据/签名：持有 `#abOgus`/`#cachedClockSkew`/`#clockSkewTime`；`ensureABogus`/`getClockSkew`/`buildBaseParams`/`getMsToken`/`refreshWebIdChain`；吸收 `GET_COOKIE_INFO`/`GET_BROWSER_FEATURES`/`GET_CACHE_TIMES`/`REFRESH_MSTOKEN`/`REFRESH_WEBID`/`REFRESH_BROWSER_FEATURES`/`REFRESH_COOKIE`/`CAPTURE_BROWSER_FEATURES` |
+| `IndependentClient`    | `identity/independent-client.js` | 独立模式开关/校准开关（持有 `#mode`/`#loaded`/`#calibrate`）+ 签名直连 `request` + `resolveSelfSecUid`；`request` 经 `credentials` 跨类取签名/时钟/msToken |
+| `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`）：`getAll`/`get`/`putBatch`/`deleteBatch`/`clear`/`count`/`getByIndex`/`countByIndex`/`getGroups`/`putGroups`/`estimate` |
+| `DomainStore`          | `data/domain-store.js`       | 域存储封装：`storeName`/`groupsName`/`defaultGroups`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护） |
+| `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 已域驱动闭合 likes/favorites 断路；`get`/`delete`/`move`/`getOne`/`#saveFollowings`  |
+| `TabBridge`            | `identity/tab-bridge.js`     | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                    |
+| `Groups`               | `data/groups.js`             | 分组 tab + 管理（域感知）                                                                                                                            |
+| `DataTools`            | `data/data-tools.js`         | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                 |
+| `ScanTasks`            | `tasks/scan-tasks.js`        | Tab 模式长任务：`calibrateStats`/`calibrateOne`/`fetchFollowing`/`persistScan`/`fetchFavorites`/`fetchCollection`/`runCancelBatch`/`deleteCancelled`/`syncWorks` |
+| `IndependentTasks`     | `tasks/independent-tasks.js` | 独立模式长任务：`fetchFollowing`/`fetchCollection`/`syncWorks`/`fetchWorksPage`/`cancel`                                                              |
+| `App`                  | `main.js`                    | 初始化（注册 `onInstalled`/`onStartup`/`onClicked` + `setupDeclarativeNetRequest`）+ 消息路由 `route`（`SET_MODE` 调 `independentClient.setMode`）  |
 
 ## 设计约定与知识点陷阱
 
 > 本节只保留规则红线；机制原理、历史踩坑与实测数据见各条目指向的分册。
 
-- **所有变量定义在 options.js 顶层** — `config` / `dom` / `state` / `store` / `utils` / `services` 在文件顶部定义，所有 class 直接引用这些全局变量。
+- **所有共享全局变量定义在 `options/core.js` 顶部** — `config` / `dom` / `state` / `store` / `utils` / `runtimeConfig` / `services` 在 core.js 顶部定义并 export，其余模块经 ES import 引用；各模块文件自身仍遵守「class 定义后紧跟实例化」（类间循环 import 靠 live binding 在调用时安全消解，拆分方案见 [plans/options-module-split-plan.md](./plans/options-module-split-plan.md)）。
 - **私有方法使用 `#` 语法** — 类外部不可访问。
 - **class field 箭头仅用于 add/remove 对称的事件回调** — 如 `Sidebar.#onResizeDown/Move/Up`、`Detail.#noteKeyHandler`。
 - **自引用用 `this.xxx()` 而非单例名** — class 内部调用自身方法必须用 `this`，不要用模块级单例变量。
@@ -123,22 +147,27 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 - **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — JS 不截断文本，靠 `.sec-truncate` 视觉截断；selector 用 `row.querySelector('.sec-truncate, .sec-expanded')`（见 [docs/09](./docs/09-inject-tab-mode.md)）。
 - **取消点赞/收藏用 XHR 而非 fetch（Tab模式）** — a_bogus 签名与 XHR 原型链深度绑定，fetch 发不出有效签名；独立模式由 background 直接 `fetch()` POST（无页面上下文），Referer / Sec-Fetch-* 靠 DNR 规则网络层注入（见 [docs/06](./docs/06-independent-cancel-collection.md) / [docs/08](./docs/08-dnr-rules.md) / [docs/09](./docs/09-inject-tab-mode.md)）。
 - **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）见 [docs/02](./docs/02-independent-sync-works.md) / [docs/09](./docs/09-inject-tab-mode.md)。
-- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名 403 `Signature Not Found`；算法、线格式与盐轮换处置见 [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md)。
+- **独立模式 listcollection 需 Argus webSign 签名** — 该端点被服务端额外校验，缺签名 403 `Signature Not Found`；算法、线格式与盐轮换处置见 [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md)。aweme/post（侧边栏作者作品）亦被风控间歇强制同款校验，故 webSign 已在 `IndependentClient.request` 默认开启（`options.webSign !== false`），独立模式全端点生效（见 docs/05/07）。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送（长操作 X 恒可点）。机制见 [docs/11](./docs/11-options-ui.md)。
+- **详情层双形态进度条（docs/11 定案）** — `#detailProgress` 一个容器两种形态（`note-mode` 类切换）：视频=连续轨道（`#renderVideoProgress` 真实媒体事件驱动），图集=`#noteSegs` 分段进度（有音乐=音频 timeupdate 驱动、无音乐=虚拟时钟兜底，收尾走 `nextOnEnd()`）；seek 统一 `#applySeek`，键盘 role=slider ±5%/Home/End。`.media-view` 39.3vw cover 裁切与模糊背景 `brightness(0.8)` 为既定视觉，勿改回 contain/0.4。
 - **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject 六个 API 请求函数经 Fetch Hook 但不被捕获；走 `origFetch.call(window, ...)` 绕过 Hook 会错过页面包装器注入的签名参数（见 [docs/09](./docs/09-inject-tab-mode.md)）。
 - **媒体加载有全局熔断** — 视频/封面失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`，不要自行计数（见 [docs/11](./docs/11-options-ui.md)）。
 - **侧边栏封面必须走"视口门控 + 分帧队列"** — 条目创建只挂 meta 不发探针，进视口由 `#promoteItem` 经 `#enqueueCover` 每帧限量 rAF 发出；整页 DOM 用单个 fragment 追加。禁止改回创建即全量急切加载（见 [docs/11](./docs/11-options-ui.md)）。
 - **侧边栏是升降级式轻量虚拟化，且不用 `content-visibility:auto`** — observer root 必须显式传 `dom.sidebarBody`（null root 被祖先裁剪抵消致预填失效）；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；`.sidebar-work-item` 加 CV 只剩每帧 Layerize 抖动（详见 [docs/11](./docs/11-options-ui.md)）。
 - **VirtualGrid 填充观察者是分圈观察，不是全量 observe** — 新骨架进 `#pendingSkeletons` 队列逐批交给 IO，圈尾哨兵触发续批；哨兵被删须立刻续接，`render()`/`abortRender()` 重置须同清队列状态（成本依据与细则见 [docs/11](./docs/11-options-ui.md)）。
 - **网格卡片是双向虚拟化的** — 填充/卸载双 observer + 时间预算制分帧填充（勿改回固定张数/帧）；卸载圈远大于填充圈形成滞回勿调近；`populateItem` 负责 observe 完整卡的交接，`updateCardDOM` 已兼容骨架态（见 [docs/11](./docs/11-options-ui.md)）。
+- **分组切换不清场，域切换同步清场** — 分组切换在 `currentGroupId` 事件不 wipe、不铺骨架占位：旧分组卡片保留到新数据到达，数据到达后由域 store 事件触发 `render()` 整批重建（加载期间无网格 loading 指示）；域切换仍在 `switchDomain` 同步清场（abortRender×4 + 容器 wipe，只清不铺）。禁止改回「切换瞬间 wipe + 按视口铺骨架占位」（见 [docs/11](./docs/11-options-ui.md)）。
 - **填充/降级必须在骨架根节点上原地切换（禁止换根节点）** — grid 容器任一直接子节点被替换都触发 Blink 全量重排，成本随卡片总数线性；子类只允许改类名与增删根节点后代，骨架模板必须与完整卡根层同构（见 [docs/11](./docs/11-options-ui.md)）。
 - **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件（静默失效）；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断（见 [docs/11](./docs/11-options-ui.md)）。
+- **卡片预览静音是全局联动，详情播放器独立** — 作品/点赞/收藏域卡片静音切换走 `WorksGrid.#togglePreviewMute()`（共享 `#previewMuted` 标志，遍历容器内全部已渲染 `.work-video-player` 同步 `video.muted` 与按钮图标）；卡片填充与悬停起播都读该标志保证新卡继承。禁止改回单卡独立静音；`Detail.toggleVideoMute` 只服务详情覆盖层（`dom.detailVideo`/note 音频），勿与卡片联动。
 - **网格媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 四个槽位全是 `<div role="img">`（唯一例外详情大图 `<img>`+探针）；离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际再提交。各槽位失败语义、代际机制与清背景要求全文见 [docs/11](./docs/11-options-ui.md)。
 - **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被文件后部组件规则覆盖，hidden 静默失效、占位层常显（见 [docs/11](./docs/11-options-ui.md)）。
+- **搜索栏收起即重置，筛选不跨收起保留** — `closeSearchBar()` 必须先调 `clearSearchFilters()` 恢复默认初始状态（关键词/排序/归属勾选/逆序全部复位）；无「收起但筛选仍生效」的摘要条。域切换**不**重置（搜索栏展开期间改动按现态保留）。
+- **「已关注/未关注」归属判定走方案A：作品 `uid` 实时关联关注全集** — 全集用 `state.followedUids`（`services.loadFollowedUids()` 全量 `groupId:'all'` 加载，不受关注分组影响，init/域切换/`followings` 事件三处刷新）；记录无 `uid` 或全集未加载成功（`state.followedUidsLoaded`）时**不归判**，避免把已关注作者作品误算为未关注引入误删。禁止改用扫描快照 `authorFollowed` 做该判定的主判据。
 
 ## config 分组速查
 
-`options/options.js` 顶层 `config` 常量（35 个键。`background.js` 另有 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `TOKEN_TTL` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` 等）：
+`options/core.js` 顶层 `config` 常量（35 个键）。`background/core.js` 另有顶层 `CONFIG` 含 `TIMEOUT` / `DELAY` / `SYNC` / `STORAGE_KEYS` / `DNR_RULES` / `GROUPS` / `PAGE` / `CANCEL` / `FATAL_ERRORS` / `WEBID_API` / `WEB_SIGN_SALT` 等，以及重构后的 `runtimeConfig` 对象（含 `KEY`/`DEFAULTS`/`load`/`save`/`apply`/`reload`/`delayRange`，从 `chrome.storage.local` 读取并叠加进 `CONFIG`）；`background/` 的模块级可变状态（原 `abOgus`/`cachedClockSkew`/clockSkewTime/独立模式三开关）已全部塌缩为 `Credentials`/`IndependentClient` 的类私有字段：
 
 | 分组       | 键                                                                                                                            |
 |------------|-------------------------------------------------------------------------------------------------------------------------------|
@@ -148,7 +177,7 @@ background.js switch 分发所有 `chrome.runtime.sendMessage`。
 | 详情页     | `DETAIL_TITLE_MAX_LEN` `40` / `TOAST_DURATION` `2000` / `DOWNLOAD_MAX_RETRY` `1`                                              |
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000`                                  |
 | 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
-| 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `9` / `CARD_HEIGHT_OFFSET` `35`                                                       |
+| 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `11` / `CARD_HEIGHT_OFFSET` `35`                                                       |
 | 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `OBSERVER_ROOT_MARGIN` `'200px'` / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'1200px'`    |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                    |

@@ -20,3 +20,4 @@ tests/
 .zed/
 .zcode/
 *tmp*/
+test/

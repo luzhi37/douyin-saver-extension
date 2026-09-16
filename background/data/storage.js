@@ -1,75 +1,80 @@
-// background/storage.js — IndexedDB 封装层
+// background/data/storage.js — IndexedDB 封装层（class Storage + 单例）
 
 const DB_NAME = "douyin-saver";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORES = {
   works: { keyPath: "awemeId", indexes: ["groupId"] },
   works_groups: { keyPath: "id" },
   followings: { keyPath: "uid", indexes: ["groupId"] },
   followings_groups: { keyPath: "id" },
+  likes: { keyPath: "awemeId", indexes: ["groupId"] },
+  likes_groups: { keyPath: "id" },
+  favorites: { keyPath: "awemeId", indexes: ["groupId"] },
+  favorites_groups: { keyPath: "id" },
 };
 
-// 单例连接
-let _dbPromise = null;
+// ---------- Storage ----------
+// IndexedDB 封装层；单例连接以 #db 私有字段持有（首次打开后缓存 Promise）。
+class Storage {
+  #db = null;
 
-function openDB() {
-  if (_dbPromise) return _dbPromise;
-  _dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      for (const [name, cfg] of Object.entries(STORES)) {
-        if (!db.objectStoreNames.contains(name)) {
-          const store = db.createObjectStore(name, { keyPath: cfg.keyPath });
-          for (const idx of cfg.indexes || []) {
-            store.createIndex(idx, idx, { unique: false });
+  #openDB() {
+    if (this.#db) return this.#db;
+    this.#db = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        for (const [name, cfg] of Object.entries(STORES)) {
+          if (!db.objectStoreNames.contains(name)) {
+            const store = db.createObjectStore(name, { keyPath: cfg.keyPath });
+            for (const idx of cfg.indexes || []) {
+              store.createIndex(idx, idx, { unique: false });
+            }
           }
         }
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => {
-      _dbPromise = null;
-      reject(req.error);
-    };
-  });
-  return _dbPromise;
-}
-
-// 对象数组 → key→value 映射
-function toMap(items, keyField) {
-  const map = {};
-  for (const item of items) {
-    if (item?.[keyField]) map[item[keyField]] = item;
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => {
+        this.#db = null;
+        reject(req.error);
+      };
+    });
+    return this.#db;
   }
-  return map;
-}
 
-export const storage = {
+  // 对象数组 → key→value 映射
+  #toMap(items, keyField) {
+    const map = {};
+    for (const item of items) {
+      if (item?.[keyField]) map[item[keyField]] = item;
+    }
+    return map;
+  }
+
   async getAll(storeName) {
-    const db = await openDB();
+    const db = await this.#openDB();
     const keyField = STORES[storeName].keyPath;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).getAll();
-      req.onsuccess = () => resolve(toMap(req.result, keyField));
+      req.onsuccess = () => resolve(this.#toMap(req.result, keyField));
       req.onerror = () => reject(req.error);
     });
-  },
+  }
 
   async get(storeName, key) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).get(key);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
     });
-  },
+  }
 
   async putBatch(storeName, items) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
       const store = tx.objectStore(storeName);
@@ -77,10 +82,10 @@ export const storage = {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-  },
+  }
 
   async deleteBatch(storeName, keys) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
       const store = tx.objectStore(storeName);
@@ -88,63 +93,63 @@ export const storage = {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-  },
+  }
 
   async clear(storeName) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
       tx.objectStore(storeName).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-  },
+  }
 
   async count(storeName) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).count();
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
-  },
+  }
 
   async getByIndex(storeName, indexName, value) {
-    const db = await openDB();
+    const db = await this.#openDB();
     const keyField = STORES[storeName].keyPath;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).index(indexName).getAll(value);
-      req.onsuccess = () => resolve(toMap(req.result, keyField));
+      req.onsuccess = () => resolve(this.#toMap(req.result, keyField));
       req.onerror = () => reject(req.error);
     });
-  },
+  }
 
   async countByIndex(storeName, indexName, value) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).index(indexName).count(value);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
-  },
+  }
 
   // groups 专用：返回数组
   async getGroups(storeName) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     });
-  },
+  }
 
   // groups 专用：覆盖整个数组
   async putGroups(storeName, groups) {
-    const db = await openDB();
+    const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readwrite");
       tx.objectStore(storeName).clear();
@@ -152,12 +157,15 @@ export const storage = {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
-  },
+  }
 
   async estimate() {
     if (navigator.storage?.estimate) {
       return navigator.storage.estimate();
     }
     return null;
-  },
-};
+  }
+}
+const storage = new Storage();
+
+export { storage };

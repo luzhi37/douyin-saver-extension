@@ -1,6 +1,6 @@
-# 11 · 管理页渲染与交互（options.js）
+# 11 · 管理页渲染与交互（options/ 模块化）
 
-> 职责边界：options.js 的渲染与交互子系统机制——VirtualGrid 双向虚拟化、Sidebar 升降级虚拟化、媒体加载统一体系与全局熔断、悬停预览事件委托、批量勾选 DOM 约定、弹窗锁定与取消门控、CSS 协同约定。数据流与消息协议见 [01](./01-project-architecture.md)；写入语义见 [10](./10-storage-write-and-import.md)；抖音页面注入侧见 [09](./09-inject-tab-mode.md)。
+> 职责边界：options/ 各模块的渲染与交互子系统机制——VirtualGrid 双向虚拟化、Sidebar 升降级虚拟化、媒体加载统一体系与全局熔断、悬停预览事件委托、批量勾选 DOM 约定、弹窗锁定与取消门控、CSS 协同约定。数据流与消息协议见 [01](./01-project-architecture.md)；写入语义见 [10](./10-storage-write-and-import.md)；抖音页面注入侧见 [09](./09-inject-tab-mode.md)。
 
 ## 概述
 
@@ -9,6 +9,10 @@
 ## 核心流程图（文字描述）
 
 ### VirtualGrid 渲染管线（双向虚拟化 + 分圈观察）
+
+分组切换不清场（`currentGroupId` 事件不 wipe、不铺占位骨架）：旧分组卡片保留到新数据到达，
+数据到达后由下方 render(items) 整批 wipe 重建替换；域切换仍走 `switchDomain` 同步清场
+（abortRender×4 + 容器 wipe，保持"只清不铺"）：
 
 ```
 render(items)
@@ -65,6 +69,9 @@ Batch.updateCheckboxDOM(checkboxEl, isSelected)
 Batch.handleBatchSelectAll()                  // 按域选择 checkbox 选择器
 Detail.markMediaFail() / markMediaOk() / mediaRetryBlocked()
 Detail.#scheduleCoverDrain / #showAvatarFallback / #imgProbeToken
+Detail.#renderVideoProgress / #resetVideoProgressUI / #applySeek(frac)
+Detail.#buildNoteSegs / #renderNoteSegs(cur, total) / #onNoteAudioTimeUpdate / #onNoteAudioEnded
+Detail.#markDetailActive()                    // 闲置 2.6s 隐藏播放条/切换器的复位入口
 Sync.#followingsRequestId                     // 关注进度过滤（可 === null）
 ```
 
@@ -202,6 +209,28 @@ probe.onerror = () => {
 
 `SYNC_WORKS` **立即**返回 requestId；`FETCH_FOLLOWING` 等**收集完成才**返回。关注进度过滤因此必须兼容 `Sync.#followingsRequestId === null`（列表阶段尚未拿到 requestId 时不得按 requestId 过滤丢弃进度消息）。进度消息载荷见 01。
 
+### 详情层双形态进度条（视频轨道 / 图集分段）
+
+`#detailProgress` 贴播放条顶缘通栏，一个容器两种形态，由 `note-mode` 类切换：
+
+- **视频模式**：`.track-wrap` 连续轨道（buffered/played/thumb + hover 时间气泡），由 `#detailVideo` 的 `timeupdate` 驱动 `#renderVideoProgress`；`#detailTime`（bar-controls 信息位）同源更新。
+- **图集模式**：`#noteSegs` 分段进度接管同一位置（`note-mode` 下 `.track-wrap` 隐藏），N 段对应 N 张图，段内渐进填充。驱动分两路：有音乐时 `#detailAudio` 的 `timeupdate` 驱动（总时长=音乐真实时长，`loadedmetadata` 后接管）；无音乐兜底虚拟时钟（每图 `NOTE_AUTO_PLAY_INTERVAL`，收尾语义与旧定时轮播一致）。收尾均走 `nextOnEnd()` 的 single/group/off 循环模式语义。
+- **手动切图语义（方案A·音乐不跳段）**：箭头/键盘走 `#noteManualSwitch`——重定基周期偏移量 `#noteSegOffset`（周期时间 = `audio.currentTime - offset`）对齐目标段起点，指示器/`#noteVirtualElapsed` 同步，**音乐本身不 seek**；驱动按重定基后的周期时间继续推进，手动位置不被弹回。进度条 seek 同样只重定基偏移量。周期提前耗尽（前跳）或音乐先结束（后跳）均按 `nextOnEnd()` 收尾；'off' 播完后音频停在末尾，再点播放先清零 `currentTime/offset`（否则 play 后立即又触发 ended，播放键失灵）。
+- 键盘可达：容器 `role="slider"` + `tabindex="0"`，左右键 ±5%、Home/End 到两端；`seek` 统一走 `#applySeek`（视频=currentTime，图集=音乐进度且段落随位置切换）。
+- 悬浮特效：整段加高 6px + 指针段 `scaleY(1.8)` 提亮（`transform-origin: top` 向下伸展不遮画面）。
+- 图集切图时模糊背景跟随当前图（`#noteShowImage` 内 `#applyDetailBg([当前图])`），视频模式模糊背景=封面。
+
+### 详情层闲置隐藏与几何（对齐抖音播放界面）
+
+- **闲置隐藏**：overlay 内 mousemove/wheel/keydown 活动即复位 2.6s 定时器（`#markDetailActive`），超时挂 `#detailOverlay.idle`——CSS 淡出 `#detailBottomBar` 与 `#detailSwitcher`（opacity+pointer-events）。**红线：`:focus-within` 豁免必须保留**，键盘 Tab 聚焦到控件时不允许消失。
+- **几何**：`.detail-body` 全屏宽、`flex:1`（高度=视口−56px 播放条，零重叠）；`.media-view` 居中 39.3vw，视频/大图 `object-fit: cover` 裁切铺满（有意放弃 contain，两侧裁切属既定视觉），两侧由 `#detailOverlay::before` 模糊背景填充（`brightness(0.8)`，非旧版 0.4）。
+- **⌃⌄ 切换器**（`#detailSwitcher`）：右缘垂直居中，只切上一个/下一个作品（接 `prevDetail/nextDetail`），不参与图集翻页——图集翻页归左右箭头（56px、锚定 10vw、悬浮/聚焦常显）、分段条 seek 与自动轮播。
+- **bar-controls 信息位**：视频=`#detailTime`（0:00/0:00），图集=`#detailOrder`（K/N），由 `#updateCounters` 分工写入；`#detailCounter`（作品序号）仍在最右端。
+- **`#detailTitle` 全文**：描述不再 JS 截断（`DETAIL_TITLE_MAX_LEN` 仅剩移除确认框使用），CSS 单行省略。
+- `.detail-bar-btn` 仍被卡片预览按钮复用（options.html `.video-play-btn/.video-mute-btn`），调整其尺寸参数时须回归卡片预览。
+
+### 同步进度过滤的 requestId 时序差异
+
 ### CSS 协同约定（.hidden 成对声明）
 
 自带 display 值的组件类与通用 `.hidden` 同用时，**必须成对声明 `.X.hidden { display: none }`**。原因：通用 `.hidden` 定义在 options.css 前部（约 66 行），同特异性（0,1,0）下会被文件后部组件规则里的 `display: flex/…` 覆盖，`hidden` 类静默失效、占位层常显（曾导致作品卡中央 emoji 常显、关注卡头像旁多出一个空占位圆）。既有先例：`.work-type-badge.hidden`、`.following-avatar-fallback.hidden`。
@@ -229,6 +258,8 @@ probe.onerror = () => {
 | 媒体重试自行计数 | 与熔断窗口叠加放大请求量 | 一律接 `Detail.markMediaFail/mediaRetryBlocked` |
 | 在途探针回调不校验代际 | 旧 URL 提交到已换人槽位（错图） | 先验 fillGen/coverGen/gen/imgProbeToken 再提交 |
 | hover 预览改用 pointerenter/leave | 功能静默失效 | 只用冒泡的 pointerover/out 委托 |
+| 分组切换期间对保留的旧卡片做 wipe 式增量更新 | 与新数据 render() 的整批重建冲突 | 分组切换不清场，旧卡保留到数据到达后由 render() 整批重建 |
+| 只改 options 或 content 任意一侧的 toast 样式 | 两侧视觉漂移（options `.toast` 与 content.js `Toast` 内联样式是两处同款实现） | 两侧同步：13px 字号 / `7px 16px` 内边距 / 6px 圆角 / `top:20px` / info`#60a5fa`·success`#4ade80`·error`#f5222d` 左色条 / info·success 2s、error 4.5s / `max-width:80vw` 允许换行；文案不带 emoji |
 
 ## 配置项说明
 
@@ -245,7 +276,7 @@ probe.onerror = () => {
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | options.js 代码布局约束、进度消息载荷表、CANCEL_ACTIVE_TASK 双路径 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | options/ 代码布局约束、进度消息载荷表、CANCEL_ACTIVE_TASK 双路径 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_PROGRESS/SYNC_DONE 的产生侧（本册的消费侧过滤） |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | FOLLOWING_PROGRESS 时序（#followingsRequestId 过滤的上游） |
 | 07 | [07-independent-fetch-user-works.md](./07-independent-fetch-user-works.md) | 侧边栏滚动加载的数据来源 |
