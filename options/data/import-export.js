@@ -1,10 +1,10 @@
 // ---------- ImportExport ----------
-import { config, dom, state, utils, services } from '../core.js';
+import { config, dom, state, services } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { groups } from './groups.js';
 
 // ---------- ImportExport ----------
-export class ImportExport {
+class ImportExport {
   async handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -16,7 +16,7 @@ export class ImportExport {
       const data = JSON.parse(raw);
       const domain = state.domain;
 
-      if (config.WORK_LIKE_DOMAINS.includes(domain) && domain !== "works" ? !services.isDomainData(data, domain) : domain === "followings" ? !services.isFollowingsData(data) : !services.isWorksData(data)) {
+      if (!services.isDomainData(data, domain)) {
         const expected = config.DOMAINS_META[domain].label + "数据";
         dom.dialogTitle.textContent = "导入失败";
         dom.dialogBody.innerHTML = `<p class="dy-text-danger">文件内容不是${expected}</p>`;

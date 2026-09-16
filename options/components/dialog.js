@@ -2,7 +2,7 @@
 import { config, dom, state } from '../core.js';
 
 // ---------- Dialog ----------
-export class Dialog {
+class Dialog {
   constructor() {
     this.__toastTimer = null;
     this.__lastFocused = null;
@@ -34,6 +34,19 @@ export class Dialog {
     // 焦点管理：打开时移入弹窗、关闭后还原到触发元素（docs/UI_IMPROVEMENTS.md 建议3）
     this.__lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.focusFirstControl();
+  }
+
+  // 弹窗页脚追加「稍后删除」按钮（Sync / DomainScanSync 同步结果共用）
+  addTrashButton(onClick, onClose) {
+    const btn = document.createElement("button");
+    btn.className = "dy-btn flex-inline-center dy-btn-ghost";
+    btn.textContent = "稍后删除";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      await onClick();
+      onClose();
+    });
+    dom.dialogFooter.appendChild(btn);
   }
 
   focusFirstControl() {
@@ -111,21 +124,6 @@ export class Dialog {
         <li>回到本扩展，再次点击「${scanLabel}」</li>
       </ol>
     `;
-    this.showOkDialog();
-  }
-
-  showFetchErrorDialog(msg) {
-    dom.dialogTitle.textContent = "获取失败";
-    let hint = msg;
-    if (msg.includes("NO_DOUYIN_TAB")) hint = "未找到抖音页面，请确保已打开抖音";
-    else if (msg.includes("TIMEOUT")) hint = "获取超时，可能是网络问题或内容过多";
-    else if (msg.includes("HTTP_403")) {
-      // 注意：任何 403 都会走到这里，服务端未必真的返回「sign invalid」——同源 fetch
-      // 元数据（Sec-Fetch-Site/Origin）被 DNR 剥离、会话过期等同样会触发 403。不要再把
-      // 所有 403 一律归因为签名被拒，以免误导用户反复刷新无关缓存。
-      hint = "抖音返回 403 拒绝了该请求。若已刷新 Cookie/webid/msToken/浏览器特征仍失败，多为请求头被服务端拦截（独立模式 POST 端点尤甚），可改用标签页模式扫描，或重新刷新缓存后重试";
-    }
-    dom.dialogBody.innerHTML = `<p>${hint}</p>`;
     this.showOkDialog();
   }
 }

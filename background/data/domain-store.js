@@ -6,10 +6,6 @@ import { storage } from "./storage.js";
 // ---------- DomainStore ----------
 // 域存储的封装：store/group 名解析、合并落库（三作品型域通用 + 关注域专用计数保护）。
 class DomainStore {
-  getConfig(domain) {
-    return DOMAIN_CONFIG[domain];
-  }
-
   storeName(domain) {
     return DOMAIN_CONFIG[domain || CONFIG.STORAGE_KEYS.WORKS].storeName;
   }

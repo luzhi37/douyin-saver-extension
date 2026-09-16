@@ -49,26 +49,10 @@ export class VirtualGrid {
     dom.errorState.classList.add("hidden");
 
     // 先完全重置实例状态（含空列表分支），避免残留 observer/队列影响后续渲染
-    if (this.#observer) {
-      this.#observer.disconnect();
-      this.#observer = null;
-    }
-    if (this.#unloadObserver) {
-      this.#unloadObserver.disconnect();
-      this.#unloadObserver = null;
-    }
-    this.#pendingSkeletons = [];
-    this.#sentinelCard = null;
-    this.#itemMap = new Map(items.map((item) => [item[this.#itemKey], item]));
-    cancelAnimationFrame(this.#drainRafId);
-    this.#drainRafId = 0;
-    this.#fillQueue = [];
+    this.#resetRenderState(new Map(items.map((item) => [item[this.#itemKey], item])));
 
     if (items.length === 0) {
-      dom.emptyState.classList.remove("hidden");
-      dom.emptyState.querySelector("p").textContent = emptyMsg;
-      dom.emptyState.querySelector(".empty-hint").textContent = emptyHint;
-      this.#container.classList.add("hidden");
+      this.#showEmpty(emptyMsg, emptyHint);
       return;
     }
 
@@ -131,10 +115,7 @@ export class VirtualGrid {
       }
     }
     if (this.#container.children.length === 0) {
-      this.#container.classList.add("hidden");
-      dom.emptyState.classList.remove("hidden");
-      dom.emptyState.querySelector("p").textContent = this.#emptyMsg;
-      dom.emptyState.querySelector(".empty-hint").textContent = this.#emptyHint;
+      this.#showEmpty(this.#emptyMsg, this.#emptyHint);
     }
   }
 
@@ -143,6 +124,11 @@ export class VirtualGrid {
     this.stopAllMedia();
     cancelAnimationFrame(this.#chunkRaf);
     this.#chunkRaf = 0;
+    this.#resetRenderState(new Map());
+  }
+
+  // 渲染/中止共用的状态重置：断开双 observer、清空待观察队列/哨兵/填充队列/分帧 id
+  #resetRenderState(itemMap) {
     if (this.#observer) {
       this.#observer.disconnect();
       this.#observer = null;
@@ -153,10 +139,17 @@ export class VirtualGrid {
     }
     this.#pendingSkeletons = [];
     this.#sentinelCard = null;
-    this.#itemMap = new Map();
+    this.#itemMap = itemMap;
     cancelAnimationFrame(this.#drainRafId);
     this.#drainRafId = 0;
     this.#fillQueue = [];
+  }
+
+  #showEmpty(msg, hint) {
+    dom.emptyState.classList.remove("hidden");
+    dom.emptyState.querySelector("p").textContent = msg;
+    dom.emptyState.querySelector(".empty-hint").textContent = hint;
+    this.#container.classList.add("hidden");
   }
 
   #getSkeletonTemplate() {

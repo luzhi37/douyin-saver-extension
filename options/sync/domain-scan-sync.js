@@ -6,7 +6,7 @@ import { groups } from '../data/groups.js';
 
 // ---------- 点赞/收藏域同步（DomainScanSync） ----------
 // 与 Sync 的差异：扫描结果由 background 直接合并落库 + 丢失检测，本类只驱动进度弹窗与 UI 刷新
-export class DomainScanSync {
+class DomainScanSync {
   #running = false;
   #requestId = null;
   #domain = null;
@@ -64,7 +64,7 @@ export class DomainScanSync {
         dom.dialogBody.appendChild(hint);
       }
       if (lostUids.length > 0) {
-        this.#addTrashButton(domain, lostUids);
+        dialog.addTrashButton(() => this.moveLostToTrash(domain, lostUids), () => this.closeDialog());
       }
     } catch (err) {
       if (!this.#running) return;
@@ -116,33 +116,9 @@ export class DomainScanSync {
     if (this.#summaryEl) this.#summaryEl.textContent = text || "";
   }
 
-  #addTrashButton(domain, lostIds) {
-    const btn = document.createElement("button");
-    btn.className = "dy-btn flex-inline-center dy-btn-ghost";
-    btn.textContent = "稍后删除";
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      await this.moveLostToTrash(domain, lostIds);
-      dialog.closeDialog();
-    });
-    dom.dialogFooter.appendChild(btn);
-  }
-
   // 丢失条目移入本域「稍后删除」分组（分组按需创建，与关注域 moveLostFollowings 同款）
   async moveLostToTrash(domain, lostIds) {
-    const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain });
-    const list = groupsRes.groups || [];
-    let trashGroup = list.find((g) => g.name === config.TRASH_GROUP_NAME);
-    if (!trashGroup) {
-      const addRes = await services.bgMsg({ type: "ADD_GROUP", domain, name: config.TRASH_GROUP_NAME });
-      if (addRes.ok) trashGroup = addRes.group;
-    }
-    if (trashGroup) {
-      await services.moveWorkLike(domain, lostIds, trashGroup.id);
-      await services.loadDomainData();
-      store.refreshGroups();
-    }
-    return trashGroup;
+    return services.moveToTrashGroup(domain, lostIds, (gid) => services.moveWorkLike(domain, lostIds, gid));
   }
 }
 

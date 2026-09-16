@@ -105,8 +105,6 @@ class App {
         return utils.asyncHandler(() => worksHandlers.getOne(message.awemeId, sendResponse), sendResponse);
 
       // 点赞域
-      case "SAVE_LIKES":
-        return utils.asyncHandler(() => likesHandlers.save(message.likes, sendResponse), sendResponse);
       case "GET_LIKES":
         return utils.asyncHandler(() => likesHandlers.get(message.groupId, sendResponse), sendResponse);
       case "DELETE_LIKES":
@@ -118,8 +116,6 @@ class App {
         );
 
       // 收藏域
-      case "SAVE_FAVORITES":
-        return utils.asyncHandler(() => favoritesHandlers.save(message.favorites, sendResponse), sendResponse);
       case "GET_FAVORITES":
         return utils.asyncHandler(() => favoritesHandlers.get(message.groupId, sendResponse), sendResponse);
       case "DELETE_FAVORITES":

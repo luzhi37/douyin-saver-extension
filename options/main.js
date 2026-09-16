@@ -1,11 +1,10 @@
 // ---------- 组合根：消息监听 / DOM 事件绑定 / store 订阅 / init ----------
 // 所有类模块经 import 求值完成后（单例全部就绪）才执行本文件底部逻辑。
 
-import { config, dom, state, store, utils, services, runtimeConfig } from './core.js';
+import { config, dom, state, store, services, runtimeConfig } from './core.js';
 import { search } from './components/search-bar.js';
 import { dialog } from './components/dialog.js';
-import { followingsGrid } from './grids/followings-grid.js';
-import { worksGrid, likesGrid, favoritesGrid } from './grids/works-grid.js';
+import { worksGrid } from './grids/works-grid.js';
 import { groups } from './data/groups.js';
 import { batch } from './data/batch.js';
 import { importExport } from './data/import-export.js';
@@ -202,12 +201,7 @@ dom.btnSync.addEventListener("click", async () => {
     services.loadFollowedUids().then((ok) => {
       if (ok && search.isOwnerFilterActive()) search.refreshGridView();
     });
-    try {
-      await services.loadDomainData();
-    } catch (err) {
-      console.error("[DY] load domain data failed:", err);
-      appShell.renderErrorState("数据加载失败", err.message);
-    }
+    await appShell.loadDomainDataSafe();
   });
 
   store.on("works", () => {
@@ -228,12 +222,7 @@ dom.btnSync.addEventListener("click", async () => {
   // 切换分组保留旧分组卡片直到新数据到达：数据到达后由域 store 事件触发 render() 整批重建
   store.on("currentGroupId", async () => {
     await groups.renderGroupTabs();
-    try {
-      await services.loadDomainData();
-    } catch (err) {
-      console.error("[DY] load domain data failed:", err);
-      appShell.renderErrorState("数据加载失败", err.message);
-    }
+    await appShell.loadDomainDataSafe();
   });
   store.on("batchMode", (v) => {
     document.body.classList.toggle("batch-mode", v);
@@ -249,12 +238,7 @@ dom.btnSync.addEventListener("click", async () => {
   document.body.dataset.domain = "works";
   appShell.updateDomainSlider("works");
   await groups.renderGroupTabs();
-  try {
-    await services.loadDomainData();
-  } catch (err) {
-    console.error("[DY] load domain data failed:", err);
-    appShell.renderErrorState("数据加载失败", err.message);
-  }
+  await appShell.loadDomainDataSafe();
   // 方案A：启动即预载关注全集，供作品/点赞/收藏域的「已关注/未关注」归属判定
   try {
     await services.loadFollowedUids();

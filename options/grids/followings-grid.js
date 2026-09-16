@@ -7,7 +7,7 @@ import { detail } from '../components/detail.js';
 import { sidebar } from '../components/sidebar.js';
 
 // ---------- FollowingsGrid ----------
-export class FollowingsGrid extends VirtualGrid {
+class FollowingsGrid extends VirtualGrid {
   // 头像分帧队列，避免同步赋 src 触发批量网络/解码调度
   #avatarQueue = [];
   #avatarDrainRafId = 0;
@@ -122,7 +122,7 @@ export class FollowingsGrid extends VirtualGrid {
         const probe = new Image();
         probe.onload = () => {
           if (!this.#avatarTargetAlive(img, gen)) return; // 已重填/降级，结果作废
-          img.style.backgroundImage = `url("${url.replace(/["\\]/g, "\\$&")}")`;
+          img.style.backgroundImage = utils.cssUrl(url);
           img.classList.remove("media-loading");
           detail.markMediaOk();
         };

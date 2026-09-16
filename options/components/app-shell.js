@@ -8,7 +8,7 @@ import { settings } from './settings.js';
 import { dialog } from './dialog.js';
 
 // ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 / 左侧边栏折叠 ----------
-export class AppShell {
+class AppShell {
   static LEFT_SIDEBAR_KEY = "douyin_left_sidebar_collapsed";
 
   constructor() {
@@ -95,6 +95,16 @@ export class AppShell {
     const hint = dom.errorState.querySelector(".error-hint");
     if (hint) hint.textContent = detail || "请检查网络后重试";
     dom.errorState.classList.remove("hidden");
+  }
+
+  // 加载域数据的统一错误包装：捕获异常进入全局错误态（main.js 三处加载点共用）
+  async loadDomainDataSafe() {
+    try {
+      await services.loadDomainData();
+    } catch (err) {
+      console.error("[DY] load domain data failed:", err);
+      this.renderErrorState("数据加载失败", err.message);
+    }
   }
 
   // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3）。

@@ -4,7 +4,7 @@ import { dialog } from '../components/dialog.js';
 import { groups } from '../data/groups.js';
 
 // ---------- Sync ----------
-export class Sync {
+class Sync {
   #running = false;
   #requestId = null;
   #currentDomain = null;
@@ -33,18 +33,6 @@ export class Sync {
 
   #setSummary(text) {
     if (this.#summaryEl) this.#summaryEl.textContent = text || "";
-  }
-
-  #addTrashButton(onClick) {
-    const btn = document.createElement("button");
-    btn.className = "dy-btn flex-inline-center dy-btn-ghost";
-    btn.textContent = "稍后删除";
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      await onClick();
-      this.closeSyncDialog();
-    });
-    dom.dialogFooter.appendChild(btn);
   }
 
   async #refreshWorks() {
@@ -110,7 +98,7 @@ export class Sync {
 
     const failedIds = msg.failedAwemeIds || [];
     if (failedIds.length > 0) {
-      this.#addTrashButton(() => this.moveFailed(failedIds));
+      dialog.addTrashButton(() => this.moveFailed(failedIds), () => this.closeSyncDialog());
     }
   }
 
@@ -268,41 +256,19 @@ export class Sync {
       if (this.#statusEl) this.#statusEl.textContent = "DONE";
       const lostUids = result.lostUids || [];
       if (lostUids.length > 0) {
-        this.#addTrashButton(() => this.moveLostFollowings(lostUids));
+        dialog.addTrashButton(() => this.moveLostFollowings(lostUids), () => this.closeSyncDialog());
       }
     }
   }
 
   async moveFailed(failedIds) {
-    const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain: "works" });
-    const groups = groupsRes.groups || [];
-    let trashGroup = groups.find((g) => g.name === config.TRASH_GROUP_NAME);
-    if (!trashGroup) {
-      const addRes = await services.bgMsg({ type: "ADD_GROUP", domain: "works", name: config.TRASH_GROUP_NAME });
-      if (addRes.ok) trashGroup = addRes.group;
-    }
-    if (trashGroup) {
-      await services.bgMsg({ type: "MOVE_WORKS", awemeIds: failedIds, targetGroupId: trashGroup.id });
-      await services.loadDomainData();
-      store.refreshGroups();
-    }
-    return trashGroup;
+    return services.moveToTrashGroup("works", failedIds, (gid) =>
+      services.bgMsg({ type: "MOVE_WORKS", awemeIds: failedIds, targetGroupId: gid }),
+    );
   }
 
   async moveLostFollowings(lostUids) {
-    const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain: "followings" });
-    const groups = groupsRes.groups || [];
-    let trashGroup = groups.find((g) => g.name === config.TRASH_GROUP_NAME);
-    if (!trashGroup) {
-      const addRes = await services.bgMsg({ type: "ADD_GROUP", domain: "followings", name: config.TRASH_GROUP_NAME });
-      if (addRes.ok) trashGroup = addRes.group;
-    }
-    if (trashGroup) {
-      await services.moveFollowings(lostUids, trashGroup.id);
-      await services.loadDomainData();
-      store.refreshGroups();
-    }
-    return trashGroup;
+    return services.moveToTrashGroup("followings", lostUids, (gid) => services.moveFollowings(lostUids, gid));
   }
 }
 

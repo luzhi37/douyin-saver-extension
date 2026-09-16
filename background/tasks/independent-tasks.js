@@ -1,6 +1,6 @@
 // background/tasks/independent-tasks.js — 独立模式长任务（fetchFollowing / fetchCollection / syncWorks / fetchWorksPage / cancel）
 
-import { CONFIG, formatters, runtimeConfig } from "../core.js";
+import { CONFIG, formatters, utils, runtimeConfig } from "../core.js";
 import { credentials } from "../identity/credentials.js";
 import { independentClient } from "../identity/independent-client.js";
 import { domainStore } from "../data/domain-store.js";
@@ -22,16 +22,12 @@ class IndependentTasks {
       // 不额外附带 user_id。user_id 从 uid cookie 取第一个值，存在多账号/过期 cookie
       // 时可能与当前会话 uid 不一致，私密账户会据此判定为「他人查看」而返回 2096。
       const requestId = crypto.randomUUID();
-      let cancelled = false,
-        hasMore = true,
+      const guard = utils.withCancelGuard();
+      let hasMore = true,
         offset = 0;
       const all = [];
       const seen = new Set();
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
-      while (hasMore && !cancelled) {
+      while (hasMore && !guard.isCancelled()) {
         const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset), min_time: "0", max_time: "0", source_type: "4", gps_access: "0", address_book_access: "0", is_top: "1" };
         const data = await independentClient.request(CONFIG.API.FOLLOWING, await credentials.buildBaseParams(params));
         if (data.status_code === 0 && Array.isArray(data.followings)) {
@@ -40,19 +36,22 @@ class IndependentTasks {
           if (newItems.length === 0) break;
           newItems.forEach((item) => seen.add(String(item.uid)));
           all.push(...newItems.map(formatters.formatFollowing));
-          hasMore = data.has_more === true || data.has_more === 1;
+          hasMore = utils.hasMoreFlag(data);
           if (data.total > 0 && all.length >= data.total) hasMore = false;
           offset += CONFIG.PAGE.FOLLOWING;
         } else break;
-        chrome.runtime
-          .sendMessage({ type: "FOLLOWING_PROGRESS", collected: all.length, hasMore, total: data.total || 0, requestId })
-          .catch(() => {});
-        if (hasMore && !cancelled)
-          await new Promise((r) =>
-            setTimeout(r, runtimeConfig.delayRange("syncFollowings").MIN + Math.random() * (runtimeConfig.delayRange("syncFollowings").MAX - runtimeConfig.delayRange("syncFollowings").MIN)),
-          );
+        utils.sendMessageSafe({
+          type: "FOLLOWING_PROGRESS",
+          collected: all.length,
+          hasMore,
+          total: data.total || 0,
+          requestId,
+        });
+        if (hasMore && !guard.isCancelled()) {
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
+        }
       }
-      if (!cancelled && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
+      if (!guard.isCancelled() && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
         await scanTasks.calibrateStats(
           all,
           async (secUid) => {
@@ -66,11 +65,11 @@ class IndependentTasks {
               followerCount: data.user.follower_count || 0,
             };
           },
-          () => cancelled,
+          () => guard.isCancelled(),
           requestId,
         );
       }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
+      guard.dispose();
       sendResponse({ ok: true, requestId, followings: all, total: all.length });
     } catch (e) {
       // 2096 = 目标账号关注列表因隐私设置不可见；独立模式同步「我的关注」时若
@@ -87,15 +86,11 @@ class IndependentTasks {
     try {
       await credentials.ensureABogus();
       const requestId = crypto.randomUUID();
-      let cancelled = false,
-        hasMore = true,
+      const guard = utils.withCancelGuard();
+      let hasMore = true,
         cursor = 0;
       const all = [];
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
-      while (hasMore && !cancelled) {
+      while (hasMore && !guard.isCancelled()) {
         // 参考项目 TikTokDownloader 同端点形态：环境参数走 query，count/cursor 走 urlencoded
         // body —— 空 body 的 POST 会被服务端 Argus 以 Signature Not Found 拒绝；身份由
         // Cookie 决定，query/body 均不带 sec_user_id（参考项目同样不传）。
@@ -112,28 +107,25 @@ class IndependentTasks {
         if (data.status_code === 0 && Array.isArray(data.aweme_list)) {
           if (data.aweme_list.length === 0) break;
           all.push(...data.aweme_list.map(formatters.formatWork).filter(Boolean));
-          hasMore = data.has_more === true || data.has_more === 1;
+          hasMore = utils.hasMoreFlag(data);
           cursor = data.cursor || data.max_cursor || cursor + CONFIG.PAGE.COLLECTION;
         } else break;
         const un = all.filter((w) => w.authorFollowed === false).length;
-        chrome.runtime
-          .sendMessage({
-            type: "COLLECTION_PROGRESS",
-            collected: all.length,
-            unfollowedCount: un,
-            hasMore,
-            total: data.total || 0,
-            requestId,
-          })
-          .catch(() => {});
-        if (hasMore && !cancelled)
-          await new Promise((r) =>
-            setTimeout(r, runtimeConfig.delayRange("syncFollowings").MIN + Math.random() * (runtimeConfig.delayRange("syncFollowings").MAX - runtimeConfig.delayRange("syncFollowings").MIN)),
-          );
+        utils.sendMessageSafe({
+          type: "COLLECTION_PROGRESS",
+          collected: all.length,
+          unfollowedCount: un,
+          hasMore,
+          total: data.total || 0,
+          requestId,
+        });
+        if (hasMore && !guard.isCancelled()) {
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncCollection")));
+        }
       }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
-      const { saved, lostUids } = await scanTasks.persistScan(persist, all, cancelled);
-      sendResponse({ ok: true, requestId, works: all, timedOut: cancelled, saved, lostUids });
+      guard.dispose();
+      const { saved, lostUids } = await scanTasks.persistScan(persist, all, guard.isCancelled());
+      sendResponse({ ok: true, requestId, works: all, timedOut: guard.isCancelled(), saved, lostUids });
     } catch (e) {
       sendResponse({ ok: false, error: e.message });
     }
@@ -144,15 +136,11 @@ class IndependentTasks {
     try {
       await credentials.ensureABogus();
       const requestId = crypto.randomUUID();
-      let cancelled = false;
+      const guard = utils.withCancelGuard();
       const allWorks = [],
         errors = [];
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
       sendResponse({ ok: true, requestId, total: awemeIds.length });
-      for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+      for (let i = 0; i < awemeIds.length && !guard.isCancelled(); i++) {
         let currentOk = true;
         try {
           const params = await credentials.buildBaseParams({ aweme_id: awemeIds[i], request_source: "600", origin_type: "video_page" });
@@ -162,8 +150,7 @@ class IndependentTasks {
             w = data.aweme_detail ? formatters.formatWork(data.aweme_detail) : null;
             if (w) break;
             if (attempt === 0) {
-              const d = runtimeConfig.delayRange("syncWorks");
-              await new Promise((r) => setTimeout(r, d.MIN + Math.random() * (d.MAX - d.MIN)));
+              await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncWorks")));
             }
           }
           if (w) allWorks.push(w);
@@ -172,17 +159,15 @@ class IndependentTasks {
           errors.push({ awemeId: awemeIds[i], error: e.message });
           currentOk = false;
         }
-        chrome.runtime
-          .sendMessage({
-            type: "SYNC_PROGRESS",
-            requestId,
-            index: i,
-            total: awemeIds.length,
-            status: currentOk ? "ok" : "error",
-            awemeId: awemeIds[i],
-          })
-          .catch(() => {});
-        if (!cancelled) {
+        utils.sendMessageSafe({
+          type: "SYNC_PROGRESS",
+          requestId,
+          index: i,
+          total: awemeIds.length,
+          status: currentOk ? "ok" : "error",
+          awemeId: awemeIds[i],
+        });
+        if (!guard.isCancelled()) {
           const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
           if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
             const deadline = Date.now() + BATCH_PAUSE_MIN + Math.random() * (BATCH_PAUSE_MAX - BATCH_PAUSE_MIN);
@@ -191,30 +176,23 @@ class IndependentTasks {
               await chrome.storage.local.get("keepalive");
             }
           } else {
-            const d = runtimeConfig.delayRange("syncWorks");
-            await new Promise((r) =>
-              setTimeout(r, d.MIN + Math.random() * (d.MAX - d.MIN)),
-            );
+            await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncWorks")));
           }
         }
       }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
+      guard.dispose();
       if (allWorks.length > 0) {
         const result = await domainStore.mergeAndSave(CONFIG.STORAGE_KEYS.WORKS, allWorks);
-        chrome.runtime
-          .sendMessage({
-            type: "SYNC_DONE",
-            requestId,
-            ok: true,
-            refreshed: result.added + result.updated,
-            failed: errors.length,
-            failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
-          })
-          .catch(() => {});
+        utils.sendMessageSafe({
+          type: "SYNC_DONE",
+          requestId,
+          ok: true,
+          refreshed: result.added + result.updated,
+          failed: errors.length,
+          failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
+        });
       } else {
-        chrome.runtime
-          .sendMessage({ type: "SYNC_DONE", requestId, ok: false, error: errors[0]?.error || "NO_WORKS_COLLECTED" })
-          .catch(() => {});
+        utils.sendMessageSafe({ type: "SYNC_DONE", requestId, ok: false, error: errors[0]?.error || "NO_WORKS_COLLECTED" });
       }
     } catch (e) {
       sendResponse({ ok: false, error: e.message });
@@ -236,7 +214,7 @@ class IndependentTasks {
       sendResponse({
         ok: true,
         works,
-        hasMore: data.has_more === true || data.has_more === 1,
+        hasMore: utils.hasMoreFlag(data),
         maxCursor: data.max_cursor || "",
       });
     } catch (e) {
@@ -254,15 +232,11 @@ class IndependentTasks {
       if (!ep) return sendResponse({ ok: false, error: "UNKNOWN_KIND" });
 
       const requestId = crypto.randomUUID();
-      let cancelled = false;
+      const guard = utils.withCancelGuard();
       const errors = [];
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
       sendResponse({ ok: true, requestId, total: awemeIds.length });
 
-      for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+      for (let i = 0; i < awemeIds.length && !guard.isCancelled(); i++) {
         let ok = false;
         try {
           const resp = await fetch(ep.url, {
@@ -278,40 +252,31 @@ class IndependentTasks {
           });
           ok = resp.ok;
         } catch (_) {}
-        chrome.runtime
-          .sendMessage({
-            type: "CANCEL_PROGRESS",
-            requestId,
-            index: i,
-            total: awemeIds.length,
-            status: ok ? "ok" : "error",
-            awemeId: awemeIds[i],
-          })
-          .catch(() => {});
-        if (!cancelled && i < awemeIds.length - 1) {
+        utils.sendMessageSafe({
+          type: "CANCEL_PROGRESS",
+          requestId,
+          index: i,
+          total: awemeIds.length,
+          status: ok ? "ok" : "error",
+          awemeId: awemeIds[i],
+        });
+        if (!guard.isCancelled() && i < awemeIds.length - 1) {
           const delayKind = kind === "collection" ? "cancelCollection" : "cancelLike";
-          const d = runtimeConfig.delayRange(delayKind);
-          await new Promise((r) =>
-            setTimeout(r, d.MIN + Math.random() * (d.MAX - d.MIN)),
-          );
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
         }
       }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
+      guard.dispose();
       const failedAwemeIds = errors.map((e) => e.awemeId).filter(Boolean);
       // 移除 = 取消并删本地：远端取消成功的条目同步删除该域本地记录
       const deletedIds = await scanTasks.deleteCancelled(persistDomain, awemeIds, failedAwemeIds);
-      chrome.runtime
-        .sendMessage({
-          type: "CANCEL_DONE",
-          requestId,
-          ok: true,
-          cancelled,
-          refreshed: awemeIds.length - errors.length,
-          failed: errors.length,
-          failedAwemeIds,
-          deletedIds,
-        })
-        .catch(() => {});
+      utils.emitCancelDone(requestId, {
+        ok: true,
+        cancelled: guard.isCancelled(),
+        refreshed: awemeIds.length - errors.length,
+        failed: errors.length,
+        failedAwemeIds,
+        deletedIds,
+      });
     } catch (e) {
       sendResponse({ ok: false, error: e.message });
     }

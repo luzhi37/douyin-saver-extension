@@ -6,7 +6,7 @@ import { detail } from '../components/detail.js';
 import { followingsGrid } from '../grids/followings-grid.js';
 
 // ---------- Batch ----------
-export class Batch {
+class Batch {
   // Shift 范围选择的锚点：上一次（非 Shift）点击的 id
   #lastSelectedId = null;
 
@@ -57,14 +57,17 @@ export class Batch {
     this.syncDownloadBtn();
   }
 
-  #workLikeCheckboxSelector() {
-    return ".work-checkbox";
+  // 从勾选圆反查所属条目 id（作品卡 data-aweme-id / 关注卡 data-uid）
+  #checkboxId(el) {
+    return el.closest("[data-aweme-id]")?.dataset?.awemeId || el.closest("[data-uid]")?.dataset?.uid;
+  }
+
+  #forEachCheckbox(fn) {
+    document.querySelectorAll(".work-checkbox, .following-checkbox").forEach(fn);
   }
 
   #clearAllCheckboxes() {
-    const selector = config.WORK_LIKE_DOMAINS.includes(state.domain)
-      ? this.#workLikeCheckboxSelector()
-      : ".following-checkbox";
+    const selector = config.WORK_LIKE_DOMAINS.includes(state.domain) ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => this.updateCheckboxDOM(el, false));
   }
 
@@ -168,9 +171,7 @@ export class Batch {
     }
     const selector = isWorkLike ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => {
-      const id =
-        el.closest("[data-aweme-id]")?.dataset?.awemeId ||
-        el.closest("[data-uid]")?.dataset?.uid;
+      const id = this.#checkboxId(el);
       if (state.selectedIds.has(id)) this.updateCheckboxDOM(el, true);
     });
   }
@@ -181,12 +182,7 @@ export class Batch {
     if (!newMode) {
       // 退出批量模式：清空选区与范围选择锚点
       this.#lastSelectedId = null;
-      document.querySelectorAll(".work-checkbox").forEach((el) => {
-        el.style.display = "none";
-        el.innerHTML = "";
-        el.classList.remove("checked");
-      });
-      document.querySelectorAll(".following-checkbox").forEach((el) => {
+      this.#forEachCheckbox((el) => {
         el.style.display = "none";
         el.innerHTML = "";
         el.classList.remove("checked");
@@ -194,8 +190,7 @@ export class Batch {
       this.#setSelectAllBtn(false);
       this.syncSaveToWorksBtn();
     } else {
-      document.querySelectorAll(".work-checkbox").forEach((el) => (el.style.display = ""));
-      document.querySelectorAll(".following-checkbox").forEach((el) => (el.style.display = ""));
+      this.#forEachCheckbox((el) => (el.style.display = ""));
       this.syncSaveToWorksBtn();
     }
     this.syncSelectionUI();
@@ -206,8 +201,7 @@ export class Batch {
     this.#setSelectAllBtn(result === "all");
     const selector = state.domain === "followings" ? ".following-checkbox" : ".work-checkbox";
     document.querySelectorAll(selector).forEach((el) => {
-      const id = el.closest("[data-aweme-id]")?.dataset?.awemeId || el.closest("[data-uid]")?.dataset?.uid;
-      this.updateCheckboxDOM(el, this.isSelected(id));
+      this.updateCheckboxDOM(el, this.isSelected(this.#checkboxId(el)));
     });
     this.syncSelectionUI();
   }
