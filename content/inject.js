@@ -544,6 +544,7 @@
     }
 
     collectBrowserFeatures() {
+      const chromeVer = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || "139";
       return {
         userAgent: navigator.userAgent,
         platform: navigator.platform,
@@ -553,9 +554,9 @@
           : navigator.userAgent.includes("Chrome")
             ? "Chrome"
             : "Unknown",
-        browserVersion: (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || "139",
+        browserVersion: chromeVer,
         engineName: "Blink",
-        engineVersion: (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || "139",
+        engineVersion: chromeVer,
         osName: navigator.platform.includes("Win")
           ? "Windows"
           : navigator.platform.includes("Mac")
@@ -568,6 +569,26 @@
         deviceMemory: navigator.deviceMemory || 4,
         securityKey: this.getSecurityKey(),
       };
+    }
+
+    // 六个 API fetch 共用的请求接线：外部 signal/超时 abort 合并到内部 controller，
+    // fetch 结束（成功或失败）即清理超时定时器；返回 Response 交由调用方解析
+    #guardedFetch(url, { method = "GET", headers, timeout, signal }) {
+      const controller = new AbortController();
+      if (signal) {
+        if (signal.aborted) controller.abort();
+        else signal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+      const tid = setTimeout(() => controller.abort(), timeout);
+      return window
+        .fetch(url, {
+          credentials: "include",
+          headers: headers || { Referer: window.location.origin + "/" },
+          method,
+          signal: controller.signal,
+          _dyInternal: true,
+        })
+        .finally(() => clearTimeout(tid));
     }
 
     // ===== 详情拉取 (saver 现有) =====
@@ -586,17 +607,11 @@
         }
       }
 
-      const controller = externalController || new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_DETAIL);
       try {
-        const resp = await window.fetch(url.toString(), {
-          credentials: "include",
-          headers: { Referer: window.location.origin + "/" },
-          method: "GET",
-          signal: controller.signal,
-          _dyInternal: true,
+        const resp = await this.#guardedFetch(url.toString(), {
+          timeout: CONFIG.TIMEOUT.FETCH_DETAIL,
+          signal: externalController ? externalController.signal : undefined,
         });
-        clearTimeout(timeoutId);
         const text = await resp.text();
         if (!text || !text.trim()) {
           throw new Error("RATE_LIMITED");
@@ -609,7 +624,6 @@
         const list = await workExtractor.extractWorksFromResponse(url.toString(), data);
         return list[0] || null;
       } catch (e) {
-        clearTimeout(timeoutId);
         if (e && e.name === "AbortError") throw new Error("CANCELLED");
         throw e;
       }
@@ -630,32 +644,12 @@
         url,
         signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.followingQuery)),
       );
-      const controller = new AbortController();
-      // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
-      if (externalSignal) {
-        if (externalSignal.aborted) {
-          controller.abort();
-        } else
-          externalSignal.addEventListener("abort", () => controller.abort(), {
-            once: true,
-          });
-      }
-      const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
-      try {
-        const resp = await window.fetch(merged.toString(), {
-          credentials: "include",
-          headers: { Referer: window.location.origin + "/" },
-          method: "GET",
-          signal: controller.signal,
-          _dyInternal: true,
-        });
-        clearTimeout(tid);
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        return await resp.json();
-      } catch (e) {
-        clearTimeout(tid);
-        throw e;
-      }
+      const resp = await this.#guardedFetch(merged.toString(), {
+        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
+        signal: externalSignal,
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return await resp.json();
     }
 
     async fetchProfileOther(secUid, externalSignal) {
@@ -675,75 +669,41 @@
       // stripSdkKeys 剥签名键——否则旧 x-secsdk-web-signature 预塞回 URL，页面包装器
       // 不再重签，Argus 按过期签名拒绝（post/profile 已被强制 webSign 校验）
       const merged = signatureCapture.mergeParams(url, signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(sigSource)));
-      const controller = new AbortController();
-      // 关键修复:支持外部 abort 信号,关闭弹窗时可立即取消正在进行的 fetch
-      if (externalSignal) {
-        if (externalSignal.aborted) {
-          controller.abort();
-        } else
-          externalSignal.addEventListener("abort", () => controller.abort(), {
-            once: true,
-          });
-      }
-      const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
-      try {
-        const resp = await window.fetch(merged.toString(), {
-          credentials: "include",
-          headers: { Referer: window.location.origin + "/" },
-          method: "GET",
-          signal: controller.signal,
-          _dyInternal: true,
-        });
-        clearTimeout(tid);
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        return await resp.json();
-      } catch (e) {
-        clearTimeout(tid);
-        throw e;
-      }
+      const resp = await this.#guardedFetch(merged.toString(), {
+        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
+        signal: externalSignal,
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return await resp.json();
     }
 
     // ===== 作者作品拉取 (tools 移植, 侧边栏用) =====
 
     async fetchAuthorWorks(secUid, startCursor, count) {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
-      try {
-        const url = signatureCapture.buildUrl(
-          CONFIG.API.POST,
-          Object.assign({}, CONFIG.DEVICE_PARAMS, {
-            sec_user_id: secUid,
-            max_cursor: String(startCursor || 0),
-            count: String(count),
-          }),
-        );
-        const merged = signatureCapture.mergeParams(
-          url,
-          signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.postQuery)),
-        );
-        const resp = await window.fetch(merged.toString(), {
-          credentials: "include",
-          headers: { Referer: window.location.origin + "/" },
-          method: "GET",
-          signal: controller.signal,
-          _dyInternal: true,
-        });
-        clearTimeout(tid);
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const data = await resp.json();
-        if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+      const url = signatureCapture.buildUrl(
+        CONFIG.API.POST,
+        Object.assign({}, CONFIG.DEVICE_PARAMS, {
+          sec_user_id: secUid,
+          max_cursor: String(startCursor || 0),
+          count: String(count),
+        }),
+      );
+      const merged = signatureCapture.mergeParams(
+        url,
+        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.postQuery)),
+      );
+      const resp = await this.#guardedFetch(merged.toString(), { timeout: CONFIG.TIMEOUT.FETCH_PAGE });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+      if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
 
-        const works = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
-        const hasMore = data.has_more === true || data.has_more === 1;
-        return {
-          works,
-          hasMore,
-          maxCursor: data.max_cursor || (startCursor || 0) + count,
-        };
-      } catch (e) {
-        clearTimeout(tid);
-        throw e;
-      }
+      const works = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
+      const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+      return {
+        works,
+        hasMore,
+        maxCursor: data.max_cursor || (startCursor || 0) + count,
+      };
     }
 
     // ===== 点赞/收藏分页拉取 =====
@@ -761,43 +721,25 @@
         url,
         signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.favoriteQuery)),
       );
-      const controller = new AbortController();
-      if (signal) {
-        if (signal.aborted) controller.abort();
-        else
-          signal.addEventListener("abort", () => controller.abort(), {
-            once: true,
-          });
-      }
-      const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
-      try {
-        const resp = await window.fetch(merged.toString(), {
-          credentials: "include",
-          headers: { Referer: window.location.origin + "/" },
-          method: "GET",
-          signal: controller.signal,
-          _dyInternal: true,
-        });
-        clearTimeout(tid);
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const data = await resp.json();
-        if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
-        const items = (data.aweme_list || []).map((aw) =>
-          workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
-        );
-        const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
-        const nextCursor = data.cursor || data.max_cursor || cursor + count;
-        return {
-          items,
-          hasMore,
-          cursor: nextCursor,
-          total: data.total,
-          ok: true,
-        };
-      } catch (e) {
-        clearTimeout(tid);
-        throw e;
-      }
+      const resp = await this.#guardedFetch(merged.toString(), {
+        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
+        signal,
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+      if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+      const items = (data.aweme_list || []).map((aw) =>
+        workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
+      );
+      const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+      const nextCursor = data.cursor || data.max_cursor || cursor + count;
+      return {
+        items,
+        hasMore,
+        cursor: nextCursor,
+        total: data.total,
+        ok: true,
+      };
     }
 
     async fetchOneCollectionPage(cursor, count, signal) {
@@ -812,46 +754,30 @@
         url,
         signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.collectionQuery)),
       );
-      const controller = new AbortController();
-      if (signal) {
-        if (signal.aborted) controller.abort();
-        else
-          signal.addEventListener("abort", () => controller.abort(), {
-            once: true,
-          });
-      }
-      const tid = setTimeout(() => controller.abort(), CONFIG.TIMEOUT.FETCH_PAGE);
-      try {
-        const resp = await window.fetch(merged.toString(), {
-          credentials: "include",
-          headers: {
-            Referer: window.location.origin + "/",
-            "content-type": CONFIG.COLLECTION_CONTENT_TYPE,
-          },
-          method: "POST",
-          signal: controller.signal,
-          _dyInternal: true,
-        });
-        clearTimeout(tid);
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const data = await resp.json();
-        if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
-        const items = (data.aweme_list || []).map((aw) =>
-          workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
-        );
-        const hasMore = data.has_more === true || data.has_more === 1;
-        const nextCursor = data.cursor || data.max_cursor || cursor + count;
-        return {
-          items,
-          hasMore,
-          cursor: nextCursor,
-          total: data.total,
-          ok: true,
-        };
-      } catch (e) {
-        clearTimeout(tid);
-        throw e;
-      }
+      const resp = await this.#guardedFetch(merged.toString(), {
+        method: "POST",
+        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
+        signal,
+        headers: {
+          Referer: window.location.origin + "/",
+          "content-type": CONFIG.COLLECTION_CONTENT_TYPE,
+        },
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+      if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+      const items = (data.aweme_list || []).map((aw) =>
+        workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
+      );
+      const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+      const nextCursor = data.cursor || data.max_cursor || cursor + count;
+      return {
+        items,
+        hasMore,
+        cursor: nextCursor,
+        total: data.total,
+        ok: true,
+      };
     }
   }
   const apiClient = new ApiClient();
@@ -1268,7 +1194,7 @@
           awemeCount: 0,
           profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
         }));
-        const hasMore = data.has_more === true || data.has_more === 1;
+        const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
         return {
           ok: true,
           items,

@@ -7,7 +7,7 @@ import { batch } from '../data/batch.js';
 // ---------- 检索：搜索/排序 ----------
 // 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
 // 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响
-export class SearchBar {
+class SearchBar {
   #searchState = {
     keyword: "",
     scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID

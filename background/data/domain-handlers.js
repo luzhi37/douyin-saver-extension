@@ -17,14 +17,12 @@ class DomainHandlers {
 
   async get(groupId, sendResponse) {
     try {
-      let list;
-      if (groupId && groupId !== "all") {
-        const store = await storage.getByIndex(this.#cfg.storeName, "groupId", groupId);
-        list = Object.values(store);
-      } else {
-        const store = await storage.getAll(this.#cfg.storeName);
-        list = Object.values(store);
-      }
+      // 分组筛选走索引查询，否则全量读取；两分支随后同一排序/返回
+      const store =
+        groupId && groupId !== "all"
+          ? await storage.getByIndex(this.#cfg.storeName, "groupId", groupId)
+          : await storage.getAll(this.#cfg.storeName);
+      const list = Object.values(store);
       list.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
       sendResponse({ [this.#cfg.itemKey]: list });
     } catch (err) {

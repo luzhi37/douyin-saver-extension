@@ -1,10 +1,10 @@
 // ---------- Groups ----------
-import { config, dom, state, utils, services, store } from '../core.js';
+import { config, dom, state, services, store } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { detail } from '../components/detail.js';
 
 // ---------- Groups ----------
-export class Groups {
+class Groups {
   async renderGroupTabs() {
     const [stats, groupList] = await Promise.all([services.loadStats(), services.loadGroups()]);
     this.#updateStorageIndicator(stats);

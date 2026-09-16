@@ -330,9 +330,6 @@ const runtimeConfig = {
     }
     return { ...this.DEFAULTS, ...cfg };
   },
-  async save(cfg) {
-    await chrome.storage.local.set({ [this.KEY]: cfg });
-  },
   // 把一份配置对象叠加进可变 CONFIG（含校准开关写入 IndependentClient）
   apply(cfg) {
     CONFIG.TIMEOUT.REQUEST = cfg.timeoutRequest ?? CONFIG.TIMEOUT.REQUEST;
@@ -360,6 +357,10 @@ const runtimeConfig = {
     if (d) return d;
     // fallback to syncWorks if type not found
     return CONFIG.DELAY.syncWorks || { MIN: 500, MAX: 1000 };
+  },
+  randomDelay(type) {
+    const d = this.delayRange(type);
+    return d.MIN + Math.random() * (d.MAX - d.MIN);
   },
 };
 
@@ -396,6 +397,10 @@ const utils = {
   isLongLivedVideoUrl(u) {
     return typeof u === "string" && /\/\/www\.douyin\.com\/aweme\/v1\/play\/\?/.test(u);
   },
+  // 剥离 http: 前缀（抖音 CDN 裸协议地址统一走页面同协议）
+  stripHttp(u) {
+    return u.replace(/^http:/, "");
+  },
   extractMsTokenFromCookie(cookieStr) {
     if (!cookieStr) return "";
     for (const pair of cookieStr.split(";")) {
@@ -418,6 +423,29 @@ const utils = {
     chrome.runtime
       .sendMessage({ type: "SYNC_DONE", requestId, ...result })
       .catch((e) => console.warn("[DY] sync done send failed:", e));
+  },
+  // 分页端点 has_more 字段归一（宽松判定：服务端可能返回 true/1/"1"，缺判只会多拉一页空数据）
+  hasMoreFlag(data) {
+    return data.has_more === true || data.has_more === 1 || data.has_more === "1";
+  },
+  // 长任务取消信号守卫：注册 CANCEL_ACTIVE_TASK 监听，返回 { isCancelled, dispose }。
+  // 注意 scanTasks.syncWorks 的取消处理器有额外转发逻辑，不适用本 helper。
+  withCancelGuard() {
+    let cancelled = false;
+    const cancelHandler = (msg) => {
+      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
+    };
+    chrome.runtime.onMessage.addListener(cancelHandler);
+    return {
+      isCancelled: () => cancelled,
+      dispose: () => chrome.runtime.onMessage.removeListener(cancelHandler),
+    };
+  },
+  sendMessageSafe(msg) {
+    return chrome.runtime.sendMessage(msg).catch(() => {});
+  },
+  emitCancelDone(requestId, payload) {
+    return utils.sendMessageSafe({ type: "CANCEL_DONE", requestId, ...payload });
   },
 };
 
@@ -493,7 +521,7 @@ const formatters = {
       videoUrl = best.url;
       videoExpireAt = best.expireAt || 0;
     }
-    videoUrl = videoUrl.replace(/^http:/, "");
+    videoUrl = utils.stripHttp(videoUrl);
     const authorFollowed =
       "follow_status" in author
         ? author.follow_status === 1 || author.follow_status === 2
@@ -507,11 +535,11 @@ const formatters = {
       nickname: String(author.nickname || author.nickName || ""),
       uid: String(author.uid || ""),
       authorHomeUrl: author.sec_uid ? CONFIG.URL_BASE + "/user/" + author.sec_uid : "",
-      cover: ((video.cover && video.cover.url_list) || [])[0] ? video.cover.url_list[0].replace(/^http:/, "") : "",
+      cover: ((video.cover && video.cover.url_list) || [])[0] ? utils.stripHttp(video.cover.url_list[0]) : "",
       video: videoUrl,
       videoExpireAt,
       images: (aw.images || [])
-        .map((i) => ((i.url_list || i.urlList || [])[0] || "").replace(/^http:/, ""))
+        .map((i) => utils.stripHttp((i.url_list || i.urlList || [])[0] || ""))
         .filter(Boolean),
       music: (aw.music && (aw.music.play_url || aw.music.playUrl || {}).uri) || "",
       createTime: aw.create_time || 0,

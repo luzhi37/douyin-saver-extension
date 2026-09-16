@@ -4,7 +4,7 @@ import { followingsGrid } from '../grids/followings-grid.js';
 import { detail } from './detail.js';
 
 // ---------- Sidebar ----------
-export class Sidebar {
+class Sidebar {
   static SNAP_POINTS = config.SIDEBAR_SNAP_POINTS;
   static STORAGE_KEY = "douyin_sidebar_width";
   #dragStartX = 0;
@@ -105,13 +105,11 @@ export class Sidebar {
     if (w === 0) {
       dom.sidebar.classList.add("sidebar-zero");
       dom.sidebar.style.width = "";
-      document.body.classList.remove("sidebar-open");
       // 分割条仅在侧边栏展开时可见、可交互
       dom.sidebarResizeHandle.classList.add("hidden");
     } else {
       dom.sidebar.classList.remove("sidebar-zero");
       dom.sidebar.style.width = w + "px";
-      document.body.classList.add("sidebar-open");
       dom.sidebarResizeHandle.classList.remove("hidden");
     }
   }
@@ -351,7 +349,7 @@ export class Sidebar {
         probe.onload = () => {
           if (!alive()) return;
           detail.markMediaOk();
-          cover.style.backgroundImage = `url("${url.replace(/["\\]/g, "\\$&")}")`;
+          cover.style.backgroundImage = utils.cssUrl(url);
           if (placeholder && placeholder.isConnected) placeholder.style.display = "none";
         };
         probe.onerror = () => {

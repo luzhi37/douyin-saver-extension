@@ -29,10 +29,6 @@ class IndependentClient {
     sendResponse({ ok: true });
   }
 
-  isIndependentMode() {
-    return this.#mode;
-  }
-
   // 校准开关惰性加载（对标 loadMode）：SW 每次重建后首次扫描才读 storage，恢复已保存的关闭态；
   // 缺键或未显式关闭时保持默认开启（与 runtimeConfig.apply 的 ?? true 语义一致）。
   // 设置面板保存后经 RELOAD_CONFIG → setCalibrateEnabled 直接覆盖内存值并标记已加载，不再重读。
@@ -142,14 +138,7 @@ class IndependentClient {
     if (!uid) {
       const { savedCookie } = await chrome.storage.local.get("savedCookie");
       if (savedCookie) {
-        for (const pair of savedCookie.split(";")) {
-          const trimmed = pair.trim();
-          const idx = trimmed.indexOf("=");
-          if (idx > 0 && trimmed.slice(0, idx).toLowerCase() === "uid") {
-            uid = trimmed.slice(idx + 1);
-            break;
-          }
-        }
+        uid = Crypto.parseCookieToPairs(savedCookie).find((p) => p.key.toLowerCase() === "uid")?.value || "";
       }
     }
 

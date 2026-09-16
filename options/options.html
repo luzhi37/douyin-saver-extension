@@ -168,7 +168,7 @@
       </div>
     </div>
     <!-- 上/下作品切换胶囊（对齐抖音 ⌃⌄：右缘垂直居中，切上一个/下一个作品） -->
-    <div id="detailSwitcher" class="detail-switcher">
+    <div id="detailSwitcher">
       <button id="detailSwitchPrev" class="flex-center" aria-label="上一个作品">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 15l-6-6-6 6" />
@@ -183,7 +183,7 @@
     <div id="detailBottomBar">
       <!-- 进度条贴播放条顶缘（通栏）：视频=连续轨道+时间气泡，图集=分段进度（与音乐同步） -->
       <div id="detailProgress" role="slider" aria-label="播放进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
-        <div class="track-wrap video-mode">
+        <div class="track-wrap">
           <div class="track">
             <div class="track-buffered"></div>
             <div class="track-played"></div>
@@ -395,7 +395,7 @@
     <div class="settings-panel">
       <section class="settings-section">
         <h3 class="settings-section-title">
-          <span class="section-title-text">运行参数</span>
+          运行参数
           <button class="cookie-copy-all-btn" id="btnResetConfig" title="填入默认值，关闭面板时保存">恢复默认</button>
           <span class="section-chevron"></span>
         </h3>
@@ -432,7 +432,7 @@
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">
-          <span class="section-title-text">Cookie 配置</span>
+          Cookie 配置
           <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
@@ -441,7 +441,7 @@
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">
-          <span class="section-title-text">浏览器特征</span>
+          浏览器特征
           <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
@@ -452,7 +452,7 @@
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">
-          <span class="section-title-text">Tab 模式</span>
+          Tab 模式
           <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
@@ -607,12 +607,6 @@
         <path fill="currentColor"
           d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
       </symbol>
-      <symbol id="icon-nav-left" viewBox="0 0 24 24">
-        <path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12l4.58-4.59z" />
-      </symbol>
-      <symbol id="icon-nav-right" viewBox="0 0 24 24">
-        <path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z" />
-      </symbol>
       <symbol id="icon-image-badge" viewBox="0 0 12 12">
         <path fill="currentColor"
           d="M1.455 0C.65 0 0 .651 0 1.455V8c0 .803.651 1.455 1.455 1.455H8c.803 0 1.455-.652 1.455-1.455V1.455C9.455.65 8.803 0 8 0H1.455z" />
@@ -627,16 +621,9 @@
         <path fill="currentColor"
           d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" />
       </symbol>
-      <symbol id="icon-arrow-down" viewBox="0 0 24 24">
-        <path fill="currentColor" d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z" />
-      </symbol>
       <symbol id="icon-search" viewBox="0 0 24 24">
         <path fill="currentColor"
           d="M15.5 14h-.79l-.28-.27a6.47 6.47 0 0 0 1.57-4.23 6.5 6.5 0 1 0-6.5 6.5c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
-      </symbol>
-      <symbol id="icon-close" viewBox="0 0 24 24">
-        <path fill="currentColor"
-          d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
       </symbol>
       <symbol id="icon-select-all" viewBox="0 0 24 24">
         <path fill="currentColor"

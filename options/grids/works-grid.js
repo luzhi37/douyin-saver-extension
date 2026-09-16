@@ -6,7 +6,7 @@ import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
 
 // ---------- WorksGrid ----------
-export class WorksGrid extends VirtualGrid {
+class WorksGrid extends VirtualGrid {
   #sliderRaf = 0;
   #container = dom.mainContainer;
   #workCardTmpl = document.getElementById("workCardTemplate");
@@ -394,7 +394,7 @@ export class WorksGrid extends VirtualGrid {
         const commit = () => {
           if (!alive()) return;
           detail.markMediaOk();
-          img.style.backgroundImage = `url("${url.replace(/["\\]/g, "\\$&")}")`;
+          img.style.backgroundImage = utils.cssUrl(url);
           img.classList.remove("media-loading");
         };
         const fail = () => {

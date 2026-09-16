@@ -221,10 +221,6 @@ export const store = {
     return true;
   },
 
-  removeWorksSilent(idSet) {
-    state.works = state.works.filter((w) => !idSet.has(w.awemeId));
-  },
-
   // 作品型三域通用的静默移除（按当前域数据源过滤）
   removeWorkLikeSilent(domain, idSet) {
     state[domain] = state[domain].filter((w) => !idSet.has(w.awemeId));
@@ -256,10 +252,14 @@ export const utils = {
   getVideoUrl(work) {
     return this.pickHttpsUrl(work?.video || "");
   },
+  // 背景图 url() 包装：转义引号/反斜杠（四网格/侧边栏/详情共用）
+  cssUrl(url) {
+    return `url("${url.replace(/["\\]/g, "\\$&")}")`;
+  },
   secUidFromUrl(url) {
     if (!url) return "";
-    const m = url.split("/user/");
-    return m.length > 1 ? m[1].split("?")[0] : "";
+    const m = url.match(/\/user\/([^/?]+)/);
+    return m ? m[1] : "";
   },
   formatCacheTime(ts) {
     if (!ts) return null;
@@ -435,6 +435,24 @@ export const services = {
     return this.bgMsg({ type: "MOVE_FOLLOWINGS", uids, targetGroupId });
   },
 
+  // 找/建「稍后删除」分组并把条目移入（works/followings/likes/favorites 域通用；
+  // moveFn(groupId) 按域完成实际移动，随后统一刷新域数据与分组）
+  async moveToTrashGroup(domain, ids, moveFn) {
+    const groupsRes = await this.bgMsg({ type: "GET_GROUPS", domain });
+    const groups = groupsRes.groups || [];
+    let trashGroup = groups.find((g) => g.name === config.TRASH_GROUP_NAME);
+    if (!trashGroup) {
+      const addRes = await this.bgMsg({ type: "ADD_GROUP", domain, name: config.TRASH_GROUP_NAME });
+      if (addRes.ok) trashGroup = addRes.group;
+    }
+    if (trashGroup) {
+      await moveFn(trashGroup.id);
+      await this.loadDomainData();
+      store.refreshGroups();
+    }
+    return trashGroup;
+  },
+
   // 作品型三域通用删除/移动（DELETE_/MOVE_ + 域名大写）
   deleteWorkLike(domain, awemeIds) {
     return this.bgMsg({ type: "DELETE_" + domain.toUpperCase(), awemeIds });
@@ -463,16 +481,6 @@ export const services = {
     if (!done || !done.ok) throw new Error("SYNC_FAILED");
     const workRes = await this.bgMsg({ type: "GET_WORK", awemeId });
     return workRes.work || null;
-  },
-
-  isWorksData(data) {
-    if (data.works && Array.isArray(data.works)) return data.works.length > 0;
-    return false;
-  },
-
-  isFollowingsData(data) {
-    if (data.followings && Array.isArray(data.followings)) return data.followings.length > 0;
-    return false;
   },
 
   // 四域通用导入校验：按域 itemKey 检查条目数组

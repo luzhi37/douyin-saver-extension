@@ -25,20 +25,16 @@ class ScanTasks {
           entry.followerCount = stats.followerCount;
         } catch (_e) {}
       }
-      chrome.runtime
-        .sendMessage({
-          type: "FOLLOWING_PROGRESS",
-          phase: "calibrate",
-          collected: processed,
-          total: list.length,
-          hasMore: false,
-          requestId,
-        })
-        .catch(() => {});
+      utils.sendMessageSafe({
+        type: "FOLLOWING_PROGRESS",
+        phase: "calibrate",
+        collected: processed,
+        total: list.length,
+        hasMore: false,
+        requestId,
+      });
       if (!isCancelled()) {
-        const d = runtimeConfig.delayRange("syncFollowings");
-        const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
-        await new Promise((r) => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
       }
     }
   }
@@ -83,20 +79,14 @@ class ScanTasks {
   async fetchFollowing(secUid, sendResponse) {
     try {
       const requestId = crypto.randomUUID();
-      let cancelled = false;
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") {
-          cancelled = true;
-        }
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
+      const guard = utils.withCancelGuard();
 
       const all = [];
       let offset = 0;
       let hasMore = true;
       let lastError = "";
 
-      while (hasMore && !cancelled) {
+      while (hasMore && !guard.isCancelled()) {
         const resp = await tabBridge.sendAsync("FETCH_FOLLOWING_PAGE", {
           secUid,
           offset,
@@ -111,22 +101,18 @@ class ScanTasks {
           lastError = resp?.error || "FETCH_FAILED";
           break;
         }
-        chrome.runtime
-          .sendMessage({
-            type: "FOLLOWING_PROGRESS",
-            collected: all.length,
-            hasMore,
-            total: resp.total || 0,
-            requestId,
-          })
-          .catch(() => {});
-        if (hasMore && !cancelled) {
-          const d = runtimeConfig.delayRange("syncFollowings");
-          const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
-          await new Promise((r) => setTimeout(r, delay));
+        utils.sendMessageSafe({
+          type: "FOLLOWING_PROGRESS",
+          collected: all.length,
+          hasMore,
+          total: resp.total || 0,
+          requestId,
+        });
+        if (hasMore && !guard.isCancelled()) {
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
         }
       }
-      if (!cancelled && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
+      if (!guard.isCancelled() && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
         await this.calibrateStats(
           all,
           async (secUid) => {
@@ -137,12 +123,12 @@ class ScanTasks {
             if (!resp?.ok) throw new Error(resp?.error || "PROFILE_FETCH_FAILED");
             return resp;
           },
-          () => cancelled,
+          () => guard.isCancelled(),
           requestId,
         );
       }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
-      if (!cancelled && all.length === 0 && lastError) {
+      guard.dispose();
+      if (!guard.isCancelled() && all.length === 0 && lastError) {
         sendResponse({ ok: false, error: lastError, requestId });
         return;
       }
@@ -178,27 +164,22 @@ class ScanTasks {
     return { saved, lostUids };
   }
 
-  async fetchFavorites(secUid, persist, sendResponse) {
+  // 点赞/收藏分页扫描通用循环：两者仅消息名/进度类型/延迟档/页大小/附加参数不同
+  async #paginate({ fetchPage, progressType, delayKind, pageSize, extra = {}, persist, sendResponse }) {
     try {
       const requestId = crypto.randomUUID();
-      let cancelled = false;
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") {
-          cancelled = true;
-        }
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
+      const guard = utils.withCancelGuard();
 
       const all = [];
       let cursor = 0;
       let hasMore = true;
       let lastError = "";
 
-      while (hasMore && !cancelled) {
-        const resp = await tabBridge.sendAsync("FETCH_FAVORITES_PAGE", {
-          secUid,
+      while (hasMore && !guard.isCancelled()) {
+        const resp = await tabBridge.sendAsync(fetchPage, {
+          ...extra,
           cursor,
-          count: CONFIG.PAGE.FAVORITE,
+          count: pageSize,
           timeout: CONFIG.TIMEOUT.REQUEST,
         });
         if (resp?.ok && Array.isArray(resp.items)) {
@@ -210,91 +191,51 @@ class ScanTasks {
           break;
         }
         const unfollowedCount = all.filter((w) => w.authorFollowed === false).length;
-        chrome.runtime
-          .sendMessage({
-            type: "FAVORITES_PROGRESS",
-            collected: all.length,
-            unfollowedCount,
-            hasMore,
-            total: resp.total || 0,
-            requestId,
-          })
-          .catch(() => {});
-        if (hasMore && !cancelled) {
-          const d = runtimeConfig.delayRange("syncFavorites");
-          const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
-          await new Promise((r) => setTimeout(r, delay));
+        utils.sendMessageSafe({
+          type: progressType,
+          collected: all.length,
+          unfollowedCount,
+          hasMore,
+          total: resp.total || 0,
+          requestId,
+        });
+        if (hasMore && !guard.isCancelled()) {
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
         }
       }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
-      if (!cancelled && all.length === 0 && lastError) {
+      guard.dispose();
+      if (!guard.isCancelled() && all.length === 0 && lastError) {
         sendResponse({ ok: false, error: lastError, requestId });
         return;
       }
-      const { saved, lostUids } = await this.persistScan(persist, all, cancelled);
-      sendResponse({ ok: true, requestId, works: all, timedOut: cancelled, saved, lostUids });
+      const { saved, lostUids } = await this.persistScan(persist, all, guard.isCancelled());
+      sendResponse({ ok: true, requestId, works: all, timedOut: guard.isCancelled(), saved, lostUids });
     } catch (err) {
       sendResponse({ ok: false, error: err.message });
     }
   }
 
-  async fetchCollection(persist, sendResponse) {
-    try {
-      const requestId = crypto.randomUUID();
-      let cancelled = false;
-      const cancelHandler = (msg) => {
-        if (msg.type === "CANCEL_ACTIVE_TASK") {
-          cancelled = true;
-        }
-      };
-      chrome.runtime.onMessage.addListener(cancelHandler);
+  fetchFavorites(secUid, persist, sendResponse) {
+    return this.#paginate({
+      fetchPage: "FETCH_FAVORITES_PAGE",
+      progressType: "FAVORITES_PROGRESS",
+      delayKind: "syncFavorites",
+      pageSize: CONFIG.PAGE.FAVORITE,
+      extra: { secUid },
+      persist,
+      sendResponse,
+    });
+  }
 
-      const all = [];
-      let cursor = 0;
-      let hasMore = true;
-      let lastError = "";
-
-      while (hasMore && !cancelled) {
-        const resp = await tabBridge.sendAsync("FETCH_COLLECTION_PAGE", {
-          cursor,
-          count: CONFIG.PAGE.COLLECTION,
-          timeout: CONFIG.TIMEOUT.REQUEST,
-        });
-        if (resp?.ok && Array.isArray(resp.items)) {
-          all.push(...resp.items);
-          hasMore = resp.hasMore === true;
-          cursor = resp.cursor || cursor;
-        } else {
-          lastError = resp?.error || "FETCH_FAILED";
-          break;
-        }
-        const unfollowedCount = all.filter((w) => w.authorFollowed === false).length;
-        chrome.runtime
-          .sendMessage({
-            type: "COLLECTION_PROGRESS",
-            collected: all.length,
-            unfollowedCount,
-            hasMore,
-            total: resp.total || 0,
-            requestId,
-          })
-          .catch(() => {});
-        if (hasMore && !cancelled) {
-          const d = runtimeConfig.delayRange("syncCollection");
-          const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
-          await new Promise((r) => setTimeout(r, delay));
-        }
-      }
-      chrome.runtime.onMessage.removeListener(cancelHandler);
-      if (!cancelled && all.length === 0 && lastError) {
-        sendResponse({ ok: false, error: lastError, requestId });
-        return;
-      }
-      const { saved, lostUids } = await this.persistScan(persist, all, cancelled);
-      sendResponse({ ok: true, requestId, works: all, timedOut: cancelled, saved, lostUids });
-    } catch (err) {
-      sendResponse({ ok: false, error: err.message });
-    }
+  fetchCollection(persist, sendResponse) {
+    return this.#paginate({
+      fetchPage: "FETCH_COLLECTION_PAGE",
+      progressType: "COLLECTION_PROGRESS",
+      delayKind: "syncCollection",
+      pageSize: CONFIG.PAGE.COLLECTION,
+      persist,
+      sendResponse,
+    });
   }
 
   async runCancelBatch(awemeIds, tabType, progressType, persistDomain, sendResponse) {
@@ -304,15 +245,11 @@ class ScanTasks {
     }
     const requestId = crypto.randomUUID();
     const errors = [];
-    let cancelled = false;
-    const cancelHandler = (msg) => {
-      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-    };
-    chrome.runtime.onMessage.addListener(cancelHandler);
+    const guard = utils.withCancelGuard();
 
     sendResponse({ ok: true, requestId, total: awemeIds.length });
 
-    for (let i = 0; i < awemeIds.length && !cancelled; i++) {
+    for (let i = 0; i < awemeIds.length && !guard.isCancelled(); i++) {
       const resp = await tabBridge.sendAsync(tabType, {
         awemeId: awemeIds[i],
         timeout: CONFIG.TIMEOUT.REQUEST,
@@ -322,41 +259,33 @@ class ScanTasks {
       } else {
         errors.push({ awemeId: awemeIds[i], error: resp?.error || "FAILED" });
       }
-      chrome.runtime
-        .sendMessage({
-          type: progressType,
-          requestId,
-          index: i,
-          total: awemeIds.length,
-          status: resp?.ok ? "ok" : "error",
-          awemeId: awemeIds[i],
-        })
-        .catch(() => {});
+      utils.sendMessageSafe({
+        type: progressType,
+        requestId,
+        index: i,
+        total: awemeIds.length,
+        status: resp?.ok ? "ok" : "error",
+        awemeId: awemeIds[i],
+      });
 
-      if (!cancelled && i < awemeIds.length - 1) {
+      if (!guard.isCancelled() && i < awemeIds.length - 1) {
         const delayKind = tabType === "CANCEL_ONE_COLLECTION" ? "cancelCollection" : "cancelLike";
-        const d = runtimeConfig.delayRange(delayKind);
-        const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
-        await new Promise((r) => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
       }
     }
 
-    chrome.runtime.onMessage.removeListener(cancelHandler);
+    guard.dispose();
     const failedAwemeIds = errors.map((e) => e.awemeId).filter(Boolean);
     // 移除 = 取消并删本地：远端取消成功的条目同步删除该域本地记录
     const deletedIds = await this.deleteCancelled(persistDomain, awemeIds, failedAwemeIds);
-    chrome.runtime
-      .sendMessage({
-        type: "CANCEL_DONE",
-        requestId,
-        ok: true,
-        cancelled,
-        refreshed: awemeIds.length - errors.length,
-        failed: errors.length,
-        failedAwemeIds,
-        deletedIds,
-      })
-      .catch(() => {});
+    utils.emitCancelDone(requestId, {
+      ok: true,
+      cancelled: guard.isCancelled(),
+      refreshed: awemeIds.length - errors.length,
+      failed: errors.length,
+      failedAwemeIds,
+      deletedIds,
+    });
   }
 
   // persistDomain 为空则跳过删本地（原扫描弹窗调用方无域概念）
@@ -419,16 +348,14 @@ class ScanTasks {
         errors.push({ awemeId: awemeIds[i], error: "DELETED" });
       }
 
-      chrome.runtime
-        .sendMessage({
-          type: "SYNC_PROGRESS",
-          requestId,
-          index: i,
-          total: awemeIds.length,
-          status: resp?.ok ? "ok" : "error",
-          awemeId: awemeIds[i],
-        })
-        .catch(() => {});
+      utils.sendMessageSafe({
+        type: "SYNC_PROGRESS",
+        requestId,
+        index: i,
+        total: awemeIds.length,
+        status: resp?.ok ? "ok" : "error",
+        awemeId: awemeIds[i],
+      });
 
       if (!cancelled) {
         const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
@@ -440,9 +367,7 @@ class ScanTasks {
             await chrome.storage.local.get("keepalive");
           }
         } else {
-          const d = runtimeConfig.delayRange("syncWorks");
-          const delay = d.MIN + Math.random() * (d.MAX - d.MIN);
-          await new Promise((r) => setTimeout(r, delay));
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncWorks")));
         }
       }
     }

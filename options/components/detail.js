@@ -5,7 +5,7 @@ import { dialog } from './dialog.js';
 import { worksGrid } from '../grids/works-grid.js';
 
 // ---------- Detail ----------
-export class Detail {
+class Detail {
   #index = -1;
   #cleanups = [];
   #loopMode = "single";
@@ -420,8 +420,7 @@ export class Detail {
     }
     const token = ++this.#bgProbeToken;
     const commit = (u) => {
-      const escaped = u.replace(/["\\]/g, "\\$&");
-      const newUrl = `url("${escaped}")`;
+      const newUrl = utils.cssUrl(u);
       if (dom.detailOverlay.style.getPropertyValue("--bg-url") !== newUrl) {
         dom.detailOverlay.style.setProperty("--bg-url", newUrl);
       }
@@ -501,7 +500,7 @@ export class Detail {
   // dir: 1 下一作品 / -1 上一作品 / 0 无方向（首次打开或循环回跳），驱动建议15的方向感过渡
   renderDetail(dir = 0) {
     const isSwitch = !dom.detailOverlay.classList.contains("hidden");
-    const body = dom.detailBody || document.querySelector(".detail-body");
+    const body = dom.detailBody;
     if (isSwitch) {
       body.classList.add("detail-transitioning");
     }

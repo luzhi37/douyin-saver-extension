@@ -3,7 +3,41 @@ import { dom, state, runtimeConfig, services, utils } from '../core.js';
 import { dialog } from './dialog.js';
 
 // ---------- Settings ----------
-export class Settings {
+class Settings {
+  #$(id) {
+    return this._dialogBody.querySelector("#" + id);
+  }
+
+  // 键值表构建（Cookie 对 / 浏览器特征共用）
+  #buildKeyValueTable(entries) {
+    const table = document.createElement("table");
+    table.className = "cookie-table";
+    const colgroup = document.createElement("colgroup");
+    const colKey = document.createElement("col");
+    colKey.className = "cookie-key-col";
+    const colVal = document.createElement("col");
+    colgroup.appendChild(colKey);
+    colgroup.appendChild(colVal);
+    table.appendChild(colgroup);
+    const tbody = document.createElement("tbody");
+    for (const [k, v] of entries) {
+      const tr = document.createElement("tr");
+      const tdKey = document.createElement("td");
+      tdKey.className = "cookie-key";
+      tdKey.textContent = k;
+      const tdVal = document.createElement("td");
+      const code = document.createElement("code");
+      code.className = "cookie-val";
+      code.textContent = v;
+      tdVal.appendChild(code);
+      tr.appendChild(tdKey);
+      tr.appendChild(tdVal);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    return table;
+  }
+
   async openPanel() {
     const tmpl = document.getElementById("settingsDialogTemplate");
     const body = tmpl.content.cloneNode(true);
@@ -133,80 +167,29 @@ export class Settings {
       services.bgMsg({ type: "GET_CACHE_TIMES" }).catch(() => ({ ok: false, times: {} })),
     ]);
     const secRes = await services.bgMsg({ type: "GET_SECURITY_STATUS" }).catch((err) => ({ ok: false, error: String(err && err.message || err) }));
-    const $ = (id) => this._dialogBody.querySelector("#" + id);
-    const cookieList = $("settingsCookieList");
+    const cookieList = this.#$("settingsCookieList");
     cookieList.innerHTML = "";
     const pairs = ci?.pairs || [];
     if (pairs.length > 0) {
-      const table = document.createElement("table");
-      table.className = "cookie-table";
-      const colgroup = document.createElement("colgroup");
-      const colKey = document.createElement("col");
-      colKey.className = "cookie-key-col";
-      const colVal = document.createElement("col");
-      colgroup.appendChild(colKey);
-      colgroup.appendChild(colVal);
-      table.appendChild(colgroup);
-      const tbody = document.createElement("tbody");
-      for (const p of pairs) {
-        const tr = document.createElement("tr");
-        const tdKey = document.createElement("td");
-        tdKey.className = "cookie-key";
-        tdKey.textContent = p.key;
-        const tdVal = document.createElement("td");
-        const code = document.createElement("code");
-        code.className = "cookie-val";
-        code.textContent = p.value || "";
-        tdVal.appendChild(code);
-        tr.appendChild(tdKey);
-        tr.appendChild(tdVal);
-        tbody.appendChild(tr);
-      }
-      table.appendChild(tbody);
-      cookieList.appendChild(table);
+      cookieList.appendChild(this.#buildKeyValueTable(pairs.map((p) => [p.key, p.value || ""])));
     } else {
       const hint = document.createElement("p");
       hint.className = "settings-hint";
       hint.textContent = "未捕获到 Cookie，请打开抖音页面";
       cookieList.appendChild(hint);
     }
-    const modeSwitch = $("settingsModeSwitch");
+    const modeSwitch = this.#$("settingsModeSwitch");
     if (modeSwitch) {
       this.#applySwitchUI(modeSwitch, this._pendingIndependent ?? independentMode);
     }
-    $("settingsModeHint").textContent = "";
+    this.#$("settingsModeHint").textContent = "";
     const features = bf?.features;
-    const list = $("settingsBFList");
+    const list = this.#$("settingsBFList");
     list.innerHTML = "";
     if (features) {
       const entries = Object.entries(features).filter(([k]) => k !== "securityKey");
       if (entries.length > 0) {
-        const table = document.createElement("table");
-        table.className = "cookie-table";
-        const colgroup = document.createElement("colgroup");
-        const colKey = document.createElement("col");
-        colKey.className = "cookie-key-col";
-        const colVal = document.createElement("col");
-        colgroup.appendChild(colKey);
-        colgroup.appendChild(colVal);
-        table.appendChild(colgroup);
-        const tbody = document.createElement("tbody");
-        for (const [k, v] of entries) {
-          const tr = document.createElement("tr");
-          const tdKey = document.createElement("td");
-          tdKey.className = "cookie-key";
-          tdKey.textContent = k;
-          const tdVal = document.createElement("td");
-          const code = document.createElement("code");
-          code.className = "cookie-val";
-          code.textContent = String(v);
-          tdVal.appendChild(code);
-          tr.appendChild(tdKey);
-          tr.appendChild(tdVal);
-          tbody.appendChild(tr);
-        }
-        table.appendChild(tbody);
-        list.appendChild(table);
+        list.appendChild(this.#buildKeyValueTable(entries.map(([k, v]) => [k, String(v)])));
       } else {
         list.innerHTML = '<span class="settings-hint">未捕获，将使用默认值。打开抖音页面后可自动捕获。</span>';
       }
@@ -215,7 +198,7 @@ export class Settings {
     }
     // secUid
     const { secUid } = await chrome.storage.local.get("secUid");
-    if ($("settingsSecUid")) $("settingsSecUid").value = secUid || "";
+    if (this.#$("settingsSecUid")) this.#$("settingsSecUid").value = secUid || "";
     // 缓存状态
     this._renderCacheList(ci, ct);
     // ponytail: status readout — independent sub-fetch failure should not block the rest
@@ -402,7 +385,6 @@ export class Settings {
   }
 
   _bind() {
-    const $ = (id) => this._dialogBody.querySelector("#" + id);
     // ponytail: section titles toggle a .collapsed class; CSS grid-template-rows handles the animation
     this._dialogBody.querySelectorAll(".settings-section-title").forEach((h3) => {
       h3.addEventListener("click", () => {
@@ -410,8 +392,8 @@ export class Settings {
       });
     });
     // 恢复默认（建议9）：仅回填输入框，持久化仍统一走关闭面板时的 saveBeforeClose
-    const cfgSection = $("settingsConfigSection");
-    $("btnResetConfig")?.addEventListener("click", (e) => {
+    const cfgSection = this.#$("settingsConfigSection");
+    this.#$("btnResetConfig")?.addEventListener("click", (e) => {
       e.stopPropagation();
       if (!cfgSection) return;
       cfgSection.querySelectorAll(".config-input").forEach((inp) => {
@@ -427,7 +409,7 @@ export class Settings {
       if (!input) return;
       this.#validateDelayPair(cfgSection, input.dataset.key);
     });
-    const modeSwitch = $("settingsModeSwitch");
+    const modeSwitch = this.#$("settingsModeSwitch");
     if (modeSwitch) {
       modeSwitch.addEventListener("click", (e) => {
         const btn = e.target.closest(".mode-btn");
@@ -446,7 +428,7 @@ export class Settings {
       });
     }
     // 缓存刷新按钮
-    const cacheList = $("settingsCacheList");
+    const cacheList = this.#$("settingsCacheList");
     if (cacheList) {
       const TYPE_MAP = { cookie: "COOKIE", mstoken: "MSTOKEN", webid: "WEBID", browser_features: "BROWSER_FEATURES" };
       const COPY_MAP = {
