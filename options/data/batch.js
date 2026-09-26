@@ -4,6 +4,7 @@ import { search } from '../components/search-bar.js';
 import { dialog } from '../components/dialog.js';
 import { detail } from '../components/detail.js';
 import { followingsGrid } from '../grids/followings-grid.js';
+import { createZip } from './zip.js';
 
 // ---------- Batch ----------
 class Batch {
@@ -259,9 +260,26 @@ class Batch {
 
     const confirmBody = document.createElement("p");
     confirmBody.className = "confirm-delete-msg";
-    confirmBody.textContent = `确定对选中的 ${count} 个作品执行${actionLabel}并从本域移除？远端${actionLabel}后不可恢复。`;
+    confirmBody.textContent = `确定对选中的 ${count} 个作品执行${actionLabel}并从本域移除？远端${actionLabel}后不可恢复。若已在抖音取消过，选「直接移除」仅删本地记录。`;
     dialog.showDialog(`确认${actionLabel}`, confirmBody, [
-      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
+      {
+        // 直接移除：仅删本地记录——作品可能已在抖音侧被取消点赞/收藏，无需重复远端操作
+        text: "直接移除",
+        ghost: true,
+        callback: async () => {
+          dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个作品…</p>`);
+          state.preventDialogClose = true;
+          try {
+            const result = await this.deleteSelected();
+            if (result) {
+              dialog.closeDialog();
+              dialog.showToast(`已移除 ${count} 个作品`, "success");
+            }
+          } finally {
+            state.preventDialogClose = false;
+          }
+        },
+      },
       {
         text: actionLabel,
         danger: true,
@@ -384,7 +402,7 @@ class Batch {
     if (show) dom.batchDownload.disabled = state.selectedIds.size === 0;
   }
 
-  // 批量下载：作品/点赞/收藏域勾选条目逐个下载（复用 detail 单条下载+重试，silent 聚合汇报）。
+  // 批量下载：作品/点赞/收藏域勾选条目取流后整体打包为单个 zip（复用 detail 取流+重试，失败/跳过聚合汇报）。
   // 无可用视频/图片链接的条目跳过不计入失败，仅在确认文案与结果 toast 中说明
   async handleBatchDownload() {
     if (this.selectedCount() === 0) return;
@@ -402,7 +420,7 @@ class Batch {
     }
     const confirmBody = document.createElement("p");
     confirmBody.className = "confirm-delete-msg";
-    confirmBody.textContent = `确定下载选中的 ${targets.length} 个${label}？将逐个下载视频/图片到浏览器默认下载目录。`;
+    confirmBody.textContent = `确定下载选中的 ${targets.length} 个${label}？将打包为 zip 压缩包下载到浏览器默认下载目录。`;
     if (skipped > 0) {
       const hint = document.createElement("p");
       hint.className = "empty-hint";
@@ -418,11 +436,27 @@ class Batch {
           dialog.updateDialog("正在下载…", `<p>正在下载 0 / ${targets.length}…</p>`);
           state.preventDialogClose = true;
           try {
+            const entries = [];
             let ok = 0;
             for (const [i, work] of targets.entries()) {
               dialog.updateDialog("正在下载…", `<p>正在下载 ${i + 1} / ${targets.length}…</p>`);
-              if (await detail.downloadWork(work, { silent: true })) ok++;
+              try {
+                entries.push(...(await detail.fetchWorkMedia(work)));
+                ok++;
+              } catch (err) {
+                console.error("[DY] batch download work failed:", err);
+              }
             }
+            if (ok === 0) {
+              dialog.closeDialog();
+              const failParts = ["下载失败"];
+              if (skipped > 0) failParts.push(`${skipped} 个无链接跳过`);
+              dialog.showToast(failParts.join("，"), "error");
+              return;
+            }
+            dialog.updateDialog("正在打包…", `<p>正在将 ${ok} 个${label}打包为 zip…</p>`);
+            const zip = await createZip(entries);
+            detail.triggerDownload(zip, `${label}批量下载_${this.#today()}.zip`);
             dialog.closeDialog();
             const failed = targets.length - ok;
             const parts = [`已下载 ${ok} 个${label}`];
@@ -435,6 +469,13 @@ class Batch {
         },
       },
     ]);
+  }
+
+  // 打包文件名日期后缀：yyyy-MM-dd
+  #today() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   }
 }
 

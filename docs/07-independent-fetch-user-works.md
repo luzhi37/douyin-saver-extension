@@ -162,6 +162,37 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | `inject CONFIG.TIMEOUT.FETCH_PAGE` | 15000ms | Tab模式 inject 侧 fetch 超时 |
 | content BRIDGE FETCH_WORKS_PAGE timeout | 60000ms 固定 | 事件桥兜底超时 |
 
+## 衍生长任务：作者作品批量入库（IMPORT_USER_WORKS）
+
+> 同端点的循环形态：菜单「入库」弹窗（options `AuthorImport`）触发，把**任意作者**（不要求在关注域）的全部作品分页批量落库作品域。双模实现与 `FETCH_WORKS_PAGE` 单次请求完全同源——Tab 模式 `scanTasks.importUserWorks` 经 `tabBridge.sendAsync` 循环；独立模式 `independentTasks.importUserWorks` 直连 `API.POST` 循环。
+
+### 与收藏扫描（#paginate）的结构差异
+
+| 差异点 | 原因 |
+|--------|------|
+| 响应字段 `works`/`maxCursor`（非 `items`/`cursor`） | aweme/post 响应形状；不能直接复用 `#paginate` |
+| **无丢失检测**（不走 `persistScan`） | 导入的是他人作品列表，不是本域全集；丢失检测会把存量全部误判 lost |
+| **每页即落库**（每页一次 `mergeAndSave(WORKS, page)`） | 取消/异常保留已扫部分；进度弹窗可实时显示「已入库 N」 |
+| 重叠页去重（`seen` Set，空页即终止） | 服务端偶发返回重叠页；cursor 不前进时防死循环 |
+| 延迟档复用 `syncFavorites` | 不新增运行参数档 |
+
+### 分组语义（与「添加作品」同一条函数保证）
+
+分页结果**原样**交给 `domainStore.mergeAndSave(WORKS, page)`（不预置 `groupId`，`formatWork` 产物本身无该字段），由 `mergeWork` 的 `old?.groupId || w.groupId || DEFAULT_ID` 链保证：已在作品域的条目**保留原分组**，新条目落**「未分组」**（`uncategorized`）。重复导入幂等且不打乱既有排序（`savedAt` 旧值优先）。
+
+### 消息与进度
+
+- `IMPORT_USER_WORKS { secUid }` → 循环期间逐页发 `IMPORT_WORKS_PROGRESS { requestId, collected, saved, total, hasMore }`，终态 `sendResponse { ok, collected, added, updated, timedOut, error? }`（`added`/`updated` 即「新增入未分组/更新保留原分组」计数；首页即失败才 `ok:false`）。
+- 取消：进度弹窗 X/Esc → `requestDialogClose` → `CANCEL_ACTIVE_TASK` → `withCancelGuard` 置位 → 下一页前退出。
+- 错误映射（options `AuthorImport`）：`NO_SIGNATURE` → 关进度弹窗改弹签名引导（URL 指向作者主页）；错误串含 `2096` → 「账号作品因隐私设置不可见」。
+
+### 姊妹消息
+
+| 消息 | 语义 | 实现位置 |
+|------|------|----------|
+| `IMPORT_FOLLOWING { secUid }` | profile/other 单请求收录作者档案入关注域；`formatFollowingFromProfile` + `#fetchLatestWorkTime` 补 lastUpdateAt；`mergeAndSaveFollowings` 非 import 分支（已在域保组/新作者落未分组） | `scanTasks.importFollowing`（双模分支内联，与 `calibrateOne` 共用 `#fetchProfileUser`） |
+| `RESOLVE_AUTHOR { id, idType }` | 输入解析：sec_uid 直通；纯数字 uid 经 `im/user/info` 兑换（`IndependentClient.resolveSecUidById`，任意 uid 未实测，失败降级提示） | `background/main.js` route |
+
 ## 相关文档
 
 | 编号 | 文档 | 关联内容 |

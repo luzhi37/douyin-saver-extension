@@ -131,11 +131,88 @@ class IndependentTasks {
     }
   }
 
-  async syncWorks(awemeIds, sendResponse) {
-    if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
+  // 作者作品批量入库（独立模式）：直连 aweme/post 分页循环 + 每页 mergeAndSave 落库。
+  // 语义与 scanTasks.importUserWorks 一致：无丢失检测、每页即落库、分页结果不预置 groupId
+  //（已在作品域的保留原分组、新条目落「未分组」）；单页请求失败记入 lastError 续行收尾，
+  // 首页即失败才整体报错
+  async importUserWorks(secUid, sendResponse) {
     try {
+      if (!secUid) return sendResponse({ ok: false, error: "BAD_PARAMS" });
       await credentials.ensureABogus();
       const requestId = crypto.randomUUID();
+      const guard = utils.withCancelGuard();
+
+      const seen = new Set();
+      let collected = 0;
+      let added = 0;
+      let updated = 0;
+      let cursor = 0;
+      let hasMore = true;
+      let lastError = "";
+
+      while (hasMore && !guard.isCancelled()) {
+        let data;
+        try {
+          data = await independentClient.request(
+            CONFIG.API.POST,
+            await credentials.buildBaseParams({
+              sec_user_id: secUid,
+              max_cursor: String(cursor || 0),
+              count: String(CONFIG.PAGE.AUTHOR),
+            }),
+          );
+        } catch (e) {
+          lastError = e.message;
+          break;
+        }
+        const works = (data.aweme_list || []).map(formatters.formatWork).filter(Boolean);
+        // 服务端偶发返回重叠页：去重后为空即终止，防死循环
+        const newWorks = works.filter((w) => w && w.awemeId && !seen.has(String(w.awemeId)));
+        if (newWorks.length === 0) break;
+        newWorks.forEach((w) => seen.add(String(w.awemeId)));
+        collected += newWorks.length;
+        const result = await domainStore.mergeAndSave(CONFIG.STORAGE_KEYS.WORKS, newWorks);
+        added += result.added;
+        updated += result.updated;
+        hasMore = utils.hasMoreFlag(data);
+        cursor = data.max_cursor || cursor;
+        utils.sendMessageSafe({
+          type: "IMPORT_WORKS_PROGRESS",
+          requestId,
+          collected,
+          saved: added + updated,
+          total: data.total || 0,
+          hasMore,
+        });
+        if (hasMore && !guard.isCancelled()) {
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFavorites")));
+        }
+      }
+      guard.dispose();
+      if (collected === 0 && lastError) {
+        sendResponse({ ok: false, error: lastError, requestId });
+        return;
+      }
+      sendResponse({
+        ok: true,
+        requestId,
+        collected,
+        added,
+        updated,
+        timedOut: guard.isCancelled(),
+        error: lastError || undefined,
+      });
+    } catch (e) {
+      sendResponse({ ok: false, error: e.message });
+    }
+  }
+
+  async syncWorks(awemeIds, sendResponse) {
+    if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
+    let requestId = null;
+    try {
+      await credentials.ensureABogus();
+      requestId = crypto.randomUUID();
       const guard = utils.withCancelGuard();
       const allWorks = [],
         errors = [];
@@ -156,7 +233,20 @@ class IndependentTasks {
           if (w) allWorks.push(w);
           else { errors.push({ awemeId: awemeIds[i], error: "DELETED" }); currentOk = false; }
         } catch (e) {
-          errors.push({ awemeId: awemeIds[i], error: e.message });
+          // 系统性错误（缺 Cookie/限流空 body/401/429/超时 abort）镜像 tab 模式致命分类：早退 + 剩余标记 BATCH_TERMINATED
+          const errMsg = e && e.name === "AbortError" ? "CANCELLED" : e.message;
+          const fatal =
+            CONFIG.FATAL_ERRORS.has(errMsg) ||
+            errMsg.startsWith("HTTP 429") ||
+            errMsg.startsWith("HTTP 401");
+          if (fatal) {
+            for (let j = i; j < awemeIds.length; j++) {
+              errors.push({ awemeId: awemeIds[j], error: j === i ? errMsg : "BATCH_TERMINATED" });
+            }
+            currentOk = false;
+            break;
+          }
+          errors.push({ awemeId: awemeIds[i], error: errMsg });
           currentOk = false;
         }
         utils.sendMessageSafe({
@@ -168,16 +258,7 @@ class IndependentTasks {
           awemeId: awemeIds[i],
         });
         if (!guard.isCancelled()) {
-          const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
-          if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
-            const deadline = Date.now() + BATCH_PAUSE_MIN + Math.random() * (BATCH_PAUSE_MAX - BATCH_PAUSE_MIN);
-            while (Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, KEEPALIVE_INTERVAL));
-              await chrome.storage.local.get("keepalive");
-            }
-          } else {
-            await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncWorks")));
-          }
+          await utils.pauseWithKeepalive(i, "syncWorks");
         }
       }
       guard.dispose();
@@ -192,10 +273,20 @@ class IndependentTasks {
           failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
         });
       } else {
-        utils.sendMessageSafe({ type: "SYNC_DONE", requestId, ok: false, error: errors[0]?.error || "NO_WORKS_COLLECTED" });
+        utils.sendMessageSafe({
+          type: "SYNC_DONE",
+          requestId,
+          ok: false,
+          error: errors[0]?.error || "NO_WORKS_COLLECTED",
+        });
       }
     } catch (e) {
-      sendResponse({ ok: false, error: e.message });
+      // ack 之后 sendResponse 通道已关闭，只能经 SYNC_DONE 消息收尾，避免弹窗卡在 SYNCING
+      if (requestId) {
+        utils.sendMessageSafe({ type: "SYNC_DONE", requestId, ok: false, error: e.message });
+      } else {
+        sendResponse({ ok: false, error: e.message });
+      }
     }
   }
 
@@ -252,6 +343,7 @@ class IndependentTasks {
           });
           ok = resp.ok;
         } catch (_) {}
+        if (!ok) errors.push({ awemeId: awemeIds[i], error: "FAILED" });
         utils.sendMessageSafe({
           type: "CANCEL_PROGRESS",
           requestId,

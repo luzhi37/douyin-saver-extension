@@ -4,17 +4,59 @@ import { dialog } from '../components/dialog.js';
 import { groups } from './groups.js';
 
 // ---------- ImportExport ----------
+// 备份弹窗：四域导出/导入聚合于一处，不随当前域自适应，导出/导入均显式指定目标域；
+// 导入经隐藏 #fileInput 选档，目标域在点击按钮时记入 #pendingImportDomain、change 事件到达时取回
 class ImportExport {
+  #pendingImportDomain = "";
+
+  // 两列按钮由 DOMAINS_META 生成，与域元数据保持单一来源
+  openDialog() {
+    const tmpl = document.getElementById("ioDialogTemplate");
+    const body = tmpl.content.cloneNode(true);
+    const exportCol = body.querySelector("#ioExportCol");
+    const importCol = body.querySelector("#ioImportCol");
+    for (const [domain, meta] of Object.entries(config.DOMAINS_META)) {
+      const exportBtn = document.createElement("button");
+      exportBtn.className = "dy-btn io-action";
+      exportBtn.textContent = `${meta.label}域导出`;
+      exportBtn.dataset.io = "export";
+      exportBtn.dataset.domain = domain;
+      exportCol.appendChild(exportBtn);
+
+      const importBtn = document.createElement("button");
+      importBtn.className = "dy-btn io-action";
+      importBtn.textContent = `${meta.label}域导入`;
+      importBtn.dataset.io = "import";
+      importBtn.dataset.domain = domain;
+      importCol.appendChild(importBtn);
+    }
+    dialog.showDialog("备份与恢复", body);
+    dom.dialogBody.querySelector(".io-dialog").addEventListener("click", (e) => {
+      const btn = e.target.closest(".io-action");
+      if (!btn) return;
+      if (btn.dataset.io === "export") this.handleExport(btn.dataset.domain);
+      else this.#pickImportFile(btn.dataset.domain);
+    });
+  }
+
+  #pickImportFile(domain) {
+    this.#pendingImportDomain = domain;
+    dom.fileInput.click();
+  }
+
   async handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
     dom.fileInput.value = "";
-    dialog.showDialog("正在导入…", "<p>正在读取文件…</p>");
+    const domain = this.#pendingImportDomain;
+    this.#pendingImportDomain = "";
+    if (!domain) return;
+    // 进度/结果层叠于备份弹窗之上：关闭后回到弹窗继续操作，无需重开
+    dialog.pushDialog("正在导入…", "<p>正在读取文件…</p>");
     state.preventDialogClose = true;
     try {
       const raw = await file.text();
       const data = JSON.parse(raw);
-      const domain = state.domain;
 
       if (!services.isDomainData(data, domain)) {
         const expected = config.DOMAINS_META[domain].label + "数据";
@@ -28,9 +70,12 @@ class ImportExport {
       dom.dialogBody.innerHTML = "<p>正在保存数据…</p>";
       const res = await services.bgMsg({ type: "IMPORT_DATA", data, domain });
 
-      await services.loadDomainData();
+      // 仅导入目标域为当前域时刷新视图；其余域在下次域切换时自然加载
+      if (domain === state.domain) {
+        await services.loadDomainData();
+        await groups.renderGroupTabs();
+      }
 
-      await groups.renderGroupTabs();
       dom.dialogBody.innerHTML = "";
       if (res.ok) {
         const importTmpl = document.getElementById("importResultTemplate");
@@ -57,9 +102,8 @@ class ImportExport {
     }
   }
 
-  async handleExport() {
-    const domain = state.domain || "works";
-    dialog.showDialog("正在导出…", "<p>正在打包数据…</p>");
+  async handleExport(domain) {
+    dialog.pushDialog("正在导出…", "<p>正在打包数据…</p>");
     state.preventDialogClose = true;
     try {
       const res = await services.bgMsg({ type: "EXPORT_DATA", domain });

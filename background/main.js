@@ -199,6 +199,26 @@ class App {
           if (im) return independentTasks.fetchWorksPage(message.secUid, message.cursor || "", sendResponse);
           return tabBridge.fetchWorksPage(message, sendResponse);
         }, sendResponse);
+
+      // 入库：作者作品 → 作品域（分页循环长任务）/ 作者档案 → 关注域（单请求短操作）
+      case "IMPORT_USER_WORKS":
+        return utils.asyncHandler(async () => {
+          const im = await independentClient.loadMode();
+          if (im) return independentTasks.importUserWorks(message.secUid, sendResponse);
+          return scanTasks.importUserWorks(message.secUid, sendResponse);
+        }, sendResponse);
+      case "IMPORT_FOLLOWING":
+        return utils.asyncHandler(() => scanTasks.importFollowing(message.secUid, sendResponse), sendResponse);
+      case "RESOLVE_AUTHOR":
+        return utils.asyncHandler(async () => {
+          const id = String(message.id || "");
+          if (!id) return sendResponse({ ok: false, error: "BAD_PARAMS" });
+          // sec_uid 直通；纯数字 uid 经 im/user/info 兑换
+          if (message.idType !== "uid") return sendResponse({ ok: true, secUid: id });
+          const secUid = await independentClient.resolveSecUidById(id);
+          if (!secUid) return sendResponse({ ok: false, error: "RESOLVE_FAILED" });
+          sendResponse({ ok: true, secUid });
+        }, sendResponse);
       case "CANCEL_LIKE":
         return utils.asyncHandler(async () => {
           // 点赞取消无独立模式分支（a_bogus 与 XHR 原型链深度绑定，SW 无法直连，见 docs/06）

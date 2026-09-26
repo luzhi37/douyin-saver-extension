@@ -37,62 +37,69 @@
     </div>
   </header>
 
-  <!-- ====== 搜索栏（侧边栏「搜索」在顶栏下方展开的内联工具条，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
-  <div id="searchBar" class="search-bar hidden">
-    <div class="sb-seg" id="sbScope">
-      <button class="sb-seg-btn active" data-scope="all">综合</button>
-      <button class="sb-seg-btn" data-scope="author" id="sbScopeAuthor">作者</button>
-      <button class="sb-seg-btn" data-scope="title" id="sbScopeTitle">标题</button>
-      <button class="sb-seg-btn" data-scope="id">ID</button>
-    </div>
-    <svg width="16" height="16">
-      <use href="#icon-search" />
-    </svg>
-    <input id="searchInput" type="text" placeholder="搜索标题 / 作者 / ID" spellcheck="false" />
-    <span id="sbCount" class="sb-count"></span>
-    <span id="sbWorkFilters" class="sb-domain-filters flex-row">
-      <div class="sb-seg" id="sbSort">
-        <button class="sb-seg-btn active" data-sort="saved">保存时间</button>
-        <button class="sb-seg-btn" data-sort="authorCount">作者作品数</button>
-      </div>
-      <label class="sb-check"><input type="checkbox" id="sbFollowed" checked />已关注</label>
-      <label class="sb-check"><input type="checkbox" id="sbUnfollowed" checked />未关注</label>
-    </span>
-    <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
-      <div class="sb-seg" id="sbFollowSort">
-        <button class="sb-seg-btn active" data-fsort="followers">粉丝数</button>
-        <button class="sb-seg-btn" data-fsort="works">作品数</button>
-      </div>
-    </span>
-    <label class="sb-check"><input type="checkbox" id="sbReverse" />逆序</label>
-    <button id="btnClearInBar" class="filter-clear-btn">清除</button>
-    <button id="btnCloseSearch" class="icon-btn flex-center sb-close" aria-label="收起搜索">✕</button>
-  </div>
-
   <!-- ====== 主体内容 ====== -->
   <div id="appBody">
-    <main id="mainGrid">
-      <div class="empty-state state-message hidden" id="emptyState">
-        <div class="empty-icon flex-center">
-          <svg width="48" height="48">
-            <use href="#icon-download" />
-          </svg>
+    <div id="mainCol" class="flex-col">
+      <!-- ====== 搜索栏（侧边栏「搜索」在顶栏下方展开的内联工具条，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
+      <div id="searchBar" class="search-bar hidden">
+        <div class="sb-seg" id="sbScope">
+          <button class="sb-seg-btn active" data-scope="all">综合</button>
+          <button class="sb-seg-btn" data-scope="author" id="sbScopeAuthor">作者</button>
+          <button class="sb-seg-btn" data-scope="title" id="sbScopeTitle">标题</button>
+          <button class="sb-seg-btn" data-scope="id">ID</button>
         </div>
-        <p>还没有保存的作品</p>
-        <p class="empty-hint">浏览抖音时，作品会自动被捕获</p>
+        <svg width="16" height="16">
+          <use href="#icon-search" />
+        </svg>
+        <input id="searchInput" type="text" placeholder="搜索标题 / 作者 / ID" spellcheck="false" />
+        <span id="sbCount" class="sb-count"></span>
+        <span id="sbWorkFilters" class="sb-domain-filters flex-row">
+          <div class="sb-seg" id="sbSort">
+            <button class="sb-seg-btn active" data-sort="saved">保存时间</button>
+            <button class="sb-seg-btn" data-sort="authorCount">作者作品数</button>
+          </div>
+          <div class="sb-seg" id="sbWorkType">
+            <button class="sb-seg-btn active" data-wtype="all">全部</button>
+            <button class="sb-seg-btn" data-wtype="video">视频</button>
+            <button class="sb-seg-btn" data-wtype="note">图集</button>
+          </div>
+          <label class="sb-check"><input type="checkbox" id="sbFollowed" checked />已关注</label>
+          <label class="sb-check"><input type="checkbox" id="sbUnfollowed" checked />未关注</label>
+        </span>
+        <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
+          <div class="sb-seg" id="sbFollowSort">
+            <button class="sb-seg-btn active" data-fsort="followers">粉丝数</button>
+            <button class="sb-seg-btn" data-fsort="works">作品数</button>
+            <button class="sb-seg-btn" data-fsort="update">最近更新</button>
+          </div>
+        </span>
+        <label class="sb-check"><input type="checkbox" id="sbReverse" />逆序</label>
+        <button id="btnClearInBar" class="filter-clear-btn">清除</button>
+        <button id="btnCloseSearch" class="icon-btn flex-center sb-close" aria-label="收起搜索">✕</button>
       </div>
-      <div class="main-container" id="mainContainer"></div>
-      <div class="error-state state-message hidden" id="errorState">
-        <div class="error-icon">
-          <svg width="48" height="48">
-            <use href="#icon-error" />
-          </svg>
+      <main id="mainGrid">
+        <div class="empty-state state-message hidden" id="emptyState">
+          <div class="empty-icon flex-center">
+            <svg width="48" height="48">
+              <use href="#icon-download" />
+            </svg>
+          </div>
+          <p>还没有保存的作品</p>
+          <p class="empty-hint">浏览抖音时，作品会自动被捕获</p>
         </div>
-        <p>数据加载失败</p>
-        <p class="error-hint">请检查网络后重试</p>
-        <button class="dy-btn dy-btn-primary" id="btnRetry">重试</button>
-      </div>
-    </main>
+        <div class="main-container" id="mainContainer"></div>
+        <div class="error-state state-message hidden" id="errorState">
+          <div class="error-icon">
+            <svg width="48" height="48">
+              <use href="#icon-error" />
+            </svg>
+          </div>
+          <p>数据加载失败</p>
+          <p class="error-hint">请检查网络后重试</p>
+          <button class="dy-btn dy-btn-primary" id="btnRetry">重试</button>
+        </div>
+      </main>
+    </div>
     <div id="sidebarResizeHandle" class="sidebar-resize-handle" title="点击折叠/展开侧边栏，拖拽调整宽度"></div>
     <aside id="sidebar" class="sidebar">
       <div id="sidebarBody" class="sidebar-body">
@@ -115,10 +122,10 @@
         <div class="menu-divider"></div>
         <nav class="left-sidebar-menu flex-col">
           <button class="menu-item" id="btnSync">同步</button>
-          <button class="menu-item" id="btnImport">导入</button>
-          <button class="menu-item" id="btnExport">导出</button>
           <button class="menu-item" id="btnGroupManage">分组</button>
           <button class="menu-item" id="btnSearch">搜索</button>
+          <button class="menu-item" id="btnBackup">备份</button>
+          <button class="menu-item" id="btnAuthorImport">入库</button>
           <button class="menu-item" id="btnSettings">设置</button>
         </nav>
         <div class="menu-spacer"></div>
@@ -228,7 +235,7 @@
   </div>
 
   <!-- ====== 自定义弹窗容器（抖音风格） ====== -->
-  <div id="dialogOverlay" class="hidden">
+  <div id="dialogOverlay" class="dialog-overlay hidden">
     <div class="dy-dialog flex-col" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
       <div class="dy-dialog-header flex-row">
         <span id="dialogTitle"></span>
@@ -253,6 +260,7 @@
         <span class="stat-followers"></span>
         <span class="stat-works"></span>
       </div>
+      <div class="following-update"></div>
     </div>
   </template>
 
@@ -295,18 +303,9 @@
         </div>
       </div>
       <div class="work-checkbox" role="checkbox" aria-checked="false" aria-label="选择作品"></div>
-      <div class="work-title flex-row">
-        <span class="work-title-text text-ellipsis">无文案</span>
-        <button class="work-action-btn icon-btn flex-center" title="同步">
-          <svg width="24" height="24">
-            <use href="#icon-sync" />
-          </svg>
-        </button>
-        <button class="work-action-btn icon-btn flex-center" title="下载">
-          <svg width="24" height="24">
-            <use href="#icon-download" />
-          </svg>
-        </button>
+      <div class="work-info flex-col">
+        <a class="work-title-text text-ellipsis" target="_blank" rel="noopener"></a>
+        <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
       </div>
     </div>
   </template>
@@ -314,8 +313,9 @@
   <template id="workSkeletonTemplate">
     <div class="work-card work-skeleton flex-col">
       <div class="work-media"></div>
-      <div class="work-title flex-row">
-        <span class="work-title-text text-ellipsis"></span>
+      <div class="work-info flex-col">
+        <a class="work-title-text text-ellipsis" target="_blank" rel="noopener"></a>
+        <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
       </div>
     </div>
   </template>
@@ -383,10 +383,24 @@
   <template id="importResultTemplate">
     <div class="import-result">
       <p>文件路径：<code class="import-file-name"></code></p>
-      <p>✅ 新增作品：<span class="stat stat-ok import-added"></span> 条</p>
-      <p>🔄 更新作品：<span class="stat stat-dup import-updated"></span> 条</p>
-      <p>❌ 无效数据：<span class="stat stat-invalid import-invalid"></span> 条</p>
+      <p>✅ 新增：<span class="stat stat-ok import-added"></span> 条</p>
+      <p>🔄 更新：<span class="stat stat-dup import-updated"></span> 条</p>
+      <p>❌ 无效：<span class="stat stat-invalid import-invalid"></span> 条</p>
       <p>📊 当前总计：<span class="stat stat-total import-total"></span> 条</p>
+    </div>
+  </template>
+
+  <!-- ====== 备份弹窗模板（四域导出/导入聚合，按钮由 DOMAINS_META 生成） ====== -->
+  <template id="ioDialogTemplate">
+    <div class="io-dialog">
+      <div class="io-col">
+        <div class="io-col-title">导出到文件</div>
+        <div class="io-col-actions" id="ioExportCol"></div>
+      </div>
+      <div class="io-col">
+        <div class="io-col-title">从文件导入</div>
+        <div class="io-col-actions" id="ioImportCol"></div>
+      </div>
     </div>
   </template>
 

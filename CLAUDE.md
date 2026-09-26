@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **单一事实源**：本项目的全部技术参考统一维护在 [AGENTS.md](./AGENTS.md)（四层架构、双域存储模型、消息协议、设计约定与陷阱、config 分组速查、docs 文档索引）。本文档不复制其内容；**更新技术文档时只改 AGENTS.md 与对应的 docs/*.md，不要同步维护两份**。
+> **单一事实源**：本项目的全部技术参考统一维护在 [AGENTS.md](./AGENTS.md)（四层架构、四域存储模型、消息协议、设计约定与陷阱、config 分组速查、docs 文档索引）。本文档不复制其内容；**更新技术文档时只改 AGENTS.md 与对应的 docs/*.md，不要同步维护两份**。
 
 ## Project Snapshot
 

@@ -15,10 +15,6 @@ const END_STRING = "cus";
 const UA_ENCRYPT_KEY = "\x00\x01\x0e";
 const UA_DEFAULT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
 
-// ===== 平台标注说明 =====
-// 平台：抖音 — mssdk 静态设备上报载荷（独立模式兑换真 msToken 用）
-// ============================
-
 // 抓包固定的预加密上报 blob：POST 到 mssdk.bytedance.com/web/common，服务端校验通过后
 // 通过 Set-Cookie 签发真 msToken（domain=bytedance.com，有效期 7 天）。
 // 来源：TikTokDownloader src/encrypt/msToken.py MsToken.DATA（2026-08 实测有效）。

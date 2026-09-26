@@ -153,6 +153,16 @@ handleBatchSelectAll() {
 
 enter/leave 不冒泡——挂在 grid 容器上的监听器只有 target 是容器自身时才触发，卡片上的进入事件永远收不到（功能**静默失效**）。换卡时必须先静音旧预览再判守卫，否则旧视频音频残留。
 
+### 离开扩展页面即暂停全部播放（visibilitychange）
+
+`main.js` init 绑定 `visibilitychange`（`document.hidden` 时触发，即切标签/最小化；窗口失焦不暂停），回调为 `worksGrid.stopAllMedia() + detail.pauseOnHidden()`：
+
+- 卡片悬浮/按钮预览：`WorksGrid.stopAllMedia()` 遍历容器内全部 `.work-video-player` 走 `#stopPreview`——pause、清 `hoverTimer/_retryTimer/_hoverTimeout`、摘 hovered 标记并还原封面。覆盖悬停起播与播放按钮直启两条路径。
+- 详情视频：`Detail.pauseOnHidden()` 先 `clearTimeout(video._retryTimer)`（防挂起重试在后台 `load()+play()` 静默续播）再 pause，播放按钮复位为 play 图标与「播放」文案。
+- 详情图集：`#noteStopAutoPlay()`（music 模式同步 pause 音频、virtual 模式清定时器）+ `#noteUpdatePlayBtn()`。
+
+回到页面不自动恢复播放，由用户手动续播（预览需移出再移入卡片重新触发）。
+
 ### 头像探针的代际校验（在途回调先验代际再提交）
 
 ```js
@@ -205,6 +215,14 @@ probe.onerror = () => {
 - 长操作弹窗 X 按钮**始终可点**，点击即发送 `CANCEL_ACTIVE_TASK`。
 - 为避免短操作误发取消信号，`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送（信号路径见 01/09）。
 
+### 多层弹窗（pushDialog 叠层）
+
+- 单 overlay 多实例：基层为静态 `#dialogOverlay`，`showDialog` = 销毁全部上层后重置基层（既有调用点语义不变）；`pushDialog` = 当前层原地保留为父层、新 overlay 实例叠加（z-index 逐层递增、`.layered` 遮罩减淡至 0.4），关闭顶层即销毁实例、露出父层——父层 DOM 原地不动，监听器/输入值天然保留。
+- `dom.dialogTitle/dialogBody/dialogFooter/dialogClose` 由 Dialog 动态指向顶层实例元素（仅该类可写），调用方即时访问自动命中顶层；`dom.dialogOverlay` 恒指基层，其 hidden 即「有无弹窗」全局信号（Esc 分流、悬停预览守卫、键盘守卫均依赖）。
+- 同层内容切换（进度 → 结果）**必须就地改写** `dom.dialogTitle/dialogBody` + `showOkDialog`（import-export / AuthorImport.#showDone 同款），禁止改调 `showDialog`——那会清栈重建基层、摧毁父层。
+- 关闭入口 `requestDialogClose` 以 depth 快照防连关：`activeDialog()`（onClose 通常自行关层）已使 depth 变化时直接返回；`settings.saveBeforeClose` 仅在关闭基层（`dialog.isBase`）时触发。X 按钮为 document 级 `.dy-dialog-close` 委托（每层各有 ✕）。
+- 焦点三段式：基层打开记触发元素 → 关闭顶层焦点移入父层第一控件 → 最终关闭归还触发元素。
+
 ### 同步进度过滤的 requestId 时序差异
 
 `SYNC_WORKS` **立即**返回 requestId；`FETCH_FOLLOWING` 等**收集完成才**返回。关注进度过滤因此必须兼容 `Sync.#followingsRequestId === null`（列表阶段尚未拿到 requestId 时不得按 requestId 过滤丢弃进度消息）。进度消息载荷见 01。
@@ -240,12 +258,12 @@ probe.onerror = () => {
 骨架模板必须与完整卡在根层同构：
 
 ```
-.work-card       > .work-media + .work-checkbox + .work-title
+.work-card       > .work-media + .work-checkbox + .work-info(.work-title-text + .work-author)
 .following-card  > .following-checkbox + .following-main(.following-avatar/.following-avatar-fallback
                                           + .following-nickname) + .following-stats
 ```
 
-媒体子树、操作按钮等可从完整模板取新节点移入；unloadObserver 因此持续观察同一根节点无需重挂，fill observer 在 `#demote` 时重新 observe。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardDOM` 已兼容骨架态。
+媒体子树等可从完整模板取新节点移入；unloadObserver 因此持续观察同一根节点无需重挂，fill observer 在 `#demote` 时重新 observe。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardDOM` 已兼容骨架态。
 
 ## 异常场景及处理
 
@@ -269,7 +287,7 @@ probe.onerror = () => {
 | 侧边栏 | `SIDEBAR_SNAP_POINTS`([650,0]) / `SIDEBAR_SCROLL_THRESHOLD`(100) / `SIDEBAR_FILL_THRESHOLD`(50) / `SIDEBAR_IMG_PER_FRAME`(6) / `SIDEBAR_DRAG_THRESHOLD`(4) |
 | 媒体熔断 | `MEDIA_FAIL_WINDOW`(5000) / `MEDIA_FAIL_MAX`(10) / `MEDIA_BREAK_COOLDOWN`(15000) |
 | 详情播放器 | `VIDEO_RETRY_DELAYS`([200,400,600]) / `VIDEO_RETRY_MAX`(3) / `VIDEO_FALLBACK_TIMEOUT`(5000) / `HOVER_PREVIEW_DELAY`(200) / `BLOB_REVOKE_DELAY`(10000) / `NOTE_AUTO_PLAY_INTERVAL`(3000) |
-| 卡片尺寸 | `CARD_SIZE_FALLBACK`(261) / `CARD_GAP`(9) / `CARD_HEIGHT_OFFSET`(35) |
+| 卡片尺寸 | `CARD_SIZE_FALLBACK`(261) / `CARD_GAP`(11) / `CARD_HEIGHT_OFFSET`(44) |
 | 其他 UI | `TOAST_DURATION`(2000) / `DOWNLOAD_MAX_RETRY`(1) / `DETAIL_TITLE_MAX_LEN`(40) / `TAB_SCROLL_THRESHOLD`(2) / `GROUP_NAME_MAX_LEN`(20) |
 
 ## 相关文档

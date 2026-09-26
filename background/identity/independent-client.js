@@ -101,22 +101,30 @@ class IndependentClient {
       });
       clearTimeout(tid);
       const argusCode = resp.headers.get("argus_security_code") || "";
+      const raw = await resp.text();
+      // 空 body 对齐 tab 模式 inject 的 RATE_LIMITED 语义（限流/风控典型响应），避免抛不可读的 SyntaxError
+      if (!raw || !raw.trim()) throw new Error("RATE_LIMITED");
       if (!resp.ok) {
-        let bodyText = "";
-        try { bodyText = (await resp.text()).trim().slice(0, 160); } catch {}
-        const signInvalid = argusCode === "web_id_sign_invalid" || (resp.status === 403 && /sign invalid/i.test(bodyText));
+        const bodyPreview = raw.trim().slice(0, 160);
+        const signInvalid = argusCode === "web_id_sign_invalid" || (resp.status === 403 && /sign invalid/i.test(bodyPreview));
         if (signInvalid && !options._webIdRetried) {
           console.warn("[DY] a_bogus rejected (web_id_sign_invalid), refreshing webid and retrying", apiPath);
           const freshWebId = await credentials.refreshWebIdChain();
           if (freshWebId) params.webid = freshWebId;
           return this.request(apiPath, params, { ...options, _webIdRetried: true });
         }
-        throw new Error(bodyText ? `HTTP_${resp.status}: ${bodyText}` : `HTTP_${resp.status}`);
+        throw new Error(bodyPreview ? `HTTP ${resp.status}: ${bodyPreview}` : `HTTP ${resp.status}`);
       }
-      const data = await resp.json();
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (_e) {
+        throw new Error("INVALID_JSON");
+      }
       if (data.status_code !== undefined && data.status_code !== 0) {
         console.warn("[DY] API_ERROR status_code=%s url=%s", data.status_code, apiPath);
-        const err = new Error("API_ERROR");
+        // 真实状态码拼进 message（tab 模式同款 status_code=X 形态）；err.statusCode 保留供 2096 等业务判断
+        const err = new Error("API_ERROR(" + data.status_code + ")");
         err.statusCode = data.status_code;
         throw err;
       }
@@ -125,6 +133,24 @@ class IndependentClient {
       clearTimeout(tid);
       throw e;
     }
+  }
+
+  // im/user/info 兑换 sec_uid：入参传 uid（本人场景）或 sec_uid 端点均可接受。
+  // 任意 uid 未实测收录，兑换失败（未收录/风控）返回空串，由调用方降级提示
+  async resolveSecUidById(id) {
+    try {
+      const data = await this.request("/aweme/v1/web/im/user/info/", await credentials.buildBaseParams(), {
+        method: "POST",
+        body: JSON.stringify({ sec_user_ids: [String(id)] }),
+      });
+      const users = data.data?.users || data.users || (Array.isArray(data.data) ? data.data : []);
+      for (const u of users) {
+        if (u.sec_uid) return u.sec_uid;
+      }
+    } catch (e) {
+      console.warn("[DY] resolveSecUidById failed:", e.message);
+    }
+    return "";
   }
 
   // 用签名客户端解析自身 sec_uid（消费方，非身份原语）
@@ -143,20 +169,7 @@ class IndependentClient {
     }
 
     if (!uid) return "";
-
-    try {
-      const data = await this.request("/aweme/v1/web/im/user/info/", await credentials.buildBaseParams(), {
-        method: "POST",
-        body: JSON.stringify({ sec_user_ids: [uid] }),
-      });
-      const users = data.data?.users || data.users || (Array.isArray(data.data) ? data.data : []);
-      for (const u of users) {
-        if (u.sec_uid) return u.sec_uid;
-      }
-    } catch (e) {
-      console.warn("[DY] resolveSelfSecUid failed:", e.message);
-    }
-    return "";
+    return this.resolveSecUidById(uid);
   }
 }
 const independentClient = new IndependentClient();

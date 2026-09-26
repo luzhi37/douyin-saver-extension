@@ -97,29 +97,9 @@ optgroup {
 }
 
 /* ===== 动画 ===== */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
 @keyframes cardFadeIn {
   from { opacity: 0; }
   to   { opacity: 1; }
-}
-
-@keyframes dialogIn {
-  from { opacity: 0; transform: scale(0.92) translateY(12px); }
-  to   { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-@keyframes detailIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes detailContentIn {
-  from { opacity: 0; transform: scale(0.96); }
-  to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes shimmer {
@@ -139,12 +119,6 @@ optgroup {
 @keyframes toastOut {
   from { opacity: 1; transform: translateX(-50%) translateY(0); }
   to   { opacity: 0; transform: translateX(-50%) translateY(-16px); }
-}
-
-@keyframes checkBounce {
-  0%   { transform: scale(1); }
-  50%  { transform: scale(1.25); }
-  100% { transform: scale(1); }
 }
 
 
@@ -356,6 +330,14 @@ body.batch-mode #btnBatch {
   overflow: hidden;
 }
 
+/* 主内容列：搜索栏 + 网格。搜索栏只在主列内展开，不挤占右侧两个满高侧边栏 */
+#mainCol {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
 /* ===== 最右侧边栏（上：域切换组；中：弹性占位 + 分割线；下：功能按钮；可折叠）。
     位于 #appBody 最右（比关注域作者作品侧边栏更靠右），☰ 按钮在顶栏最右折叠/展开 */
 .left-sidebar {
@@ -490,35 +472,28 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* ===== 作品卡片 ===== */
+/* 卡片根是透明容器：圆角矩形只包封面（.work-media），标题/作者在矩形外、无背景展示 */
 .work-card {
   position: relative;
   width: var(--dy-card-size);
-  height: calc(var(--dy-card-size) * 4 / 3 + 35px);
-  border-radius: var(--dy-radius-lg);
-  background: var(--dy-surface);
+  height: calc(var(--dy-card-size) * 4 / 3 + 44px);
   cursor: pointer;
-  overflow: hidden;
   isolation: isolate;
-  transition:
-    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
-    border-color 0.25s ease;
   animation: cardFadeIn 0.35s ease both;
   content-visibility: auto;
-  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 35px);
-  border: 2px solid rgba(255, 255, 255, 0.03);
+  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 44px);
   z-index: 1;
 }
 
 .work-skeleton {
   content-visibility: auto;
-  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 35px);
+  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 44px);
   position: relative;
-  overflow: hidden;
-  background: var(--dy-surface-hover);
   opacity: 1;
 }
 
-.work-skeleton::after {
+/* 骨架扫描光带只在封面矩形内扫（媒体区 overflow:hidden + 圆角裁切） */
+.work-skeleton .work-media::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -526,20 +501,27 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   animation: shimmer 1.2s ease-in-out infinite;
 }
 
-.work-skeleton .work-title {
+.work-skeleton .work-info {
   opacity: 0.3;
 }
 
-.work-card:hover {
-  /* 纯中心缩放：translateY 会把中心上移导致放大只向上挤占，去掉后上下对称放大 */
-  transform: scale(1.02);
-  border-color: rgba(254, 44, 85, 0.45);
+.work-media:hover {
+  /* 仅封面矩形自身悬浮才触发特效（悬浮下方信息块不触发）；禁止对矩形自身加
+     transform：缩放会让 overflow:hidden 的圆角裁切在合成器层退化，封面逃出裁切
+     盖住描边与圆角（实测顶/左/右边框被吞、顶角变方）。放大感由 .work-thumb 的
+     框内 zoom 提供，描边只做点亮 */
+  border-color: rgba(254, 44, 85, 0.55);
 }
 
 .work-media {
   position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
+  /* 圆角矩形载体：圆角/描边/裁切/悬停反馈都在媒体区，信息块在矩形外 */
+  border-radius: var(--dy-radius-lg);
+  border: 2px solid rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+  transition: border-color 0.25s ease;
   /* 封面未就绪时的占位底：中性渐变，避免"死灰板"被误读为加载失败 */
   background: linear-gradient(135deg, var(--dy-surface-elevated), #1e1f28);
 }
@@ -596,7 +578,6 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   background: var(--dy-primary);
   border-color: var(--dy-primary);
   color: #fff;
-  animation: checkBounce 0.25s var(--dy-ease-spring);
 }
 
 .following-checkbox {
@@ -640,7 +621,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   transition: transform 0.3s ease, opacity 0.3s ease;
 }
 
-.work-card:hover .work-thumb {
+.work-media:hover .work-thumb {
   transform: scale(1.05);
 }
 
@@ -725,61 +706,45 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* 卡片进度条已贴底（.work-video-controls padding-bottom:0），缩小拇指从 10px→7px，
-   使其圆心在 3px 轨道上探出底缘的量降到约 2px，避免被 .work-card 的
+   使其圆心在 3px 轨道上探出底缘的量降到约 2px，避免被 .work-media 的
    overflow:hidden 把拇指下方切平（详情模式进度条贴底栏顶缘、下方有实体底栏故无需） */
 .video-progress::-webkit-slider-thumb {
   width: 7px;
   height: 7px;
 }
 
-.work-title {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  min-height: 35px;
-  padding: 6px 5px;
-  gap: 4px;
-  background: var(--dy-surface);
-  z-index: 1;
+/* 封面矩形外的信息块：标题一行 + 作者昵称一行，恒定 44px（8+18+2+16，虚拟网格高度数学依赖） */
+.work-info {
+  height: 44px;
+  padding: 8px 6px 0;
+  gap: 2px;
 }
 
+/* 标题/作者与详情页 .detail-bar-title/.detail-bar-author 同款：色号、hover 变主色、颜色过渡 */
 .work-title-text {
-  flex: 1;
-  color: var(--dy-text);
+  color: rgba(255, 255, 255, 0.65);
   font-size: var(--dy-font-size-sm);
-  line-height: 1.5;
-  overflow: hidden;
-  white-space: nowrap;
-  mask-image: linear-gradient(90deg, black 70%, transparent 100%);
-  -webkit-mask-image: linear-gradient(90deg, black 70%, transparent 100%);
+  line-height: 18px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--dy-transition);
 }
 
-.work-action-btn {
-  width: var(--dy-avatar-size);
-  height: var(--dy-avatar-size);
-  border-radius: 50%;
-  flex-shrink: 0;
-  color: rgba(255, 255, 255, 0.4);
+.work-title-text:hover {
+  color: var(--dy-primary);
 }
 
-.work-action-btn:hover {
-  background: var(--dy-primary);
+.work-author {
   color: #fff;
-  transform: scale(1.1);
+  font-size: 12px;
+  line-height: 16px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--dy-transition);
 }
 
-.work-action-btn:active {
-  transform: scale(0.9);
-}
-
-.batch-mode .work-action-btn {
-  display: none !important;
-}
-
-/* 批量模式下按钮隐藏后底栏回落到 min-height，需保持普通模式的 40px 高度防跳变 */
-.batch-mode .work-title {
-  min-height: 40px;
+.work-author:hover {
+  color: var(--dy-primary);
 }
 
 .batch-mode .work-video-player.video-ready {
@@ -816,7 +781,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   transition: background var(--dy-transition), border-color var(--dy-transition), transform var(--dy-transition), box-shadow var(--dy-transition);
   /* 视口外的卡片跳过渲染：骨架 shimmer 动画若不由此隔离，几千行的无限动画会把 Layerize/样式重算拖垮 */
   content-visibility: auto;
-  contain-intrinsic-size: auto 102px;
+  contain-intrinsic-size: auto 132px;
 }
 
 .following-card:hover {
@@ -898,6 +863,14 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   white-space: nowrap;
 }
 
+/* 最近更新日期行：与统计行同级独立一行，占位时（未校准）显示 — */
+.following-update {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--dy-text-secondary);
+  white-space: nowrap;
+}
+
 /* 骨架态与完整卡共享同一 DOM 结构（填充/降级只切换类名，不换根节点，
    否则 grid 容器会全量重排）；仅以 .following-skeleton 覆盖占位样式，
    shimmer 用卡片级单个 ::after，避免每卡多个无限动画 */
@@ -924,6 +897,13 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .following-skeleton .stat-works {
   width: 48px;
+}
+
+.following-skeleton .following-update {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--dy-surface-elevated);
+  width: 96px;
 }
 
 .following-skeleton::after {
@@ -1700,7 +1680,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* ===== 弹窗系统 ===== */
-#dialogOverlay {
+.dialog-overlay {
   position: fixed;
   top: 0;
   left: 0;
@@ -1712,11 +1692,15 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  animation: fadeIn 0.2s ease;
 }
 
-#dialogOverlay.hidden {
+.dialog-overlay.hidden {
   display: none;
+}
+
+/* 上层弹窗实例（pushDialog 动态创建）：遮罩浓度低于基层（0.7），父层保持隐约可见 */
+.dialog-overlay.layered {
+  background: rgba(0, 0, 0, 0.4);
 }
 
 .dy-dialog {
@@ -1975,6 +1959,35 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   background: var(--dy-surface-hover);
 }
 
+/* ===== 备份弹窗（四域导出/导入聚合） ===== */
+.io-dialog {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.io-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.io-col-title {
+  font-size: var(--dy-font-size-sm);
+  color: var(--dy-text-secondary);
+  text-align: center;
+}
+
+.io-col-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.io-action {
+  width: 100%;
+}
+
 /* ===== 导入结果 ===== */
 .import-result {
   line-height: 1.8;
@@ -2013,6 +2026,41 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   margin-bottom: 12px;
   line-height: 1.6;
   font-size: 14px;
+}
+
+/* 入库弹窗：两行 [输入框][域入库按钮] */
+.import-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.import-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-row .import-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--dy-border);
+  border-radius: var(--dy-radius);
+  padding: 0 14px;
+  font-size: var(--dy-font-size-sm);
+  outline: none;
+  background: var(--dy-bg);
+  color: var(--dy-text);
+  transition: border-color var(--dy-transition);
+}
+
+.import-row .import-input:focus {
+  border-color: var(--dy-primary);
+}
+
+.import-row .dy-btn {
+  white-space: nowrap;
 }
 
 .dy-text-danger {
@@ -2616,7 +2664,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
     scroll-behavior: auto !important;
   }
   /* 骨架扫描光带：直接停用，避免停在 translateX(100%) 的残留亮条 */
-  .work-skeleton::after,
+  .work-skeleton .work-media::after,
   .following-skeleton::after {
     animation: none !important;
   }

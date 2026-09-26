@@ -7,6 +7,8 @@ import { detail } from '../components/detail.js';
 import { sidebar } from '../components/sidebar.js';
 
 // ---------- FollowingsGrid ----------
+// 与 search-bar/batch/detail/sidebar 存在循环 import（它们各自反向引用本模块）：单例引用全部
+// 发生在方法体内、模块图完全求值之后才被触达，靠 ES live binding 安全消解（AGENTS.md 设计例外）
 class FollowingsGrid extends VirtualGrid {
   // 头像分帧队列，避免同步赋 src 触发批量网络/解码调度
   #avatarQueue = [];
@@ -62,6 +64,7 @@ class FollowingsGrid extends VirtualGrid {
     card.querySelector(".following-nickname").textContent = following.nickname || "未知";
     card.querySelector(".stat-followers").textContent = utils.formatCount(following.followerCount) + " 粉丝";
     card.querySelector(".stat-works").textContent = utils.formatCount(following.awemeCount) + " 作品";
+    card.querySelector(".following-update").textContent = "最近更新 " + utils.formatUpdateTime(following.lastUpdateAt);
   }
 
   // 头像不可用时的占位：灰底圆圈换为昵称首字，不再让头像凭空消失
@@ -98,6 +101,7 @@ class FollowingsGrid extends VirtualGrid {
     card.querySelector(".following-nickname").textContent = "";
     card.querySelector(".stat-followers").textContent = "";
     card.querySelector(".stat-works").textContent = "";
+    card.querySelector(".following-update").textContent = "";
     const checkbox = card.querySelector(".following-checkbox");
     if (checkbox) {
       batch.updateCheckboxDOM(checkbox, false);
