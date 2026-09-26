@@ -107,16 +107,19 @@ class AppShell {
     }
   }
 
-  // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3）。
+  // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3），作用于顶层弹窗。
   // 短操作锁 preventDialogClose 期间不响应；长操作经 activeDialog 发取消信号
   async requestDialogClose() {
     if (state.preventDialogClose) return;
+    const depthBefore = dialog.depth;
     if (state.activeDialog) {
       state.activeDialog();
       chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
     }
-    // 设置面板在关闭前保存运行参数；校验失败则保持打开
-    if (!(await settings.saveBeforeClose())) return;
+    // onClose 已自行关层（回退到父层）时不继续关闭，避免一次请求连关两层
+    if (dialog.depth !== depthBefore) return;
+    // 设置面板在关闭前保存运行参数；校验失败则保持打开 —— 仅基层弹窗关闭时触发
+    if (dialog.isBase && !(await settings.saveBeforeClose())) return;
     dialog.closeDialog();
   }
 

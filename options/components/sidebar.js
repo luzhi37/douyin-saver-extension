@@ -154,7 +154,7 @@ class Sidebar {
     this.#calibrateFollowing(following);
   }
 
-  // 打开侧边栏即顺带校准该用户的权威计数（profile/other，单请求）：成功后同步
+  // 打开侧边栏即顺带校准该用户的权威计数（profile/other + 作品第一页取最近更新日期）：成功后同步
   // 更新 state 与可见卡片；失败静默忽略，不影响作品加载
   async #calibrateFollowing(following) {
     const secUid = state.currentFollowingSecUid;
@@ -165,13 +165,16 @@ class Sidebar {
     if (entry) {
       entry.awemeCount = res.awemeCount;
       entry.followerCount = res.followerCount;
+      entry.lastUpdateAt = res.lastUpdateAt;
     }
     const card = dom.mainContainer.querySelector(`[data-uid="${following.uid}"]`);
     if (card && !card.classList.contains(followingsGrid.skeletonClass)) {
       const followersEl = card.querySelector(".stat-followers");
       const worksEl = card.querySelector(".stat-works");
+      const updateEl = card.querySelector(".following-update");
       if (followersEl) followersEl.textContent = utils.formatCount(res.followerCount) + " 粉丝";
       if (worksEl) worksEl.textContent = utils.formatCount(res.awemeCount) + " 作品";
+      if (updateEl) updateEl.textContent = "最近更新 " + utils.formatUpdateTime(res.lastUpdateAt);
     }
   }
 
@@ -264,10 +267,11 @@ class Sidebar {
   }
 
   // 锚点兜底：取视口内最上方的卡片作锚（骨架/完整卡都参与网格流、几何位置真实，
-  // 视口顶部的卡处于填充圈内、通常为完整卡）；无卡片（空态/错误态）时返回 null
+  // 视口顶部的卡处于填充圈内、通常为完整卡）；四域共用 selector（与 AppShell.#topVisibleGridCard 同款，
+  // 覆盖 works/likes/favorites 域的 .work-card 与 followings 域的 .following-card）；无卡片（空态/错误态）时返回 null
   #topVisibleCard() {
     const gridTop = dom.mainGrid.getBoundingClientRect().top;
-    for (const card of dom.mainContainer.querySelectorAll(".following-card")) {
+    for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {
       if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
     }
     return null;

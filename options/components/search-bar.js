@@ -12,9 +12,10 @@ class SearchBar {
     keyword: "",
     scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID
     sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品域）
-    followingsSort: "followers", // followers 粉丝数 | works 作品数（仅关注域）
+    followingsSort: "followers", // followers 粉丝数 | works 作品数 | update 最近更新（仅关注域）
     followed: true, // 作者归属：已关注（默认勾选，双勾=全部）
     unfollowed: true, // 作者归属：未关注
+    workType: "all", // all 全部 | video 视频 | note 图集（仅作品型三域）
     reverse: false, // 逆序（翻转最终顺序，两域共用）
   };
 
@@ -36,6 +37,7 @@ class SearchBar {
     // 否则搜索无结果的空态会误显示通用文案（P1-8）
     if (this.#searchState.keyword.trim()) return true;
     if (this.#searchState.reverse) return true;
+    if (this.#isWorkLikeDomain() && this.#searchState.workType !== "all") return true;
     return this.#isWorkLikeDomain()
       ? this.#searchState.sort !== "saved"
       : this.#searchState.followingsSort !== "followers";
@@ -85,6 +87,11 @@ class SearchBar {
     const source = state[state.domain]; // 作品型三域：数据源即当前域数组
     let list = source;
     if (kw) list = list.filter((w) => this.#matchWork(w, kw));
+    if (this.#isWorkLikeDomain() && this.#searchState.workType !== "all") {
+      // 类型筛选（全部/视频/图集）：formatWork 保证 type 只有两值，等值比较即可
+      const wantNote = this.#searchState.workType === "note";
+      list = list.filter((w) => (wantNote ? w.type === "note" : w.type === "video"));
+    }
     if (this.#isWorkLikeDomain() && this.#ownerFilterActive()) {
       // 已关注/未关注勾选（默认双勾=不筛）：单边勾选仅保留对应归属，两边都未勾则无结果
       // （#ownerFilterActive 保证不会同时为 true，故 followed 优先分支可安全省略双勾判断）
@@ -135,7 +142,8 @@ class SearchBar {
         })
       : [...state.followings];
     // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定
-    const field = this.#searchState.followingsSort === "works" ? "awemeCount" : "followerCount";
+    const field =
+      { works: "awemeCount", update: "lastUpdateAt" }[this.#searchState.followingsSort] || "followerCount";
     list.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
     if (this.#searchState.reverse) list.reverse();
     return list;
@@ -169,10 +177,11 @@ class SearchBar {
     this.#writeHash();
   }
 
-  // 搜索应用后的结果数：取当前域的过滤视图长度（关键词/排序/归属勾选实时联动）
+  // 结果数 K/N：K 为当前过滤视图条数，N 为当前域全量条数
   syncCount() {
+    const total = this.#isWorkLikeDomain() ? state[state.domain].length : state.followings.length;
     const count = this.#isWorkLikeDomain() ? this.getWorksView().length : this.getFollowingsView().length;
-    dom.sbCount.textContent = `共 ${count} 条`;
+    dom.sbCount.textContent = `${count}/${total}`;
   }
 
   // ---------- 筛选状态 URL hash 持久化（P1-8） ----------
@@ -187,6 +196,7 @@ class SearchBar {
     if (s.followingsSort !== "followers") params.set("fsort", s.followingsSort);
     if (!s.followed) params.set("followed", "0");
     if (!s.unfollowed) params.set("unfollowed", "0");
+    if (s.workType !== "all") params.set("type", s.workType);
     if (s.reverse) params.set("reverse", "1");
     const hash = params.toString() ? "#search?" + params.toString() : "";
     if (location.hash !== hash) history.replaceState(null, "", hash);
@@ -203,6 +213,8 @@ class SearchBar {
     if (params.has("fsort")) s.followingsSort = params.get("fsort");
     if (params.has("followed")) s.followed = params.get("followed") !== "0";
     if (params.has("unfollowed")) s.unfollowed = params.get("unfollowed") !== "0";
+    // 只接受合法非默认值，垃圾值回落 all（否则会筛空全库）
+    if (params.has("type") && ["video", "note"].includes(params.get("type"))) s.workType = params.get("type");
     if (params.has("reverse")) s.reverse = params.get("reverse") === "1";
     return true;
   }
@@ -223,6 +235,9 @@ class SearchBar {
     });
     dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.fsort === this.#searchState.followingsSort);
+    });
+    dom.sbWorkType.querySelectorAll(".sb-seg-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.wtype === this.#searchState.workType);
     });
     dom.sbFollowed.checked = this.#searchState.followed;
     dom.sbUnfollowed.checked = this.#searchState.unfollowed;
@@ -296,6 +311,7 @@ class SearchBar {
     this.#searchState.followingsSort = "followers";
     this.#searchState.followed = true;
     this.#searchState.unfollowed = true;
+    this.#searchState.workType = "all";
     this.#searchState.reverse = false;
     dom.searchInput.value = "";
     this.syncScopeUIForDomain();
@@ -319,6 +335,13 @@ class SearchBar {
       const btn = e.target.closest(".sb-seg-btn");
       if (!btn) return;
       this.#searchState.sort = btn.dataset.sort;
+      this.syncSegUI();
+      this.refreshGridView();
+    });
+    dom.sbWorkType.addEventListener("click", (e) => {
+      const btn = e.target.closest(".sb-seg-btn");
+      if (!btn) return;
+      this.#searchState.workType = btn.dataset.wtype;
       this.syncSegUI();
       this.refreshGridView();
     });

@@ -1192,6 +1192,8 @@
           // 粉丝/作品数不再取自关注列表（滞后快照），字段占位为 0，仅由 profile/other 校准写入
           followerCount: 0,
           awemeCount: 0,
+          // 最近更新日期：与 background formatFollowing 同款占位，仅由校准阶段写入
+          lastUpdateAt: 0,
           profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
         }));
         const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
@@ -1223,7 +1225,17 @@
         if (data.status_code !== undefined && data.status_code !== 0)
           throw new Error("API_ERROR: status_code=" + data.status_code);
         const user = data.user || {};
-        return { ok: true, awemeCount: user.aweme_count || 0, followerCount: user.follower_count || 0 };
+        // 计数字段供 CALIBRATE_FOLLOWING 使用；档案字段供关注域入库（IMPORT_FOLLOWING）使用，
+        // 扁平化抽取与 background 侧 #fetchProfileUser 独立分支保持一致
+        return {
+          ok: true,
+          awemeCount: user.aweme_count || 0,
+          followerCount: user.follower_count || 0,
+          nickname: user.nickname || "",
+          avatarLarger: ((user.avatar_larger && user.avatar_larger.url_list) || [])[0] || "",
+          uid: String(user.uid || ""),
+          secUid: user.sec_uid || "",
+        };
       });
     }
 

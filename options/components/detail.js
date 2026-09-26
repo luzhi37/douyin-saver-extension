@@ -3,9 +3,19 @@ import { config, dom, state, utils, services, store } from '../core.js';
 import { search } from './search-bar.js';
 import { dialog } from './dialog.js';
 import { worksGrid } from '../grids/works-grid.js';
+import { createZip } from '../data/zip.js';
 
 // ---------- Detail ----------
 class Detail {
+  // 下载/保存时按 MIME 取扩展名
+  static MIME_EXT = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "video/mp4": "mp4",
+  };
+
   #index = -1;
   #cleanups = [];
   #loopMode = "single";
@@ -266,14 +276,6 @@ class Detail {
     dom.detailMuteBtn.title = label;
     dom.detailMuteBtn.setAttribute("aria-label", label);
   }
-
-  static MIME_EXT = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-    "image/gif": "gif",
-    "video/mp4": "mp4",
-  };
 
   // Detail 导航与网格共用同一过滤视图（建议5）：详情内翻页只在可见条目间进行
   openDetailIndex(awemeId) {
@@ -1241,6 +1243,28 @@ class Detail {
     dom.detailMuteBtn.setAttribute("aria-label", label);
   }
 
+  // 离开扩展页面（切标签/最小化，页面转为隐藏）暂停详情播放：
+  // 视频 pause 并复位播放按钮（含挂起的重试，避免后台静默续播）；图集停自动轮播
+  // （music 模式同步暂停音频），由 main.js 的 visibilitychange 统一触发
+  pauseOnHidden() {
+    if (dom.detailOverlay.classList.contains("hidden")) return;
+    const work = this.getCurrentWork();
+    if (!work) return;
+    if (work.type === "note" && work.images?.length > 0) {
+      this.#noteStopAutoPlay();
+      this.#noteUpdatePlayBtn();
+      return;
+    }
+    const video = dom.detailVideo;
+    clearTimeout(video._retryTimer);
+    if (!video.paused) {
+      video.pause();
+      dom.detailPlayBtn.innerHTML = config.icons.play;
+      dom.detailPlayBtn.title = "播放";
+      dom.detailPlayBtn.setAttribute("aria-label", "播放");
+    }
+  }
+
   formatTime(seconds) {
     if (!seconds || !isFinite(seconds)) return "0:00";
     const m = Math.floor(seconds / 60);
@@ -1272,32 +1296,54 @@ class Detail {
     setTimeout(() => URL.revokeObjectURL(blobUrl), config.BLOB_REVOKE_DELAY);
   }
 
-  // silent=true 时抑制单条失败 toast 并返回成功布尔（批量下载用，聚合汇报由调用方负责）
-  async downloadWork(work, { silent = false } = {}) {
-    return this.#downloadWithRetry(work, 0, silent);
+  // 拉取作品全部媒体为 [{ name, blob }]：视频=单条，图集=逐张。
+  // 取流重试内置（DOWNLOAD_MAX_RETRY / FETCH_RETRY_DELAY），失败抛错由调用方计数/汇报。
+  fetchWorkMedia(work) {
+    return this.#fetchWorkMediaWithRetry(work, 0);
   }
 
-  async #downloadWithRetry(w, attempt, silent) {
+  async #fetchWorkMediaWithRetry(w, attempt) {
     try {
-      if (w.type === "video" && utils.getVideoUrl(w)) {
-        const { blob, ext } = await this.fetchBlob(utils.getVideoUrl(w));
-        this.triggerDownload(blob, this.getFilename(w, ext));
-      } else if (w.type === "note" && w.images?.length) {
-        for (const [i, img] of w.images.entries()) {
-          const absUrl = utils.pickHttpsUrl(img || "");
-          const { blob, ext } = await this.fetchBlob(absUrl);
-          this.triggerDownload(blob, this.getFilename(w, `${i + 1}.${ext}`));
-        }
+      return await this.#fetchWorkMediaOnce(w);
+    } catch (err) {
+      if (attempt >= config.DOWNLOAD_MAX_RETRY) throw err;
+      await new Promise((r) => setTimeout(r, config.FETCH_RETRY_DELAY));
+      return this.#fetchWorkMediaWithRetry(w, attempt + 1);
+    }
+  }
+
+  async #fetchWorkMediaOnce(work) {
+    const entries = [];
+    if (work.type === "video" && utils.getVideoUrl(work)) {
+      const { blob, ext } = await this.fetchBlob(utils.getVideoUrl(work));
+      entries.push({ name: this.getFilename(work, ext), blob });
+    } else if (work.type === "note" && work.images?.length) {
+      for (const [i, img] of work.images.entries()) {
+        const absUrl = utils.pickHttpsUrl(img || "");
+        const { blob, ext } = await this.fetchBlob(absUrl);
+        entries.push({ name: this.getFilename(work, `${i + 1}.${ext}`), blob });
+      }
+    }
+    return entries;
+  }
+
+  // silent=true 时抑制单条失败 toast 并返回成功布尔（批量下载用，聚合汇报由调用方负责）。
+  // 视频=单文件直下；图集=打包 zip（全或无：任一张取流失败则整体失败，不产出半成品压缩包）
+  async downloadWork(work, { silent = false } = {}) {
+    try {
+      const entries = await this.fetchWorkMedia(work);
+      if (entries.length === 0) return true;
+      if (work.type === "video") {
+        this.triggerDownload(entries[0].blob, entries[0].name);
+      } else {
+        const zip = await createZip(entries);
+        this.triggerDownload(zip, this.getFilename(work, "zip"));
       }
       return true;
     } catch (err) {
       console.error("[DY] download failed:", err);
-      if (attempt >= config.DOWNLOAD_MAX_RETRY) {
-        if (!silent) dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
-        return false;
-      }
-      await new Promise((r) => setTimeout(r, config.FETCH_RETRY_DELAY));
-      return this.#downloadWithRetry(w, attempt + 1, silent);
+      if (!silent) dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
+      return false;
     }
   }
 }
