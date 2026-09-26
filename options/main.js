@@ -11,6 +11,7 @@ import { importExport } from './data/import-export.js';
 import { sidebar } from './components/sidebar.js';
 import { sync } from './sync/sync.js';
 import { domainScanSync } from './sync/domain-scan-sync.js';
+import { authorImport } from './sync/author-import.js';
 import { settings } from './components/settings.js';
 import { detail } from './components/detail.js';
 import { appShell } from './components/app-shell.js';
@@ -57,12 +58,18 @@ chrome.runtime.onMessage.addListener((message) => {
     case "COLLECTION_PROGRESS":
       domainScanSync.onScanProgress(message);
       break;
+    case "IMPORT_WORKS_PROGRESS":
+      authorImport.onProgress(message);
+      break;
     // 批量「取消并移除」由 Batch 内挂 requestId 专属 listener 消化，全局不处理
   }
 });
 
 // ---------- DOM 事件绑定 ----------
-dom.dialogClose.addEventListener("click", () => appShell.requestDialogClose());
+// X 关闭按钮：多层弹窗每层各有 ✕，document 级委托统一走关闭入口（作用于顶层）
+document.addEventListener("click", (e) => {
+  if (e.target.closest?.(".dy-dialog-close")) appShell.requestDialogClose();
+});
 
 // Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余先退出批量、再收起搜索栏
 document.addEventListener("keydown", (e) => {
@@ -116,12 +123,8 @@ dom.batchDownload.addEventListener("click", () => batch.handleBatchDownload());
 
 dom.btnGroupManage.addEventListener("click", () => groups.showGroupManage());
 
-dom.btnImport.addEventListener("click", () => {
-  dom.fileInput.click();
-});
+dom.btnBackup.addEventListener("click", () => importExport.openDialog());
 dom.fileInput.addEventListener("change", (e) => importExport.handleImport(e));
-
-dom.btnExport.addEventListener("click", () => importExport.handleExport());
 
 dom.btnSettings?.addEventListener("click", () => settings.openPanel());
 
@@ -158,7 +161,7 @@ dom.btnReset.addEventListener("click", async () => {
 });
 
 dom.btnSync.addEventListener("click", async () => {
-  if (sync.isRunning() || domainScanSync.isRunning()) return;
+  if (sync.isRunning() || domainScanSync.isRunning() || authorImport.isRunning()) return;
   if (state.domain === "followings") {
     await sync.syncFollowings();
   } else if (state.domain === "works") {
@@ -167,6 +170,8 @@ dom.btnSync.addEventListener("click", async () => {
     await domainScanSync.syncDomain(state.domain);
   }
 });
+
+dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
 
 // ---------- init IIFE ----------
 (async function init() {
@@ -184,6 +189,15 @@ dom.btnSync.addEventListener("click", async () => {
   sidebar.initSidebar();
   appShell.initLeftSidebar();
   detail.initDetailEvents();
+
+  // 离开扩展页面（切标签/最小化，页面转为隐藏）即暂停全部播放：
+  // 卡片悬浮预览（含播放按钮直启）走 WorksGrid.stopAllMedia；详情视频/图集音频走 Detail.pauseOnHidden
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) return;
+    worksGrid.stopAllMedia();
+    detail.pauseOnHidden();
+  });
+
   dom.groupTabs.addEventListener(
     "scroll",
     () => {

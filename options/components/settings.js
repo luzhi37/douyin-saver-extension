@@ -4,8 +4,12 @@ import { dialog } from './dialog.js';
 
 // ---------- Settings ----------
 class Settings {
+  #dialogBody = null;
+  #pendingIndependent = null;
+  #pendingCalibrate = null;
+
   #$(id) {
-    return this._dialogBody.querySelector("#" + id);
+    return this.#dialogBody.querySelector("#" + id);
   }
 
   // 键值表构建（Cookie 对 / 浏览器特征共用）
@@ -42,25 +46,25 @@ class Settings {
     const tmpl = document.getElementById("settingsDialogTemplate");
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
-    this._dialogBody = dom.dialogBody;
-    // 两个开关的未保存选择：_refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
-    this._pendingIndependent = null;
-    this._pendingCalibrate = null;
-    this._bind();
-    this._bindStatus();
+    this.#dialogBody = dom.dialogBody;
+    // 两个开关的未保存选择：#refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
+    this.#pendingIndependent = null;
+    this.#pendingCalibrate = null;
+    this.#bind();
+    this.#bindStatus();
     state.preventDialogClose = true;
     try {
-      await this._refresh();
+      await this.#refresh();
     } finally {
       state.preventDialogClose = false;
     }
   }
 
-  _statusTimeStr(updatedAt) {
+  #statusTimeStr(updatedAt) {
     return updatedAt ? new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "";
   }
 
-  _toggleTruncated(el, hint) {
+  #toggleTruncated(el, hint) {
     if (!el) return;
     const expanded = el.classList.toggle("sec-expanded");
     el.classList.toggle("sec-truncate", !expanded);
@@ -70,7 +74,7 @@ class Settings {
   toggleKeyExpand(root) {
     const text = root.querySelector("#secKeyValueText");
     const hint = root.querySelector("#secKeyValue .sec-expand-hint");
-    this._toggleTruncated(text, hint);
+    this.#toggleTruncated(text, hint);
   }
 
   toggleSigExpand(root, rowId) {
@@ -79,17 +83,17 @@ class Settings {
     const text = row.querySelector(".sec-truncate, .sec-expanded");
     const hint = row.querySelector(".sec-expand-hint");
     if (!text || !hint || hint.classList.contains("hidden")) return;
-    this._toggleTruncated(text, hint);
+    this.#toggleTruncated(text, hint);
   }
 
-  _renderStatusKey(root, key, updatedAt) {
+  #renderStatusKey(root, key, updatedAt) {
     const statusEl = root.querySelector("#secKeyStatus");
     const valueEl = root.querySelector("#secKeyValueText");
     const expandHint = root.querySelector("#secKeyValue .sec-expand-hint");
     const hintEl = root.querySelector("#secKeyHint");
     const copyBtn = root.querySelector("#secKeyValue .sec-copy-btn");
     if (key) {
-      const t = this._statusTimeStr(updatedAt);
+      const t = this.#statusTimeStr(updatedAt);
       statusEl.textContent = t ? `✅ 可用 · ${t}` : "✅ 可用";
       statusEl.className = "sec-value sec-ok";
       valueEl.textContent = key;
@@ -114,7 +118,7 @@ class Settings {
     }
   }
 
-  _renderStatusSig(root, sig, rowId, valueId, guidance) {
+  #renderStatusSig(root, sig, rowId, valueId, guidance) {
     const valueEl = root.querySelector("#" + valueId);
     const statusEl = root.querySelector("#" + valueId.replace(/Value$/, "Status"));
     const expandHint = root.querySelector("#" + rowId + " .sec-expand-hint");
@@ -125,7 +129,7 @@ class Settings {
     const v = sig?.value || "";
     const t = sig?.updatedAt || 0;
     if (captured) {
-      const ts = this._statusTimeStr(t);
+      const ts = this.#statusTimeStr(t);
       statusEl.textContent = `✅ 已捕获${ts ? " · " + ts : ""}${sig?.webSign ? " · webSign" : ""}`;
       statusEl.className = "sec-value sec-ok";
       valueEl.textContent = v || "（仅含签名键，已由页面包装器代签）";
@@ -150,7 +154,7 @@ class Settings {
     }
   }
 
-  _renderStatusHooks(root, hooks) {
+  #renderStatusHooks(root, hooks) {
     const fetchEl = root.querySelector("#secHookFetch");
     const xhrEl = root.querySelector("#secHookXhr");
     fetchEl.textContent = hooks.fetch ? "✅ 运行中" : "❌ 未运行";
@@ -159,7 +163,7 @@ class Settings {
     xhrEl.className = "sec-value " + (hooks.xhr ? "sec-ok" : "sec-err");
   }
 
-  async _refresh() {
+  async #refresh() {
     const [ci, bf, { independentMode }, ct] = await Promise.all([
       services.bgMsg({ type: "GET_COOKIE_INFO" }),
       services.bgMsg({ type: "GET_BROWSER_FEATURES" }),
@@ -180,7 +184,7 @@ class Settings {
     }
     const modeSwitch = this.#$("settingsModeSwitch");
     if (modeSwitch) {
-      this.#applySwitchUI(modeSwitch, this._pendingIndependent ?? independentMode);
+      this.#applySwitchUI(modeSwitch, this.#pendingIndependent ?? independentMode);
     }
     this.#$("settingsModeHint").textContent = "";
     const features = bf?.features;
@@ -200,14 +204,13 @@ class Settings {
     const { secUid } = await chrome.storage.local.get("secUid");
     if (this.#$("settingsSecUid")) this.#$("settingsSecUid").value = secUid || "";
     // 缓存状态
-    this._renderCacheList(ci, ct);
-    // ponytail: status readout — independent sub-fetch failure should not block the rest
-    this._renderStatus(secRes);
+    this.#renderCacheList(ci, ct);
+    this.#renderStatus(secRes);
     // 运行参数
-    this._renderConfigSection();
+    this.#renderConfigSection();
   }
 
-  _renderConfigSection() {
+  #renderConfigSection() {
     const cfg = runtimeConfig._cache || runtimeConfig.DEFAULTS;
     const map = {
       timeoutRequest: "timeoutRequest",
@@ -230,7 +233,7 @@ class Settings {
       syncKeepaliveInterval: "syncKeepaliveInterval",
       syncRetryMax: "syncRetryMax",
     };
-    const section = this._dialogBody.querySelector("#settingsConfigSection");
+    const section = this.#dialogBody.querySelector("#settingsConfigSection");
     if (!section) return;
     for (const [key, inputKey] of Object.entries(map)) {
       const input = section.querySelector(`.config-input[data-key="${inputKey}"]`);
@@ -238,12 +241,12 @@ class Settings {
     }
     const calSwitch = section.querySelector("#settingsCalibrateSwitch");
     if (calSwitch) {
-      this.#applySwitchUI(calSwitch, this._pendingCalibrate ?? (cfg.calibrateFollowings !== false));
+      this.#applySwitchUI(calSwitch, this.#pendingCalibrate ?? (cfg.calibrateFollowings !== false));
     }
   }
 
-  _renderCacheList(ci, ct) {
-    const list = this._dialogBody.querySelector("#settingsCacheList");
+  #renderCacheList(ci, ct) {
+    const list = this.#dialogBody.querySelector("#settingsCacheList");
     if (!list) return;
     const times = ct?.times || {};
     const hasRawCookie = !!(ci?.rawCookie);
@@ -290,8 +293,8 @@ class Settings {
       .join("");
   }
 
-  _bindStatus() {
-    const root = this._dialogBody;
+  #bindStatus() {
+    const root = this.#dialogBody;
     root.querySelectorAll(".sec-expand-hint").forEach((hint) => {
       hint.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -316,10 +319,9 @@ class Settings {
     });
   }
 
-  _renderStatus(secRes) {
-    const root = this._dialogBody;
+  #renderStatus(secRes) {
+    const root = this.#dialogBody;
     if (!root) return;
-    // ponytail: a failed sub-fetch only paints the status sections, never blocks others
     if (!secRes || !secRes.ok || !secRes.status) {
       const errMsg = secRes?.error || "QUERY_FAILED";
       // NO_DOUYIN_TAB 是最常见失败：给出可操作的引导而非裸错误码
@@ -347,14 +349,14 @@ class Settings {
       return;
     }
     const s = secRes.status;
-    this._renderStatusKey(root, s.key, s.keyUpdatedAt);
-    this._renderStatusSig(root, s.signatures?.detail, "secSigDetail", "secSigDetailValue", "请在抖音页面播放任意作品（触发详情请求），等待加载后返回刷新状态");
-    this._renderStatusSig(root, s.signatures?.following, "secSigFollowing", "secSigFollowingValue", "请在抖音页面访问关注列表，等待列表加载后返回刷新状态");
-    this._renderStatusSig(root, s.signatures?.profile, "secSigProfile", "secSigProfileValue", "请在抖音页面访问任意作者主页，等待资料加载后返回刷新状态");
-    this._renderStatusSig(root, s.signatures?.post, "secSigPost", "secSigPostValue", "请在抖音页面访问任意作者主页，等待作品加载后返回刷新状态");
-    this._renderStatusSig(root, s.signatures?.favorite, "secSigFavorite", "secSigFavoriteValue", "请在抖音页面访问喜欢列表，等待加载后返回刷新状态");
-    this._renderStatusSig(root, s.signatures?.collection, "secSigCollection", "secSigCollectionValue", "请在抖音页面访问收藏列表，等待加载后返回刷新状态");
-    this._renderStatusHooks(root, s.hooks);
+    this.#renderStatusKey(root, s.key, s.keyUpdatedAt);
+    this.#renderStatusSig(root, s.signatures?.detail, "secSigDetail", "secSigDetailValue", "请在抖音页面播放任意作品（触发详情请求），等待加载后返回刷新状态");
+    this.#renderStatusSig(root, s.signatures?.following, "secSigFollowing", "secSigFollowingValue", "请在抖音页面访问关注列表，等待列表加载后返回刷新状态");
+    this.#renderStatusSig(root, s.signatures?.profile, "secSigProfile", "secSigProfileValue", "请在抖音页面访问任意作者主页，等待资料加载后返回刷新状态");
+    this.#renderStatusSig(root, s.signatures?.post, "secSigPost", "secSigPostValue", "请在抖音页面访问任意作者主页，等待作品加载后返回刷新状态");
+    this.#renderStatusSig(root, s.signatures?.favorite, "secSigFavorite", "secSigFavoriteValue", "请在抖音页面访问喜欢列表，等待加载后返回刷新状态");
+    this.#renderStatusSig(root, s.signatures?.collection, "secSigCollection", "secSigCollectionValue", "请在抖音页面访问收藏列表，等待加载后返回刷新状态");
+    this.#renderStatusHooks(root, s.hooks);
   }
 
   // 开关仅切换视觉态；持久化与副作用统一走「关闭时校验并持久化」（saveBeforeClose）
@@ -384,9 +386,8 @@ class Settings {
     maxInput.classList.toggle("input-invalid", invalid);
   }
 
-  _bind() {
-    // ponytail: section titles toggle a .collapsed class; CSS grid-template-rows handles the animation
-    this._dialogBody.querySelectorAll(".settings-section-title").forEach((h3) => {
+  #bind() {
+    this.#dialogBody.querySelectorAll(".settings-section-title").forEach((h3) => {
       h3.addEventListener("click", () => {
         h3.closest(".settings-section").classList.toggle("collapsed");
       });
@@ -414,17 +415,17 @@ class Settings {
       modeSwitch.addEventListener("click", (e) => {
         const btn = e.target.closest(".mode-btn");
         if (!btn || btn.classList.contains("active")) return;
-        this._pendingIndependent = btn.dataset.mode === "on";
-        this.#applySwitchUI(modeSwitch, this._pendingIndependent);
+        this.#pendingIndependent = btn.dataset.mode === "on";
+        this.#applySwitchUI(modeSwitch, this.#pendingIndependent);
       });
     }
-    const calibrateSwitch = this._dialogBody.querySelector("#settingsCalibrateSwitch");
+    const calibrateSwitch = this.#dialogBody.querySelector("#settingsCalibrateSwitch");
     if (calibrateSwitch) {
       calibrateSwitch.addEventListener("click", (e) => {
         const btn = e.target.closest(".mode-btn");
         if (!btn || btn.classList.contains("active")) return;
-        this._pendingCalibrate = btn.dataset.mode === "on";
-        this.#applySwitchUI(calibrateSwitch, this._pendingCalibrate);
+        this.#pendingCalibrate = btn.dataset.mode === "on";
+        this.#applySwitchUI(calibrateSwitch, this.#pendingCalibrate);
       });
     }
     // 缓存刷新按钮
@@ -474,7 +475,7 @@ class Settings {
         try {
           const res = await services.bgMsg({ type: "REFRESH_" + type });
           if (res?.ok) {
-            await this._refresh();
+            await this.#refresh();
           } else {
             dialog.showToast(res?.hint || res?.error || "刷新失败", "error");
           }
@@ -490,8 +491,8 @@ class Settings {
 
   // X 关闭时校验并持久化运行参数与 secUid；返回 false 表示校验未通过、保持弹窗打开
   async saveBeforeClose() {
-    if (!this._dialogBody) return true;
-    const section = this._dialogBody.querySelector("#settingsConfigSection");
+    if (!this.#dialogBody) return true;
+    const section = this.#dialogBody.querySelector("#settingsConfigSection");
     // 设置面板未打开（当前弹窗是其它面板）时无需处理
     if (!section) return true;
     const FIELDS = [
@@ -530,25 +531,25 @@ class Settings {
         return false;
       }
     }
-    values.calibrateFollowings = this._pendingCalibrate ?? (section.querySelector("#settingsCalibrateSwitch .mode-btn.active")?.dataset.mode === "on");
+    values.calibrateFollowings = this.#pendingCalibrate ?? (section.querySelector("#settingsCalibrateSwitch .mode-btn.active")?.dataset.mode === "on");
     if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
       dialog.showToast("批次暂停最小值不能大于最大值", "error");
       return false;
     }
     try {
       await runtimeConfig.save(values);
-      const secUidInput = this._dialogBody.querySelector("#settingsSecUid");
+      const secUidInput = this.#dialogBody.querySelector("#settingsSecUid");
       await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
     } catch {
       dialog.showToast("保存失败", "error");
     }
     // 独立模式：与运行参数同走关闭通道；与存储值有变化才下发 SET_MODE（写存储+background 运行态+a-bogus 初始化）
-    const modeOn = this._pendingIndependent ?? (section.querySelector("#settingsModeSwitch .mode-btn.active")?.dataset.mode === "on");
+    const modeOn = this.#pendingIndependent ?? (section.querySelector("#settingsModeSwitch .mode-btn.active")?.dataset.mode === "on");
     const { independentMode: savedOn } = await chrome.storage.local.get("independentMode");
     if (modeOn !== (savedOn === true)) {
       try {
         await services.bgMsg({ type: "SET_MODE", enabled: modeOn });
-        this._pendingIndependent = null;
+        this.#pendingIndependent = null;
       } catch {
         dialog.showToast("独立模式切换失败", "error");
         return false;

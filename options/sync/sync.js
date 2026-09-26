@@ -1,5 +1,5 @@
 // ---------- Sync ----------
-import { config, dom, state, services, store } from '../core.js';
+import { config, state, services, store } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { groups } from '../data/groups.js';
 

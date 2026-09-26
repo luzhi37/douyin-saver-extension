@@ -1,6 +1,7 @@
 // ---------- DomainScanSync（点赞/收藏域同步） ----------
-import { config, dom, services, store } from '../core.js';
+import { config, dom, services } from '../core.js';
 import { sync } from './sync.js';
+import { authorImport } from './author-import.js';
 import { dialog } from '../components/dialog.js';
 import { groups } from '../data/groups.js';
 
@@ -19,7 +20,7 @@ class DomainScanSync {
   }
 
   async syncDomain(domain) {
-    if (this.#running || sync.isRunning()) return;
+    if (this.#running || sync.isRunning() || authorImport.isRunning()) return;
     if (!config.WORK_LIKE_DOMAINS.includes(domain) || domain === "works") return;
 
     // 独立模式不支持点赞列表拉取（favorite 端点 Turing 风控），收藏不受限

@@ -1,6 +1,6 @@
 # 01 · 项目架构
 
-> 职责边界：描述扩展的整体分层、**双模运行**（Tab模式 / 独立模式）的路由与隔离、全仓代码布局约束、双域存储模型、跨层通信协议与全局配置。所有具体业务流程（同步/扫描/校准/取消）见对应编号文档，本文不展开。
+> 职责边界：描述扩展的整体分层、**双模运行**（Tab模式 / 独立模式）的路由与隔离、全仓代码布局约束、四域存储模型、跨层通信协议与全局配置。所有具体业务流程（同步/扫描/校准/取消）见对应编号文档，本文不展开。
 
 ## 术语规范（全仓统一）
 
@@ -188,7 +188,7 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 5. 私有方法使用 `#` 语法；**class field 箭头函数仅用于 add/remove 对称的事件回调**（如 `Detail.#noteKeyHandler`）。
 6. options/main.js 组合根启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建。
 
-## 双域存储模型
+## 四域存储模型
 
 ### IndexedDB（data/storage.js 封装，库名 `douyin-saver` v1）
 
@@ -196,29 +196,35 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 |-------|---------|------|------|
 | `works` | `awemeId` | `groupId` | `{ [awemeId]: Work }` |
 | `works_groups` | `id` | — | `[{ id, name, fixed, order? }]` |
+| `likes` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
+| `likes_groups` | `id` | — | 同 groups 结构 |
+| `favorites` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
+| `favorites_groups` | `id` | — | 同 groups 结构 |
 | `followings` | `uid`（字符串化） | `groupId` | `{ [uid]: Following }` |
 | `followings_groups` | `id` | — | 同 groups 结构 |
 
-`DOMAIN_CONFIG` 是两个域的统一描述：
+`DOMAIN_CONFIG` 是四个域的统一描述：
 
 ```js
 DOMAIN_CONFIG = {
   works:      { storeName, groupsName, defaultGroups, itemKey: "works",      idField: "awemeId" },
   followings: { storeName, groupsName, defaultGroups, itemKey: "followings", idField: "uid", idToString: true },
+  likes:      { storeName, groupsName, defaultGroups, itemKey: "likes",      idField: "awemeId" },
+  favorites:  { storeName, groupsName, defaultGroups, itemKey: "favorites",  idField: "awemeId" },
 }
 ```
 
-`domainStorage(domain)` 返回域封装（getAll/get/putBatch/deleteBatch/count/countByGroup/getByGroup/clear/getGroups/putGroups）。分组写入采用 `clear()` + 逐条 `put()` 实现"覆盖数组"语义；`countByIndex` 只做索引计数不反序列化整表。
+`domainStore.facade(domain)` 返回域封装（getAll/get/putBatch/deleteBatch/count/countByIndex/clear/getGroups/putGroups）。分组写入采用 `clear()` + 逐条 `put()` 实现"覆盖数组"语义；`countByIndex` 只做索引计数不反序列化整表。
 
 ### Work 记录字段（formatWork / normalizeWork 共同产出）
 
 `awemeId, type("video"|"note"), desc, nickname, uid, authorHomeUrl, cover, video, videoExpireAt, images[], music, createTime, statistics, authorFollowed(bool|null)`
 视频直链三级取链语义见 [02](./02-independent-sync-works.md) / [09](./09-inject-tab-mode.md)。落库合并规则（groupId/savedAt 保护、长效链降级防护、导入分组对账等**全部写入路径语义**）统一见 [10](./10-storage-write-and-import.md)，本文只维护字段模型。
 
-### Following 记录字段（6 个稳定字段）
+### Following 记录字段（7 个稳定字段）
 
-`uid, nickname, avatarLarger, followerCount, awemeCount, profileUrl`
-`followerCount / awemeCount` **仅由 profile/other 校准写入**（列表接口计数为滞后快照，采集时占位 0）。落库时的 0 值保护、同批保序与丢失检测见 [10](./10-storage-write-and-import.md)。
+`uid, nickname, avatarLarger, followerCount, awemeCount, profileUrl, lastUpdateAt`
+`followerCount / awemeCount` **仅由 profile/other 校准写入**（列表接口计数为滞后快照，采集时占位 0）；`lastUpdateAt`（最近更新日期，毫秒时间戳）**仅由校准阶段取作品第一页 max(create_time) 写入**（秒→毫秒），未校准占位 0。落库时的 0 值保护、同批保序与丢失检测见 [10](./10-storage-write-and-import.md)。
 
 ### chrome.storage.local 键表
 

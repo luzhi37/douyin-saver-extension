@@ -1,11 +1,13 @@
 // ---------- WorksGrid（作品/点赞/收藏三域共用） ----------
-import { config, dom, state, utils, services, store } from '../core.js';
+import { config, dom, state, utils } from '../core.js';
 import { VirtualGrid } from './virtual-grid.js';
 import { search } from '../components/search-bar.js';
 import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
 
 // ---------- WorksGrid ----------
+// 与 search-bar/batch/detail 存在循环 import（它们各自反向引用本模块）：单例引用全部发生在
+// 方法体内、模块图完全求值之后才被触达，靠 ES live binding 安全消解（AGENTS.md 设计例外）
 class WorksGrid extends VirtualGrid {
   #sliderRaf = 0;
   #container = dom.mainContainer;
@@ -43,7 +45,7 @@ class WorksGrid extends VirtualGrid {
     }
   }
 
-  // 原地填充：骨架根节点保留，媒体区/操作按钮从完整模板取新节点移入
+  // 原地填充：骨架根节点保留，媒体子树从完整模板取新节点移入
   fillCard(card, work) {
     const fresh = this.#workCardTmpl.content.cloneNode(true).firstElementChild;
     card.classList.remove(this.skeletonClass);
@@ -51,17 +53,6 @@ class WorksGrid extends VirtualGrid {
 
     const media = card.querySelector(".work-media");
     media.replaceChildren(...fresh.querySelector(".work-media").childNodes);
-
-    const title = card.querySelector(".work-title");
-    title.querySelectorAll(".work-action-btn").forEach((btn) => btn.remove());
-    // 单条同步按钮仅作品域注入（SYNC_WORKS 写 works store）；下载按钮四域通用
-    if (state.domain === "works") {
-      title.append(...fresh.querySelectorAll(".work-action-btn"));
-    } else {
-      title.append(
-        ...[...fresh.querySelectorAll(".work-action-btn")].filter((b) => b.title !== "同步"),
-      );
-    }
 
     const badge = card.querySelector(".work-type-badge");
     const thumb = card.querySelector(".work-thumb");
@@ -77,7 +68,6 @@ class WorksGrid extends VirtualGrid {
       checkbox.setAttribute("aria-label", "选择作品");
       card.querySelector(".work-media").after(checkbox);
     }
-    const titleText = card.querySelector(".work-title-text");
 
     badge.classList.toggle("hidden", work.type === "video");
     if (work.type === "note") {
@@ -114,7 +104,30 @@ class WorksGrid extends VirtualGrid {
       if (imgUrl) this.#enqueueCover(thumb, imgUrl);
     }
 
-    titleText.textContent = work.desc || "无文案";
+    this.#applyInfo(card, work);
+  }
+
+  // 卡片标题/作者与详情页同款交互：标题链作品页、作者链作者主页（新标签打开）；
+  // 无 authorHomeUrl 时作者位与详情页一致整行不显示（置空，行高由 .work-info 固定）
+  #applyInfo(card, work) {
+    const title = card.querySelector(".work-title-text");
+    if (title) {
+      const typePath = work.type === "note" ? "note" : "video";
+      title.textContent = work.desc || "无作品描述";
+      title.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
+      title.title = "在抖音打开作品页";
+    }
+    const author = card.querySelector(".work-author");
+    if (!author) return;
+    if (work.authorHomeUrl) {
+      author.textContent = `@${work.nickname || "未知作者"}`;
+      author.href = work.authorHomeUrl;
+      author.title = "打开作者主页";
+    } else {
+      author.textContent = "";
+      author.removeAttribute("href");
+      author.removeAttribute("title");
+    }
   }
 
   #togglePreviewMute() {
@@ -152,15 +165,24 @@ class WorksGrid extends VirtualGrid {
     this.#currentMediaCard = null;
   }
 
-  // 原地还原骨架：清空媒体区与标题，根节点与 .work-media/.work-title 容器保留
+  // 原地还原骨架：清空媒体区与标题/作者，根节点与 .work-media/.work-info 容器保留
   clearCard(card) {
     // #demote 等摘除媒体子树的路径经此统一停掉预览，防止游离视频残留音频
     const previewVideo = card.querySelector(".work-video-player");
     if (previewVideo) this.#stopPreview(previewVideo);
     card.querySelector(".work-media")?.replaceChildren();
-    card.querySelectorAll(".work-action-btn").forEach((btn) => btn.remove());
     const titleText = card.querySelector(".work-title-text");
-    if (titleText) titleText.textContent = "";
+    if (titleText) {
+      titleText.textContent = "";
+      titleText.removeAttribute("href");
+      titleText.removeAttribute("title");
+    }
+    const author = card.querySelector(".work-author");
+    if (author) {
+      author.textContent = "";
+      author.removeAttribute("href");
+      author.removeAttribute("title");
+    }
     delete card.dataset.videoUrl;
     const checkbox = card.querySelector(".work-checkbox");
     if (checkbox) {
@@ -183,11 +205,19 @@ class WorksGrid extends VirtualGrid {
     const thumb = card.querySelector(".work-thumb");
     const coverUrl = work.cover ? utils.pickHttpsUrl(work.cover) : "";
     if (thumb && coverUrl) this.#enqueueCover(thumb, coverUrl);
-    const title = card.querySelector(".work-title-text");
-    if (title) title.textContent = work.desc || "无文案";
+    this.#applyInfo(card, work);
   }
 
   handleClick(event, work, el) {
+    // 标题/作者是详情页同款外链（新标签打开抖音页），非批量模式下点击不再触发进详情；
+    // 批量模式下链接让位于勾选：阻止默认导航，按普通卡片选中处理
+    if (event.target.closest(".work-title-text, .work-author")) {
+      if (!state.batchMode) {
+        event.stopPropagation();
+        return;
+      }
+      event.preventDefault();
+    }
     if (event.target.closest(".work-checkbox")) {
       event.stopPropagation();
       batch.toggleBatchSelect(work.awemeId, event.target.closest(".work-checkbox"), event.shiftKey);
@@ -205,36 +235,11 @@ class WorksGrid extends VirtualGrid {
       if (video) detail.toggleVideoPlay(video, el.querySelector(".video-play-btn"));
       return;
     }
-    if (event.target.closest('.work-action-btn[title="同步"]')) {
-      event.stopPropagation();
-      const btn = event.target.closest(".work-action-btn");
-      this.#handleWorkSync(btn, work.awemeId);
-      return;
-    }
-    if (event.target.closest('.work-action-btn[title="下载"]')) {
-      detail.downloadWork(work);
-      return;
-    }
     if (state.batchMode) {
       batch.toggleBatchSelect(work.awemeId, el.querySelector(".work-checkbox"), event.shiftKey);
       return;
     }
     detail.openDetail(work.awemeId);
-  }
-
-  async #handleWorkSync(btn, awemeId) {
-    // 单条同步仅作品域有意义（SYNC_WORKS 写 works store）；点赞/收藏域卡片不注入同步按钮
-    if (state.domain !== "works") return;
-    btn.disabled = true;
-    btn.classList.add("work-syncing");
-    try {
-      const newWork = await services.refreshSingleWork(awemeId);
-      if (newWork) {
-        store.updateWork(awemeId, newWork);
-      }
-    } catch {}
-    btn.classList.remove("work-syncing");
-    btn.disabled = false;
   }
 
   restoreGridScroll(idx = detail.getDetailIndex()) {

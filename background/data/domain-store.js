@@ -110,6 +110,7 @@ class DomainStore {
         // 计数仅由校准更新：常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
         followerCount: f.followerCount > 0 ? f.followerCount : old?.followerCount || 0,
         awemeCount: f.awemeCount > 0 ? f.awemeCount : old?.awemeCount || 0,
+        lastUpdateAt: f.lastUpdateAt > 0 ? f.lastUpdateAt : old?.lastUpdateAt || 0,
         uid,
         groupId: isImport
           ? f.groupId || CONFIG.GROUPS.DEFAULT_ID

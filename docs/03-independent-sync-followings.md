@@ -8,7 +8,7 @@ options 关注域点击同步 → `services.findSecUid()` 解析目标 sec_uid �
 
 - **sec_uid 再解析**：入参为 `"self"` 或空时，依次尝试 storage 中的 `secUid` 设置值 → `resolveSelfSecUid()`（uid cookie + `im/user/info` 兑换）；两者皆空报 `NO_SEC_UID`。
 - **while 循环翻页**：GET `/aweme/v1/web/user/following/list`，`offset += PAGE.FOLLOWING` 推进；条目按 uid 去重（`seen` Set），连续整页重复即提前终止。
-- 每页经 `formatFollowing` 归一化为 6 字段记录，`followerCount/awemeCount` 占位 0。
+- 每页经 `formatFollowing` 归一化为 7 字段记录（含 `lastUpdateAt` 占位 0），`followerCount/awemeCount` 占位 0。
 - 列表收集完成后、未被取消且非空时，受 `calibrateFollowings` 开关门控进入 `calibrateFollowingStats` 批量校准（详见 [04](./04-independent-calibrate-followings.md)）。
 - 结果一次性 `sendResponse({ ok, requestId, followings, total })` 返回，options 收到后自行发 `SAVE_FOLLOWINGS` 落库。
 
@@ -72,6 +72,7 @@ function formatFollowing(item) -> Following
 // { uid:String, nickname:item.nickname||"未知",
 //   avatarLarger: avatar_larger.url_list[0] || "",
 //   followerCount: 0, awemeCount: 0,                    // 占位 0，仅由校准写入
+//   lastUpdateAt: 0,                                    // 最近更新日期，仅由校准阶段取作品第一页 max(create_time) 写入（见 04 文档）
 //   profileUrl: URL_BASE + "/user/" + sec_uid }
 ```
 
@@ -113,6 +114,8 @@ function formatFollowing(item) {
     // 仅由 profile/other 校准写入 —— 见 04 文档
     followerCount: 0,
     awemeCount: 0,
+    // 最近更新日期：占位 0，仅由校准阶段取作品第一页 max(create_time) 写入 —— 见 04 文档
+    lastUpdateAt: 0,
     profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
   };
 }

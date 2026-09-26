@@ -1,6 +1,8 @@
 // background/core.js — 共享基础：全局配置 + 四域映射 + 纯函数 + 格式化 + 运行时配置
 
 import { MSSDK_STR_DATA } from "./identity/crypto.js";
+// 与 identity/independent-client.js 循环 import（independent-client 反向 import 本文件的 CONFIG）：
+// 两模块顶层互不触碰对方绑定，靠 ES live binding 在调用时安全消解（AGENTS.md 设计例外）
 import { independentClient } from "./identity/independent-client.js";
 
 // ---------- config ----------
@@ -224,7 +226,6 @@ const CONFIG = {
   API: {
     FOLLOWING: "/aweme/v1/web/user/following/list",
     PROFILE_OTHER: "/aweme/v1/web/user/profile/other/",
-    FAVORITE: "/aweme/v1/web/aweme/favorite/",
     COLLECTION: "/aweme/v1/web/aweme/listcollection/",
     DETAIL: "/aweme/v1/web/aweme/detail/",
     POST: "/aweme/v1/web/aweme/post/",
@@ -320,7 +321,6 @@ const runtimeConfig = {
     syncRetryMax: CONFIG.SYNC.RETRY_MAX,
     calibrateFollowings: true,
   },
-  _cache: null,
   async load() {
     const stored = await chrome.storage.local.get(this.KEY);
     const cfg = stored[this.KEY];
@@ -350,7 +350,6 @@ const runtimeConfig = {
   async reload() {
     const cfg = await this.load();
     this.apply(cfg);
-    this._cache = cfg;
   },
   delayRange(type) {
     const d = CONFIG.DELAY[type];
@@ -443,6 +442,19 @@ const utils = {
   },
   sendMessageSafe(msg) {
     return chrome.runtime.sendMessage(msg).catch(() => {});
+  },
+  // 长任务批量暂停 + SW keepalive 保活（syncWorks 共用；调用方已先判取消标志）
+  async pauseWithKeepalive(index, delayKind = "syncWorks") {
+    const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
+    if (BATCH_SIZE > 0 && (index + 1) % BATCH_SIZE === 0) {
+      const deadline = Date.now() + BATCH_PAUSE_MIN + Math.random() * (BATCH_PAUSE_MAX - BATCH_PAUSE_MIN);
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, KEEPALIVE_INTERVAL));
+        await chrome.storage.local.get("keepalive");
+      }
+    } else {
+      await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
+    }
   },
   emitCancelDone(requestId, payload) {
     return utils.sendMessageSafe({ type: "CANCEL_DONE", requestId, ...payload });
@@ -555,7 +567,24 @@ const formatters = {
       // 粉丝/作品数不再取自关注列表（滞后快照），字段占位为 0，仅由 profile/other 校准写入
       followerCount: 0,
       awemeCount: 0,
+      // 最近更新日期（毫秒时间戳）：仅由校准阶段取作品第一页 max(create_time) 写入，未校准占位 0
+      lastUpdateAt: 0,
       profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
+    };
+  },
+  // profile/other 权威档案 → 关注域记录：入参是归一化 user 摘要（scanTasks.#fetchProfileUser
+  // 独立分支与 inject FETCH_PROFILE_OTHER 做同款原始字段抽取）。与 formatFollowing 的差异：
+  // 计数直接取 profile 权威值（profile/other 正是校准源，>0）。不设 groupId，分组由
+  // mergeAndSaveFollowings 分配（已在域的保留原分组、新作者落「未分组」）；lastUpdateAt 由调用方补采
+  formatFollowingFromProfile(user) {
+    return {
+      uid: String(user.uid || ""),
+      nickname: user.nickname || "未知",
+      avatarLarger: user.avatarLarger || "",
+      followerCount: user.followerCount || 0,
+      awemeCount: user.awemeCount || 0,
+      lastUpdateAt: 0,
+      profileUrl: CONFIG.URL_BASE + "/user/" + (user.secUid || ""),
     };
   },
 };

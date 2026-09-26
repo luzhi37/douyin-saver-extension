@@ -32,10 +32,10 @@ export const config = {
   SIDEBAR_IMG_PER_FRAME: 6,
   SIDEBAR_DRAG_THRESHOLD: 4,
 
-  // 卡片
+  // 卡片（CARD_HEIGHT_OFFSET = 封面矩形外的信息块高度，8+18+2+16 = 44）
   CARD_SIZE_FALLBACK: 261,
   CARD_GAP: 11,
-  CARD_HEIGHT_OFFSET: 35,
+  CARD_HEIGHT_OFFSET: 44,
 
   // 详情页
   DETAIL_TITLE_MAX_LEN: 40,
@@ -117,13 +117,14 @@ export const dom = {
   detailCounter: document.querySelector("#detailCounter"),
   detailBody: document.querySelector(".detail-body"),
   dialogOverlay: document.querySelector("#dialogOverlay"),
+  // 弹窗四元素由 Dialog 动态指向顶层实例元素（仅 components/dialog.js 可写），即时访问自动命中顶层；
+  // dialogOverlay 恒指基层，其 hidden 即「有无弹窗」全局信号
   dialogTitle: document.querySelector("#dialogTitle"),
   dialogBody: document.querySelector("#dialogBody"),
   dialogFooter: document.querySelector("#dialogFooter"),
   dialogClose: document.querySelector("#dialogClose"),
   fileInput: document.querySelector("#fileInput"),
-  btnImport: document.querySelector("#btnImport"),
-  btnExport: document.querySelector("#btnExport"),
+  btnBackup: document.querySelector("#btnBackup"),
   btnSync: document.querySelector("#btnSync"),
   btnReset: document.querySelector("#btnReset"),
   btnBatch: document.querySelector("#btnBatch"),
@@ -131,6 +132,7 @@ export const dom = {
   mainGrid: document.querySelector("#mainGrid"),
   errorState: document.querySelector("#errorState"),
   btnRetry: document.querySelector("#btnRetry"),
+  btnAuthorImport: document.querySelector("#btnAuthorImport"),
   btnSettings: document.querySelector("#btnSettings"),
   menuStorage: document.querySelector("#menuStorage"),
   leftSidebar: document.querySelector("#leftSidebar"),
@@ -152,6 +154,7 @@ export const dom = {
   sbScopeTitle: document.querySelector("#sbScopeTitle"),
   sbWorkFilters: document.querySelector("#sbWorkFilters"),
   sbSort: document.querySelector("#sbSort"),
+  sbWorkType: document.querySelector("#sbWorkType"),
   sbFollowFilters: document.querySelector("#sbFollowFilters"),
   sbFollowSort: document.querySelector("#sbFollowSort"),
   sbFollowed: document.querySelector("#sbFollowed"),
@@ -274,6 +277,17 @@ export const utils = {
     const min = String(d.getMinutes()).padStart(2, "0");
     if (d.toDateString() === new Date(now).toDateString()) return hour + ":" + min;
     return month + "/" + day + " " + hour + ":" + min;
+  },
+  // 关注者最近更新日期展示：今天 → "今天 HH:MM"，同年 → "M月D日 HH:MM"，更早 → "YYYY年M月D日"；无数据 → "—"
+  formatUpdateTime(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    if (d.toDateString() === now.toDateString()) return "今天 " + hm;
+    if (d.getFullYear() === now.getFullYear()) return d.getMonth() + 1 + "月" + d.getDate() + "日 " + hm;
+    return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
   },
 };
 

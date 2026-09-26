@@ -30,7 +30,9 @@ options: services.bgMsg({ type:"SYNC_WORKS", awemeIds })
                  data = independentRequest("/aweme/v1/web/aweme/detail/", params)   // GET + a_bogus
                  w = data.aweme_detail ? formatWork(data.aweme_detail) : null
                  w 为空且非末次尝试 → 页间延迟后重试；成功 → break
-             w ? allWorks.push(w) : errors.push({ awemeId, error:"DELETED"|e.message })
+             w ? allWorks.push(w) : errors.push({ awemeId, error:"DELETED"|errMsg })
+             致命错误（NO_COOKIE / RATE_LIMITED / HTTP 401 / HTTP 429 / 超时 abort→CANCELLED）
+               → 早退 + 剩余条目记 BATCH_TERMINATED（与 tab 模式 scanTasks.syncWorks 同款分类）
              chrome.runtime.sendMessage(SYNC_PROGRESS { index, total, status, awemeId })
              延迟：
                (i+1)%BATCH_SIZE==0 → 批间暂停 10–20s（KEEPALIVE_INTERVAL 分段保活 SW）
@@ -39,6 +41,7 @@ options: services.bgMsg({ type:"SYNC_WORKS", awemeIds })
         ├─ allWorks 非空 → mergeAndSaveWorks(allWorks)
         │                   → sendMessage(SYNC_DONE { ok:true, refreshed: added+updated, failed, failedAwemeIds })
         └─ 否则           → sendMessage(SYNC_DONE { ok:false, error: errors[0]?.error || "NO_WORKS_COLLECTED" })
+        └─ 外层 catch（ack 之后）→ sendMessage(SYNC_DONE { ok:false, error: e.message })  // sendResponse 通道已关，保证弹窗必收尾
 
 options: 监听 SYNC_PROGRESS / SYNC_DONE（按 requestId 匹配）更新弹窗进度与结果
 ```
@@ -88,9 +91,11 @@ async function independentRequest(apiPath, params, options = {}) {
   let urlQuery = qs + "&a_bogus=" + a_bogus;
   // webSign 默认开启（options.webSign !== false）：追加 timestamp + x-secsdk-web-signature（算法见 05）
   // … fetch(url, { credentials:"include", referrer, UA=abOgus.userAgent, signal }) …
+  // 空 body（限流/风控典型响应）→ throw RATE_LIMITED（与 tab 模式 inject 同语义）
   // 非 2xx：argus_security_code === "web_id_sign_invalid" 且未重试过
-  //        → refreshWebIdChain() 刷新 webid 后整体重试一次（_webIdRetried 标志防死循环）
-  // data.status_code !== 0 → throw API_ERROR
+  //        → refreshWebIdChain() 刷新 webid 后整体重试一次（_webIdRetried 标志防死循环）；其余 → HTTP <code>: <body 前 160 字>
+  // data.status_code !== 0 → throw API_ERROR(<code>)（err.statusCode 保留，供 2096 等业务判断）
+  // 响应非 JSON → throw INVALID_JSON
 }
 ```
 
@@ -251,11 +256,16 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | `awemeIds` 为空/非数组 | 同步返回 `{ ok:false, error:"EMPTY" }` | options 侧提示 |
-| `savedCookie` 缺失 | 首条即抛 `NO_COOKIE`，落入外层 catch → `{ ok:false, error }` | 引导用户在设置面板刷新 Cookie |
-| 作品已被删除/不可见 | `data.aweme_detail` 缺失，重试耗尽 | 记 `DELETED`，继续下一批 |
+| `savedCookie` 缺失 | 每条请求抛 `NO_COOKIE` | 属致命：首条命中即早退，剩余记 `BATCH_TERMINATED`；状态行显示 `NO_COOKIE`，引导刷新 Cookie |
+| 作品已被删除/不可见 | `data.aweme_detail` 缺失，重试耗尽 | 记 `DELETED`，继续下一批（非致命） |
+| 限流（空 body） | `independentRequest` 抛 `RATE_LIMITED`（与 tab 模式 inject 同语义） | 致命：早退 + 剩余 `BATCH_TERMINATED`，状态行显示 `RATE_LIMITED` |
 | a_bogus 被拒（`web_id_sign_invalid` 403） | independentRequest 内部识别 | 自动 `refreshWebIdChain()` 换新 webid 重试一次 |
-| HTTP 403（其他文案）/5xx/超时 | 抛 `HTTP_<code>` / AbortError | 记入 errors，跳过继续 |
+| HTTP 401/429 | 抛 `HTTP 401` / `HTTP 429` | 致命：早退 + 剩余 `BATCH_TERMINATED` |
+| HTTP 403（其他文案）/5xx/超时 | 抛 `HTTP <code>` / 请求超时 abort | abort 归一 `CANCELLED`（致命）；其余记入 errors 跳过继续（非致命） |
+| `status_code !== 0` | 抛 `API_ERROR(<code>)`，`err.statusCode` 保留 | 非致命，记入 errors 跳过继续（仅整批全失败时状态行显示首错） |
+| 响应非 JSON | 抛 `INVALID_JSON` | 非致命，记入 errors |
 | 用户关闭弹窗 | options 发 `CANCEL_ACTIVE_TASK` | cancelled 置位，循环退出，已收集部分照常落库并发 SYNC_DONE |
+| ack 之后发生未捕获异常 | — | 外层 catch 改发 `SYNC_DONE { ok:false, error }` 收尾，弹窗不卡 SYNCING（sendResponse 通道已关闭不可复用） |
 | SW 中途被回收 | 批次静默中断（无恢复机制） | **待补充**：可考虑把断点游标写入 storage 实现续跑；当前依赖批间保活降低概率 |
 
 ## 配置项说明
@@ -274,7 +284,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、双域存储模型、FATAL_ERRORS 分类 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、四域存储模型、FATAL_ERRORS 分类 |
 | 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / mergeAndSaveWorks 的合并语义（本册只讲调用时序） |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentRequest 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |
