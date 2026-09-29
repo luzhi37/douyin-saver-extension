@@ -690,6 +690,12 @@ export class VirtualGrid {
           cb.style.display = "";
         });
     }
+    // 原位整刷收尾的视口追赶：wipe 与重挂同任务同步完成、重渲前后内容等高时（典型：批量
+    // 同步 SYNC_DONE 全量刷新），滚动位置原样保留、全程无 scroll 事件——分圈哨兵停在网格
+    // 顶部、向下链推进够不着中部视口，而 #catchUpToViewport 只由 scroll 事件调度，视口
+    // 带区骨架无人观察、永久停在灰卡态（手动滚一下才出封面）。整渲完成统一补一次追赶
+    // （rAF 下一帧测量，届时全量挂载已完成），与 scroll 触发共用同一机制
+    this.#scheduleCatchUp();
   }
 
   #enqueueFill(card) {

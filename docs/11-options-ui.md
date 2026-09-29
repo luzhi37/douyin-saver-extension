@@ -48,6 +48,10 @@ render(items, emptyMsg, emptyHint, totalSlots)
   → 圈尾哨兵 #sentinelCard 进入 OBSERVER_ROOT_MARGIN 时 #extendObservation 放下一批
       （原因：IO 回调的 computeIntersections 成本随已观察目标数线性，
         全量 observe 2000 卡时滚动期每帧重算 O(全部卡) 次几何——trace 实测 1.2s/5s）
+  → 整渲收尾（#finishRender）统一补一次视口追赶 #scheduleCatchUp：原位整刷（wipe 与重挂
+    同任务同步完成）前后内容等高时滚动位置原样保留、全程无 scroll 事件，哨兵停在网格
+    顶部、向下链推进够不着中部视口，视口带区骨架无人观察——批量同步 SYNC_DONE 整刷后
+    卡片滞留灰骨架、手动滚动才出封面的根因（2026-09 修复）
 
 fillSlots(startIndex, items)（渐进分页按槽回填）
   → 预铺 buildChunk 未完成时进 #pendingFills 排队（槽位尚不存在，直接回填会误走追加造成双卡），
@@ -367,6 +371,7 @@ probe.onerror = () => {
 | 哨兵卡被 `removeItems` 删除 | 分圈观察断链，后续骨架永不 observe | 删除后立刻续接哨兵 |
 | `removeItems` 只 splice `#slots` 不收缩 `#totalSlots` | 差额被 `#extendIfNeeded` 当作未铺配额，滚近底部时原样补回等量无键占位卡——被删卡片的骨架永久滞留（2026-09 修复） | 两者必须同步收缩；拼装窗口内无连接卡的已删条目同样计入（其节点挂载前被对账丢弃、永不占槽） |
 | 快滚停稳直接清空积压填充队列 | 积压卡入队时已 unobserve，滚回带区再无 IO 触发——被快滚扫过的区段永久停在骨架态（2026-09 修复） | `#refillBand` 丢弃前全量重新 observe；快滚判定基准只在 scroll 事件侧推进（rAF 双读者各自推进会互相污染 delta，冻结逐帧被打断） |
+| 原位整刷（等高重渲）后视口带区骨架无人观察 | wipe 与重挂同任务同步完成、前后内容等高 → 滚动位置保留、无 scroll 事件；分圈哨兵停在网格顶部够不着中部视口，`#catchUpToViewport` 只由 scroll 事件调度——批量同步 SYNC_DONE 整刷后卡片滞留灰骨架，手动滚动才出封面（2026-09 修复） | `#finishRender` 收尾统一补一次 `#scheduleCatchUp`（与 scroll 触发共用同一追赶机制；rAF 下一帧测量时全量挂载已完成） |
 | 拼装窗口内删除的条目照常挂载 | 带键但 itemMap 已无条目的无主骨架，`#doFill` 永远填不上（永久灰卡） | 挂载前按 itemMap 对账，死节点不挂载不占槽 |
 | 余量骨架未挂载就交接观察 | `#extendObservation` 把未连接节点视作重渲染死节点直接丢弃，分圈断链 | 拼装完成后必须先 `appendChild` 挂载、再 `#observeNewSkeletons` |
 | fill IO 回调对占位卡 unobserve | 预铺占位卡被摘除观察后，回填完成也永不再触发填充（永久灰卡） | 回调对无键占位卡保持观察；带内回填由 `fillSlots` 主动入队 |
