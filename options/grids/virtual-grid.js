@@ -16,6 +16,9 @@ export class VirtualGrid {
   // + #totalSlots 同步递减），对齐不变
   #slots = [];
   #totalSlots = 0; // 预铺目标总槽位（首页响应 total）：#slots 按上限铺、滚近底部倍增扩容至此
+  // 视图快照：render 入参条目的浅拷贝，键控扩容（#extendIfNeeded）的取数源。头插/移除
+  // 经 insertItems/removeItems 原地维护本表；拷贝隔离保证不反噬调用方持有的数组
+  #viewItems = null;
   #sentinelCard = null;
   #itemMap = new Map();
   #chunkRaf = 0;
@@ -58,7 +61,7 @@ export class VirtualGrid {
     this.#container = el;
   }
 
-  render(items, emptyMsg, emptyHint, totalSlots = 0) {
+  render(items, emptyMsg, emptyHint, totalSlots = 0, premountCap = config.GRID_PREMOUNT_CAP) {
     cancelAnimationFrame(this.#chunkRaf);
     this.#chunkRaf = 0;
     // wipe 前先停媒体：卡片摘除后 pointerout 永不触发，游离的播放中 video 会继续出声
@@ -70,6 +73,8 @@ export class VirtualGrid {
 
     // 先完全重置实例状态（含空列表分支），避免残留 observer/队列影响后续渲染
     this.#resetRenderState(new Map(items.map((item) => [item[this.#itemKey], item])));
+    // 视图快照（键控扩容取数源）：浅拷贝隔离，头插/移除的原地维护不反噬调用方数组
+    this.#viewItems = items.slice();
 
     if (items.length === 0) {
       this.#showEmpty(emptyMsg, emptyHint);
@@ -80,12 +85,17 @@ export class VirtualGrid {
     this.#container.classList.remove("hidden");
 
     const skelTmpl = this.#getSkeletonTemplate();
-    // 渐进加载的预铺：预铺数有上限（GRID_PREMOUNT_CAP），超出部分由滚近底部时倍增扩容
-    // （#extendIfNeeded）——活 DOM 规模封顶，切组拆卸/布局/绘制的 O(N) 成本以 N=已挂载
-    // 数为分母；未到达且未挂载的槽位在滚动条上不可达，「远跳落进空白」结构性不存在。
-    // 已知条目（items.length）始终全量铺，未到达槽位为无键占位卡（fillSlots 按槽对号）
+    // 渐进加载的预铺：预铺数有上限（调用方按态传 GRID_PREMOUNT_CAP / GRID_PREMOUNT_CAP_FILTER），
+    // 超出部分由滚近底部时倍增扩容（#extendIfNeeded）——活 DOM 规模封顶，切组拆卸/布局/
+    // 绘制的 O(N) 成本以 N=已挂载数为分母。
+    // 封闭视图（筛选态/全量单发，totalSlots ≤ 已知条目数 = 无「未来分页」）只铺上限张
+    // 已知条目：渐进态「已知条目始终全量铺」是 fillSlots 按槽回填的前提，封闭态没有
+    // 回填方，全量铺设只会让每次筛选切换付出 O(结果数) 的克隆+布局成本
     this.#totalSlots = Math.max(totalSlots, items.length);
-    const slotCount = Math.min(this.#totalSlots, Math.max(config.GRID_PREMOUNT_CAP, items.length));
+    const closed = items.length >= this.#totalSlots;
+    const slotCount = closed
+      ? Math.min(items.length, premountCap)
+      : Math.min(this.#totalSlots, Math.max(premountCap, items.length));
 
     // 两段式铺设：首段同步挂载（数据到达即出画面）；余量在游离 fragment 内按时间预算
     // 分帧拼装（脱 DOM 不触发布局），拼完一次挂载。容器全程只经历 2 次插入，万级列表
@@ -181,6 +191,7 @@ export class VirtualGrid {
       const key = item[this.#itemKey];
       if (this.#itemMap.has(key)) continue; // 页间边界重复去重
       this.#itemMap.set(key, item);
+      if (this.#viewItems) this.#viewItems.push(item); // 快照随真实追加生长（键控扩容取数序）
       const card = this.#cloneSkeleton(skelTmpl, item);
       nodes.push(card);
       fragment.appendChild(card);
@@ -309,6 +320,12 @@ export class VirtualGrid {
     }
     // 反向逐个前插：避免 splice(...nodes) 大数组 spread 的栈上限（同 observeNewSkeletons 约定）
     for (let i = nodes.length - 1; i >= 0; i--) this.#slots.splice(index, 0, nodes[i]);
+    // 视图快照同步位插（与 #slots 同 index，键控扩容取数序随真实视图生长）；
+    // 快照短于落点（渐进态旧快照）时钳到尾部追加，保持快照内有序
+    if (this.#viewItems) {
+      const at = Math.min(index, this.#viewItems.length);
+      for (let i = items.length - 1; i >= 0; i--) this.#viewItems.splice(at, 0, items[i]);
+    }
     const fragment = document.createDocumentFragment();
     for (const node of nodes) fragment.appendChild(node);
     this.#container.insertBefore(fragment, useAnchor ? anchorNode : null);
@@ -369,6 +386,11 @@ export class VirtualGrid {
 
   removeItems(idSet) {
     let removed = 0;
+    // 视图快照同步收缩（filter 产出新表，不反噬调用方数组）：键控扩容的取数序保持，
+    // 防止已删条目被扩容复活成灰卡
+    if (this.#viewItems && idSet.size) {
+      this.#viewItems = this.#viewItems.filter((w) => !idSet.has(w[this.#itemKey]));
+    }
     for (const id of idSet) {
       const known = this.#itemMap.delete(id);
       const card = this.#container.querySelector(`[data-${this.#dataAttr}="${id}"]`);
@@ -400,6 +422,53 @@ export class VirtualGrid {
     }
   }
 
+  // ---------- 筛选切换锚点（SearchBar.refreshGridView 专用） ----------
+  // 捕获视口内最上方可见卡的键与视口内偏移：筛选切换整体重建 DOM 后按「同卡同位」
+  // 恢复，消除每次切换跳回顶部的连续性断裂。与 sidebar.#preserveAnchor 同一思想，
+  // 但 DOM 会重建，必须走 键捕获 → 重渲 → 定位恢复 三段式
+  captureViewportAnchor() {
+    const gridTop = dom.mainGrid.getBoundingClientRect().top;
+    // 卡片等高成行、纵向位置单调：二分定位首个底边越过视口顶的卡（同 #refillBand 带区定位）
+    const children = this.#container.children;
+    let lo = 0;
+    let hi = children.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (children[mid].getBoundingClientRect().bottom < gridTop) lo = mid + 1;
+      else hi = mid;
+    }
+    const card = children[lo];
+    const key = card?.dataset[this.#itemKey];
+    if (!key || !this.#itemMap.has(key)) return null; // 无键占位/未知键无法锚定
+    return { key, offset: card.getBoundingClientRect().top - gridTop };
+  }
+
+  // 恢复锚点：新视图仍含锚卡 → 定位到原视口偏移；锚卡已被筛掉 → 保持置顶（结果集
+  // 已质变，强行就近锚定反而错位）。测量优先（DOM 实测），锚卡超出预铺未挂载时走
+  // restoreGridScroll 同款数学估算（row × 行高）
+  restoreViewportAnchor(anchor, view) {
+    if (!anchor) return;
+    const idx = view.findIndex((w) => String(w[this.#itemKey]) === anchor.key);
+    if (idx === -1) return;
+    requestAnimationFrame(() => {
+      const grid = dom.mainGrid;
+      if (!grid) return;
+      let cardTopInScroll = -1;
+      const card = this.#container.querySelector(`[data-${this.#dataAttr}="${anchor.key}"]`);
+      if (card) {
+        cardTopInScroll = card.getBoundingClientRect().top - grid.getBoundingClientRect().top + grid.scrollTop;
+      } else if (idx >= 0) {
+        const root = getComputedStyle(document.documentElement);
+        const cardW = parseInt(root.getPropertyValue("--dy-card-size")) || config.CARD_SIZE_FALLBACK;
+        const gap = config.CARD_GAP;
+        const cols = Math.max(1, Math.floor((this.#container.clientWidth + gap) / (cardW + gap)));
+        cardTopInScroll = Math.floor(idx / cols) * ((cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET + gap);
+      }
+      if (cardTopInScroll < 0) return;
+      grid.scrollTo({ top: Math.max(0, cardTopInScroll - anchor.offset) });
+    });
+  }
+
   // 中止未完成的分块渲染（域切换时调用，防止旧域骨架卡/observer 残留到共享容器）
   abortRender() {
     this.stopAllMedia();
@@ -424,6 +493,7 @@ export class VirtualGrid {
     this.#pendingInserts = [];
     this.#slots = [];
     this.#totalSlots = 0;
+    this.#viewItems = null;
     this.#sentinelCard = null;
     this.#itemMap = itemMap;
     cancelAnimationFrame(this.#drainRafId);
@@ -574,8 +644,11 @@ export class VirtualGrid {
   }
 
   // 接近底部扩容：内容底距视口底不足 GRID_EXTEND_THRESHOLD 屏时，预铺槽位数倍增至
-  // totalSlots 上限（尾批对齐剩余量）。追加走占位卡克隆 + 分圈观察既有机制；
-  // 已到达的数据页不受影响（fillSlots 以键前缀自锚定落点，槽源与 state 并行生长）
+  // totalSlots 上限（尾批对齐剩余量）。槽位来源按视图形态分流：
+  // 封闭视图（totalSlots ≤ 视图快照长度 = 筛选态等无「未来分页」场景）扩容卡带真实键，
+  // 直接从快照锚接续取条目——本态没有 fillSlots 回填方，无键占位卡会永久灰卡；锚取
+  // 槽尾最后一张带键卡（DOM 实况推导，免维护游标不变量），在快照中定位后顺次取后继。
+  // 渐进态维持占位卡克隆，等 fillSlots 按槽回填（既有机制不变）
   #extendIfNeeded() {
     if (this.#chunkRaf) return; // 预铺拼装未完成时不扩容：文档尚短，且双路径写 #slots 会交错
     if (this.#slots.length >= this.#totalSlots) return;
@@ -585,10 +658,32 @@ export class VirtualGrid {
     const next = Math.min(this.#totalSlots, this.#slots.length * 2);
     if (next <= this.#slots.length) return;
     const skelTmpl = this.#getSkeletonTemplate();
+    const snapshot = this.#viewItems;
+    const keyed = Boolean(snapshot) && this.#totalSlots <= snapshot.length;
+    let cursor = -1;
+    if (keyed) {
+      let anchorKey = null;
+      for (let i = this.#slots.length - 1; i >= 0; i--) {
+        anchorKey = this.#slots[i].dataset[this.#itemKey];
+        if (anchorKey) break;
+      }
+      if (anchorKey) {
+        cursor = snapshot.findIndex((w) => w[this.#itemKey] === anchorKey);
+        // 锚不在快照（头插/移除维护窗口外的口径异常）：不扩容，留待整刷自愈
+        if (cursor < 0) return;
+      }
+      // 槽尾无带键卡（理论不该出现在键控态）：cursor 保持 -1，从快照头部续铺
+    }
     const frag = document.createDocumentFragment();
     const nodes = [];
     for (let i = this.#slots.length; i < next; i++) {
-      const card = this.#clonePlaceholder(skelTmpl);
+      let card = null;
+      if (keyed) {
+        const item = snapshot[++cursor];
+        // itemMap 防御：快照含已移除条目时落占位兜底（正常口径不会命中）
+        if (item && !this.#itemMap.has(item[this.#itemKey])) card = this.#cloneSkeleton(skelTmpl, item);
+      }
+      if (!card) card = this.#clonePlaceholder(skelTmpl);
       this.#slots.push(card);
       nodes.push(card);
       frag.appendChild(card);

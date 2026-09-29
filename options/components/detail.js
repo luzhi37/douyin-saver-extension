@@ -370,6 +370,7 @@ class Detail {
     if (config.WORK_LIKE_DOMAINS.includes(state.domain)) {
       await services.deleteWorkLike(state.domain, [awemeId]);
       state[state.domain] = state[state.domain].filter((w) => w.awemeId !== awemeId);
+      state.dataVersion++; // 绕过 store 封装的原地移除，须手动计入数据版本（视图缓存失效判据）
       state.selectedIds.delete(awemeId);
       search.activeWorkLikeGrid().removeItems(new Set([awemeId]));
       store.refreshGroups();

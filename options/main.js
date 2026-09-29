@@ -125,6 +125,7 @@ function applyStoreUpserts(domain, entries) {
     const idx = list.findIndex((w) => w.awemeId === work.awemeId);
     if (idx >= 0) {
       list[idx] = work;
+      state.dataVersion++; // 原地替换绕过 store 封装，须手动计入数据版本（视图缓存失效判据）
       domUpdates.push(work.awemeId);
     } else if (added) {
       if (state.currentGroupId === "all" || work.groupId === state.currentGroupId) viewAdds.push(work);
@@ -196,6 +197,7 @@ function tryHeadInsert(domain, works) {
     if (last && last.start + last.items.length === p) last.items.push(work);
     else runs.push({ start: p, items: [work] });
   }
+  state.dataVersion++; // 原地 splice 绕过 store 封装，须手动计入数据版本（视图缓存失效判据）
   // 预铺额度待消费 = 首页渲染排队中（rAF）：state 已就位即够——借道待渲渲染，
   // 无需头插也无需整刷
   if (state.gridSlots) return "deferred";

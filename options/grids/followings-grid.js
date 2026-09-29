@@ -24,12 +24,15 @@ class FollowingsGrid extends VirtualGrid {
     });
   }
 
-  renderFollowingCards() {
-    const view = search.getFollowingsView();
-    if (search.isFilterActive()) {
-      this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试");
+  renderFollowingCards(view = search.getFollowingsView()) {
+    // 筛选态同作品域降档预铺（GRID_PREMOUNT_CAP_FILTER）：关注域虽单发全量加载，筛选
+    // 切换同样全量拆建，预铺数直接决定切换 DOM 成本；余量滚近底部键控扩容补齐
+    const filtered = search.isFilterActive();
+    const premountCap = filtered ? config.GRID_PREMOUNT_CAP_FILTER : config.GRID_PREMOUNT_CAP;
+    if (filtered) {
+      this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试", 0, premountCap);
     } else {
-      this.render(view, "还没有保存的关注者", "点击菜单「同步」获取你的关注列表");
+      this.render(view, "还没有保存的关注者", "点击菜单「同步」获取你的关注列表", 0, premountCap);
     }
   }
 

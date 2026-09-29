@@ -41,21 +41,24 @@ class WorksGrid extends VirtualGrid {
     this.#container = el;
   }
 
-  renderCards() {
-    // 渲染取过滤后的视图列表（建议5）；筛选生效时空态文案区分"无数据"与"无匹配"。
+  renderCards(view = search.getWorksView()) {
+    // 渲染取过滤后的视图列表（建议5；refreshGridView 注入现成视图，独立调用经视图函数
+    // 取——内部有阶段缓存）。筛选生效时空态文案区分"无数据"与"无匹配"。
     // 渐进加载首页渲染一次性消费预铺额度（state.gridSlots.total）：全量骨架预铺 +
-    // 余页按槽回填；筛选生效时不预铺（静默累积路径完成后整渲，占位槽无数据可回填）
-    const view = search.getWorksView();
+    // 余页按槽回填；筛选态（封闭视图）预铺降档至 GRID_PREMOUNT_CAP_FILTER——每次筛选
+    // 切换都全量拆建，预铺数直接决定切换的 DOM 成本，余量滚近底部键控扩容补齐
     const stash = state.gridSlots;
+    const filtered = search.isFilterActive();
     const totalSlots =
-      stash && !search.isFilterActive() && stash.domain === state.domain && stash.groupId === state.currentGroupId
+      stash && !filtered && stash.domain === state.domain && stash.groupId === state.currentGroupId
         ? stash.total
         : 0;
     state.gridSlots = null;
-    if (search.isFilterActive()) {
-      this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试", totalSlots);
+    const premountCap = filtered ? config.GRID_PREMOUNT_CAP_FILTER : config.GRID_PREMOUNT_CAP;
+    if (filtered) {
+      this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试", totalSlots, premountCap);
     } else {
-      this.render(view, this.#emptyMsg, this.#emptyHint, totalSlots);
+      this.render(view, this.#emptyMsg, this.#emptyHint, totalSlots, premountCap);
     }
   }
 

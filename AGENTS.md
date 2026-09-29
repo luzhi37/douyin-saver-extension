@@ -86,7 +86,7 @@ DOMAIN_CONFIG = {
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
-| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView + 检索状态 `#searchState`；归属判定与收起即重置见 docs/11「SearchBar」） |
+| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView + 检索状态 `#searchState`；三段视图缓存 `#viewCache` + `state.dataVersion` 失效判据 + 恒等快速路径 + 筛选切换滚动锚点，见 docs/11「视图阶段缓存与筛选切换性能」；归属判定与收起即重置见 docs/11「SearchBar」） |
 | `VirtualGrid`    | 网格渲染基类（双向虚拟化：填充/卸载双 observer + 时间预算填充 + 事件委托 + `insertItems`/`removeItems` 位插对偶；机制与红线见 docs/11） |
 | `Dialog`         | 多层弹窗管理（基层 #dialogOverlay + pushDialog 动态实例叠层，关闭顶层自动回父层；`dom.dialogTitle/dialogBody/dialogFooter/dialogClose` 由其动态指向顶层实例元素，仅该类可写） |
 | `FollowingsGrid` | 关注卡片网格                                                      |
@@ -169,6 +169,7 @@ DOMAIN_CONFIG = {
 - **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换）** — 分圈观察哨兵链推进填充（哨兵被删须立刻续接）；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`：原位整刷前后内容等高时无 scroll 事件，哨兵链够不着视口，视口骨架将永久滞留灰卡）；填充/卸载 IO 的 root 必须显式传 `#mainGrid`（同 sidebar 的 `dom.sidebarBody` 规则）；两段式铺设（首段同步 + 余量游离态拼装一次挂载，禁止逐帧向容器追加）；预铺有上限（`GRID_PREMOUNT_CAP`）+ 滚近底部倍增扩容（`#extendIfNeeded`）；`fillSlots` 落点按键前缀自锚定回填，占位卡在 fill IO 回调中**不得 unobserve**；`removeItems` 必须同步收缩 `#slots` 与 `#totalSlots`；`insertItems` 位插与 `removeItems` 对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`。
 - **STORE_CHANGED 收口优先增量、整刷仅作兜底** — 新增落当前视图走 `tryHeadInsert` 头插，禁止改回「视图内新增→`loadDomainData` 整刷」；头插与在途分页的交错窗口守卫（`services.isGridLoading()`/`grid.isScrollFrozen()`/`state.gridSlots` 等）不过必须整刷兜底、不得绕过；落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引 prev 遍历同序；bulk 载荷只带 id 集、记录经 `GET_WORKS_BY_IDS` 补拉（管线全景与红线见 docs/11「STORE_CHANGED 增量收口」）。
 - **分组与域切换同序列清场（点击即清空）** — 切换瞬间 `appShell.clearActiveGrid()`：abortRender×4 + 样式塌缩（height:0/overflow:hidden/visibility:hidden）+ 旧子树空闲期一次性销毁；「冻结-定格」与「不清场保无闪烁」均已定案否决/禁止。数据侧配套 `loadDomainData` 分页渐进（followings 单发全量）。
+- **`state.dataVersion` 是视图缓存的失效判据（红线）** — store 域数据变更方法与 `loadFollowedUids` 自动自增；绕过 store 封装的原地写入（main.js `tryHeadInsert`/`applyStoreUpserts`、detail.js `removeWork`）必须手动自增。`getWorksView`/`getFollowingsView` 返回共享缓存数组，调用方一律只读。筛选态（封闭视图）预铺恒为 `GRID_PREMOUNT_CAP_FILTER`、扩容必须带真实键（封闭态无 fillSlots 回填方，无键占位卡永久灰卡）；机制与红线见 docs/11「视图阶段缓存与筛选切换性能」。
 - **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断。
 
 ### 媒体体系
@@ -180,7 +181,7 @@ DOMAIN_CONFIG = {
 
 ## config 分组速查
 
-- **options/core.js 顶层 `config`（47 键）** — 权威键表与默认值见 [docs/01](./docs/01-project-architecture.md)「配置项说明 · options/core.js 顶层 `config`」。
+- **options/core.js 顶层 `config`（48 键）** — 权威键表与默认值见 [docs/01](./docs/01-project-architecture.md)「配置项说明 · options/core.js 顶层 `config`」。
 - **background/core.js `CONFIG`**（`TIMEOUT`/`DELAY`/`SYNC`/`STORAGE_KEYS`/`DNR_RULES`/`GROUPS`/`PAGE`/`BROADCAST`/`CANCEL`/`FATAL_ERRORS`/`WEBID_API`/`WEB_SIGN_SALT` 等）与 `runtimeConfig` 对象（从 `chrome.storage.local` 读入叠加进 `CONFIG`，SW 冷启动补 reload；键表同见 docs/01「配置项说明」）——运行时状态已塌缩为类私有字段，类职责见「background/ 类单例」表。
 
 ## 文档索引

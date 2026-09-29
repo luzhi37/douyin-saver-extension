@@ -299,7 +299,7 @@ DOMAIN_CONFIG = {
 
 键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数（含校准开关）随存随恢复，重开扩展（非重载）不回退编译期默认值；`IndependentClient.isCalibrateEnabled` 另有 storage 惰性加载兜底（首次调用才读，跨 SW 重建仍生效）。
 
-### options/core.js 顶层 `config`（UI 侧，47 键，权威键表）
+### options/core.js 顶层 `config`（UI 侧，48 键，权威键表）
 
 | 分组       | 键（默认值）                                                                                                                                                  |
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -310,7 +310,7 @@ DOMAIN_CONFIG = {
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000` / `SEARCH_DEBOUNCE` `200`                                        |
 | 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
 | 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `11` / `CARD_HEIGHT_OFFSET` `44`                                                                                      |
-| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'600px'` / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'` / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_EXTEND_THRESHOLD` `1.5` |
+| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'600px'` / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'` / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_PREMOUNT_CAP_FILTER` `600`（筛选态封闭视图预铺降档） / `GRID_EXTEND_THRESHOLD` `1.5` |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                                                    |
 | 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_LIKE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                                                    |

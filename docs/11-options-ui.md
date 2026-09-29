@@ -34,12 +34,19 @@ bg 端复合索引 keyset 游标直出、每次只物化单页 + `total` 计数�
 followings 与 `loadWorks`（同步清单/重试）保持单发全量：
 
 ```
-render(items, emptyMsg, emptyHint, totalSlots)
+render(items, emptyMsg, emptyHint, totalSlots, premountCap = GRID_PREMOUNT_CAP)
   → 容器 wipe（render()/abortRender() 重置时必须同时清 #pendingSkeletons / #pendingAppends /
-    #slots / #sentinelCard / observers；点击即清场路径滚动随 wipe clamp 归零）
-  → #totalSlots = max(totalSlots, items.length)；slotCount = min(#totalSlots,
-    max(GRID_PREMOUNT_CAP, items.length))：首段同步挂载前 RENDER_CHUNK_SIZE 个
-    （真数据骨架优先，缺口为无键占位卡）并交接分圈观察
+    #slots / #viewItems / #sentinelCard / observers；点击即清场路径滚动随 wipe clamp 归零）
+  → #viewItems = items.slice()（视图快照：键控扩容取数源；浅拷贝隔离，头插/移除/追加
+    原地维护本表，不反噬调用方数组——SearchBar 视图缓存数组只读）
+  → #totalSlots = max(totalSlots, items.length)；按视图形态分流铺槽数：
+      封闭视图（items.length ≥ #totalSlots = 筛选态/全量单发，无「未来分页」）：
+        slotCount = min(items.length, premountCap)——筛选态传 GRID_PREMOUNT_CAP_FILTER 降档，
+        全量铺设只会让每次筛选切换付出 O(结果数) 的克隆+布局成本；余量滚近底部键控扩容
+      渐进视图（totalSlots > 已知条目数，fillSlots 按槽回填的前提是槽位对号存在）：
+        slotCount = min(#totalSlots, max(premountCap, items.length))——已知条目始终全量铺，
+        未到达槽位为无键占位卡
+    首段同步挂载前 RENDER_CHUNK_SIZE 个（真数据骨架优先，缺口为无键占位卡）并交接分圈观察
   → 余量按 RENDER_BUILD_BUDGET_MS 时间预算分帧拼装（保持游离态，脱 DOM 不触发布局），
     拼完挂载前对账（拼装窗口内被 removeItems 删除的条目不挂载不占槽），再向容器一次挂载并
     交接观察——容器全程只经历 2 次插入，布局只剩收尾 1 次 O(N)
@@ -77,7 +84,12 @@ fillSlots(startIndex, items)（渐进分页按槽回填）
 
 接近底部扩容（#extendIfNeeded，随滚动 rAF 检测）
   → 内容底距视口底不足 GRID_EXTEND_THRESHOLD(1.5) 屏且 #slots.length < #totalSlots
-  → 槽位数倍增：克隆无键占位卡追加（走分圈观察既有机制），数据页经 fillSlots 自锚定回填
+  → 槽位数倍增，槽位来源按视图形态分流：
+      封闭视图（#totalSlots ≤ #viewItems.length）：扩容卡带真实键——从 #viewItems 快照
+        锚接续取条目（锚 = 槽尾最后一张带键卡的键在快照中的下标，DOM 实况推导，
+        免维护游标不变量；锚失配不扩容留待整刷自愈）。封闭态没有 fillSlots 回填方，
+        无键占位卡会永久灰卡
+      渐进视图：克隆无键占位卡追加（走分圈观察既有机制），数据页经 fillSlots 自锚定回填
       （滚动条物理上到不了未挂载区——「远跳落进空白」结构性不存在）
 
 快滚门控（判定在 scroll 事件时刻完成：帧间差 > FAST_SCROLL_THRESHOLD 300px，见 #onGridScroll）
@@ -109,12 +121,13 @@ fillSlots(startIndex, items)（渐进分页按槽回填）
 
 ```js
 // VirtualGrid（基类）
-render(items, emptyMsg, emptyHint, totalSlots) // totalSlots>items.length 时全量预铺占位卡；abortRender 同时清空 observer 与分圈/#slots 状态
+render(items, emptyMsg, emptyHint, totalSlots, premountCap) // premountCap 按态传（渐进 GRID_PREMOUNT_CAP / 筛选 GRID_PREMOUNT_CAP_FILTER）；封闭视图（totalSlots ≤ 已知条目数）只铺上限张；#viewItems 视图快照同步建立；abortRender 同时清空 observer 与分圈/#slots/#viewItems 状态
+captureViewportAnchor() / restoreViewportAnchor(anchor, view) // 筛选切换锚点三段式的两端：键+视口偏移捕获 → 重渲 → 同卡同位恢复（锚卡被筛掉则保持置顶；测量优先、未挂载走数学估算）
 fillSlots(startIndex, items)                  // 渐进分页按槽回填（零 DOM 增删；预铺拼装未完成时排队；落点按键前缀自锚定；错位逐条回退追加）
 pruneEmptyTail()                              // 加载收尾：摘除尾部未回填占位卡
-appendItems(items)                            // 追加兜底（槽位越界/已占键时由 fillSlots 回退调用）
-insertItems(index, items)                     // 位插原语（STORE_CHANGED 增量收口）：state 与 #slots 对位 splice + 骨架卡挂载，removeItems 的对偶；落点越界/重复键返回 false 交整刷自愈；头插卡插队到待观察队列最前（分圈哨兵停在旧网格尾部，向下链推进够不到文档更靠前的头插卡）+ 落点在视口上方时按锚点卡实测位移补偿 scrollTop
-removeItems(idSet)                            // #slots 与 #totalSlots 必须同步收缩；删除哨兵会断链，调用方必须立刻续接
+appendItems(items)                            // 追加兜底（槽位越界/已占键时由 fillSlots 回退调用）；#viewItems 快照同步 push
+insertItems(index, items)                     // 位插原语（STORE_CHANGED 增量收口）：state 与 #slots 对位 splice + 骨架卡挂载 + #viewItems 对位 splice，removeItems 的对偶；落点越界/重复键返回 false 交整刷自愈；头插卡插队到待观察队列最前（分圈哨兵停在旧网格尾部，向下链推进够不到文档更靠前的头插卡）+ 落点在视口上方时按锚点卡实测位移补偿 scrollTop
+removeItems(idSet)                            // #slots 与 #totalSlots 必须同步收缩，#viewItems 同步 filter；删除哨兵会断链，调用方必须立刻续接
 #extendObservation()                          // 哨兵触发时放下一批 OBSERVE_CHUNK_SIZE 个
 #enqueueFill(card) → #scheduleDrain → #doFill // 时间预算制填充分帧
 populateItem(skeleton, item)                  // 原地填充入口；负责 observe 完整卡（交接点）
@@ -122,7 +135,7 @@ populateItem(skeleton, item)                  // 原地填充入口；负责 obs
 fillCard(card, item) / clearCard(card)        // 子类钩子：只允许改类名与增删根节点后代
 
 // WorksGrid / FollowingsGrid
-renderCards() / renderFollowingCards()
+renderCards(view?) / renderFollowingCards(view?) // view 缺省经视图函数取（内部阶段缓存）；refreshGridView 是唯一调用方并注入现成视图；筛选态预铺降档至 GRID_PREMOUNT_CAP_FILTER
 updateCardDOM(awemeId)                        // 兼容骨架态：骨架只更新数据，完整卡原地重填
 #bindMediaEvents()                            // pointerover/out 容器级委托（见下文）
 
@@ -334,6 +347,44 @@ probe.onerror = () => {
 - **搜索栏收起即重置（红线）**：`closeSearchBar()` 必须先调 `clearSearchFilters()`，筛选不跨收起保留；域切换**不**重置；筛选状态**不落 URL hash**——P1-8 的刷新恢复已移除：hash 会残留在标签页 URL 里被下一次加载「自动展开搜索栏」（即便本会话从未打开过），且只要在展开状态下刷新就自续循环；现全仓无 hash 读写方，main.js init 仅保留一次性残留清理。
 - **「已关注/未关注」归属判定走方案A：作品 `uid` 实时关联关注全集**（2026-09 定案）：全集 `state.followedUids` 经 `services.loadFollowedUids()` 全量 `groupId:'all'` 加载（不受关注分组影响），init / 域切换 / `followings` 事件三处刷新；记录无 `uid` 或全集未加载成功（`state.followedUidsLoaded` 为假）时**不归判**，避免把已关注作者作品误算为未关注引入误删。**禁止改用扫描快照 `authorFollowed` 做该判定的主判据**。
 
+### SearchBar 视图阶段缓存与筛选切换性能（2026-09 定案）
+
+大库（十万级）搜索态下过滤切换的耗时由三部分叠加：视图重复计算、字符串归一化重复分配、
+筛选态全量拆建 DOM。对应三层定案如下，**回退任何一层都会复现切换卡顿**：
+
+- **三段视图流水线（`#viewCache`）**：`getWorksView`/`getFollowingsView` 拆为
+  `base`（关键词/类型/归属过滤）→ `sorted`（排序）→ `view`（逆序）三段，各段以自身输入
+  签名增量失效——切类型/归属只重算 base 及其后，切排序从缓存 base 重排，切逆序只翻转一次
+  拷贝。数据侧失效判据是 **`state.dataVersion`**（见下条），`baseSource` 引用相等作冗余校验。
+  **视图函数返回共享缓存数组，调用方一律只读**（网格/Detail/Batch 现有调用均为只读遍历）；
+  需要变更序（reverse 等）自行拷贝。逆序段必须拷贝后翻转，原地 reverse 会串段污染缓存。
+- **`state.dataVersion` 写入版本号（红线）**：视图缓存的唯一数据侧失效判据。store 的域数据
+  变更方法（set/appendWorkLike/spliceWork/removeWorkLikeSilent/removeFollowingsSilent/
+  updateWork）与 `services.loadFollowedUids`（归属判定输入）自动自增；**绕过 store 封装的
+  原地写入必须手动自增**——现存三处：`main.js` `tryHeadInsert`（头插 splice）、
+  `applyStoreUpserts`（原地替换 `list[idx] = work`）、`detail.js` `removeWork`（静默移除
+  filter）。新增绕行写入点若漏增，视图缓存将读到脏数据（漏增不炸、错显，最难排查）。
+- **关键词归一化侧表（`lcFields` + WeakMap）**：每条记录的 desc/nickname/id/uid 小写形与
+  作者簇键（authorCount 口径）惰性缓存一次。用 WeakMap 而非往记录挂字段：记录经
+  EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容更新一律整对象替换，
+  旧对象连同缓存一并失效。authorCount 全库 rank Map（counts 只依赖数据源、与筛选正交）
+  同理按 source 引用缓存于 `#rankCache`；排序走 decorate-sort-undecorate（比较键预计算成
+  并行数组），禁止改回 comparator 内逐对字符串拼接 + Map 查找。
+- **单次视图计算 + 恒等快速路径（`refreshGridView`）**：视图只算一次，同一数组贯穿渲染与
+  计数（历史实现经 renderCards/syncCount 各算一遍）；结果数组与 `#lastRenderedView` 恒等时
+  跳过重渲只刷计数（切了不改变结果集的筛选、重复点击同段成本归零）。`refreshGridView` 是
+  renderCards/renderFollowingCards 的唯一调用方，`#lastRenderedView` 仅在其渲染分支写入——
+  域/分组切换必经数据重载（dataVersion 自增 → 数组重建），不存在「DOM 已清场但数组恒等」
+  的假跳过。
+- **筛选态降档预铺 + 键控扩容**：筛选态是封闭视图（无未来分页、无 fillSlots 回填方），预铺
+  降档至 `GRID_PREMOUNT_CAP_FILTER`(600)，滚近底部 `#extendIfNeeded` 键控分支从 `#viewItems`
+  快照锚接续铺真实键卡（锚 = 槽尾带键卡在快照中的下标，DOM 实况推导；渐进态维持无键占位卡
+  + fillSlots 回填不变）。**封闭态扩容禁止退回无键占位卡**——没有回填方，永久灰卡。
+- **筛选切换滚动锚点**：`refreshGridView` 渲染前 `captureViewportAnchor()`（视口顶卡的键 +
+  视口内偏移），渲染后 `restoreViewportAnchor()` 同卡同位恢复；锚卡被筛掉则保持置顶（结果集
+  已质变，强行就近锚定反而错位）。与 sidebar `#preserveAnchor` 同思想，但 DOM 重建必须走
+  键捕获 → 重渲 → 定位恢复三段式。
+
 ### CSS 协同约定（.hidden 成对声明）
 
 自带 display 值的组件类与通用 `.hidden` 同用时，**必须成对声明 `.X.hidden { display: none }`**。原因：通用 `.hidden` 定义在 options.css 前部（约 66 行），同特异性（0,1,0）下会被文件后部组件规则里的 `display: flex/…` 覆盖，`hidden` 类静默失效、占位层常显（曾导致作品卡中央 emoji 常显、关注卡头像旁多出一个空占位圆）。既有先例：`.work-type-badge.hidden`、`.following-avatar-fallback.hidden`。
@@ -368,6 +419,12 @@ probe.onerror = () => {
 
 | 场景 | 表现 | 处理/禁止事项 |
 |------|------|----------------|
+| 绕过 store 的域数据原地写入未自增 `state.dataVersion` | 视图阶段缓存读到脏数据（新条目不出现、删除条目残留、归属判定过期），不炸只错显 | 现存三处手动自增点（main.js 头插/局部应用、detail.removeWork）；新增写入点必须同步自增（见「视图阶段缓存」节） |
+| 调用方原地变更 `getWorksView`/`getFollowingsView` 返回数组 | 污染共享缓存，后续视图/计数/Detail 导航全部串位 | 视图函数返回共享缓存数组，调用方只读；需要变更序自行拷贝 |
+| 封闭视图（筛选态）扩容克隆无键占位卡 | 没有 fillSlots 回填方，第 601 张起永久灰卡 | `#extendIfNeeded` 键控分支从 `#viewItems` 快照取真实条目；锚失配不扩容留待整刷自愈 |
+| `removeItems`/`insertItems`/`appendItems` 不同步维护 `#viewItems` | 键控扩容的锚接续取数错位（复活已删条目/漏掉新插条目） | 三个变更原语与快照同步维护（filter/splice/push） |
+| 筛选态改回全量预铺（预铺数 = 结果数） | 每次筛选切换付出 O(结果数) 的骨架克隆 + 整容器布局（十万级 = 秒级卡顿） | 封闭视图预铺恒为 `GRID_PREMOUNT_CAP_FILTER`，余量键控扩容 |
+| 视图计算在渲染与计数间各跑一遍（改回 `syncCount()` 内重算、renderCards 内重取） | 大库下重复整段过滤+排序（每遍 30–100ms 起） | `refreshGridView` 单次计算贯穿渲染与计数；`syncCount` 接受注入 count |
 | 哨兵卡被 `removeItems` 删除 | 分圈观察断链，后续骨架永不 observe | 删除后立刻续接哨兵 |
 | `removeItems` 只 splice `#slots` 不收缩 `#totalSlots` | 差额被 `#extendIfNeeded` 当作未铺配额，滚近底部时原样补回等量无键占位卡——被删卡片的骨架永久滞留（2026-09 修复） | 两者必须同步收缩；拼装窗口内无连接卡的已删条目同样计入（其节点挂载前被对账丢弃、永不占槽） |
 | 快滚停稳直接清空积压填充队列 | 积压卡入队时已 unobserve，滚回带区再无 IO 触发——被快滚扫过的区段永久停在骨架态（2026-09 修复） | `#refillBand` 丢弃前全量重新 observe；快滚判定基准只在 scroll 事件侧推进（rAF 双读者各自推进会互相污染 delta，冻结逐帧被打断） |

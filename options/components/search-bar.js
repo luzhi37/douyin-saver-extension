@@ -6,7 +6,32 @@ import { batch } from '../data/batch.js';
 
 // ---------- 检索：搜索/排序 ----------
 // 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
-// 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响
+// 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响。
+// 视图函数返回共享缓存数组（三段流水线见 #viewCache），调用方一律只读——不得原地
+// sort/reverse/push 返回数组，需要变更序自行拷贝
+
+// ---------- 归一化字段侧表 ----------
+// 记录对象 → 小写匹配字段惰性缓存：关键词过滤每遍对每条记录做 toLowerCase 的成本
+// （10 万条 × 3 字段 ≈ 30 万次字符串分配/遍）收敛为每条一次。用 WeakMap 而非往记录
+// 上挂字段：记录会经 EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容
+// 更新一律整对象替换（updateWork/applyStoreUpserts），旧对象连同缓存一并失效，无脏读
+const lcMemo = new WeakMap();
+function lcFields(w) {
+  let m = lcMemo.get(w);
+  if (!m) {
+    m = {
+      desc: (w.desc || "").toLowerCase(),
+      nick: (w.nickname || "").toLowerCase(),
+      id: String(w.awemeId ?? "").toLowerCase(),
+      uidStr: w.uid == null ? "" : String(w.uid),
+      uidLc: w.uid == null ? "" : String(w.uid).toLowerCase(),
+      ak: w.uid || w.nickname || "", // 作者簇键（authorCount 排序口径，与 rank Map 同源）
+    };
+    lcMemo.set(w, m);
+  }
+  return m;
+}
+
 class SearchBar {
   #searchState = {
     keyword: "",
@@ -20,6 +45,19 @@ class SearchBar {
   };
 
   #debounceTimer = 0;
+  // 视图阶段缓存（三段流水线）：base(关键词/类型/归属过滤) → sorted(排序) → view(逆序)。
+  // 各段以自身输入签名增量失效：切类型/归属只重算 base 及其后，切排序从缓存 base 重排，
+  // 切逆序只翻转一次拷贝。dataVersion（state.dataVersion，写入点自增见 core.js）是数据
+  // 侧失效判据，baseSource 引用相等作冗余校验
+  #viewCache = { baseKey: "", baseSource: null, base: null, sortKey: "", sorted: null, viewKey: "", view: null };
+  // authorCount 全库排名缓存：counts/rank 只依赖数据源本身（关键词只决定谁参与展示），
+  // 与筛选正交，按 source 引用缓存
+  #rankCache = { source: null, rank: null };
+  // 最近一次实际渲染的视图数组（恒等快速路径判据）：refreshGridView 是 renderCards/
+  // renderFollowingCards 的唯一调用方，字段仅在其渲染分支写入，「DOM 与该数组一致」
+  // 判据不会漂移；域/分组切换必经数据重载（dataVersion 自增 → 数组重建），不存在
+  // 「DOM 已被清场但数组恒等」的假跳过
+  #lastRenderedView = null;
 
   constructor() {
     this.#bindEvents();
@@ -63,91 +101,147 @@ class SearchBar {
     return this.#isWorkLikeDomain() && this.#ownerFilterActive();
   }
 
-  // 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
-  #matchWork(work, kw) {
-    switch (this.#searchState.scope) {
-      case "author":
-        // 昵称子串匹配；UID 仅精确匹配——uid 是约 19 位纯数字，子串匹配会让任意数字关键词命中大量无关作者
-        return (work.nickname || "").toLowerCase().includes(kw) || (work.uid && String(work.uid) === kw);
-      case "title":
-        return (work.desc || "").toLowerCase().includes(kw);
-      case "id":
-        return String(work.awemeId).toLowerCase().includes(kw);
-      default:
-        return (
-          (work.desc || "").toLowerCase().includes(kw) ||
-          (work.nickname || "").toLowerCase().includes(kw) ||
-          String(work.awemeId).toLowerCase().includes(kw)
-        );
+  // 三段流水线（作品型三域）：base(关键词/类型/归属) → sorted(排序) → view(逆序)。
+  // 返回共享缓存数组，调用方只读
+  getWorksView() {
+    const s = this.#searchState;
+    const source = state[state.domain]; // 作品型三域：数据源即当前域数组
+    const kw = s.keyword.trim().toLowerCase();
+    const c = this.#viewCache;
+    const baseKey = `${state.domain}|${state.dataVersion}|${kw}|${s.scope}|${s.workType}|${s.followed}|${s.unfollowed}`;
+    if (c.baseKey !== baseKey || c.baseSource !== source) {
+      c.base = this.#filterWorkLike(source, kw);
+      c.baseKey = baseKey;
+      c.baseSource = source;
+      c.sortKey = "";
     }
+    const sortKey = `${baseKey}|${s.sort}`;
+    if (c.sortKey !== sortKey) {
+      c.sorted = this.#sortWorkLike(c.base, source);
+      c.sortKey = sortKey;
+      c.viewKey = "";
+    }
+    const viewKey = `${sortKey}|${s.reverse}`;
+    if (c.viewKey !== viewKey) {
+      // 逆序必须拷贝后翻转：各段数组被多方共享（网格/Detail/Batch），原地 reverse 会串段
+      c.view = s.reverse ? [...c.sorted].reverse() : c.sorted;
+      c.viewKey = viewKey;
+    }
+    return c.view;
   }
 
-  getWorksView() {
-    const kw = this.#searchState.keyword.trim().toLowerCase();
-    const source = state[state.domain]; // 作品型三域：数据源即当前域数组
+  // base 段：关键词 + 类型 + 归属三层过滤（匹配字段走 lcFields 惰性缓存，语义与
+  // 历史实现逐字段一致）
+  #filterWorkLike(source, kw) {
+    const s = this.#searchState;
     let list = source;
-    if (kw) list = list.filter((w) => this.#matchWork(w, kw));
-    if (this.#isWorkLikeDomain() && this.#searchState.workType !== "all") {
+    if (kw) {
+      // 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
+      list = list.filter((w) => {
+        const m = lcFields(w);
+        switch (s.scope) {
+          case "author":
+            // 昵称子串匹配；UID 仅精确匹配——uid 是约 19 位纯数字，子串匹配会让任意数字关键词命中大量无关作者
+            return m.nick.includes(kw) || (w.uid && m.uidStr === kw);
+          case "title":
+            return m.desc.includes(kw);
+          case "id":
+            return m.id.includes(kw);
+          default:
+            return m.desc.includes(kw) || m.nick.includes(kw) || m.id.includes(kw);
+        }
+      });
+    }
+    if (this.#isWorkLikeDomain() && s.workType !== "all") {
       // 类型筛选（全部/视频/图集）：formatWork 保证 type 只有两值，等值比较即可
-      const wantNote = this.#searchState.workType === "note";
+      const wantNote = s.workType === "note";
       list = list.filter((w) => (wantNote ? w.type === "note" : w.type === "video"));
     }
     if (this.#isWorkLikeDomain() && this.#ownerFilterActive()) {
       // 已关注/未关注勾选（默认双勾=不筛）：单边勾选仅保留对应归属，两边都未勾则无结果
       // （#ownerFilterActive 保证不会同时为 true，故 followed 优先分支可安全省略双勾判断）
       list = list.filter((w) =>
-        this.#searchState.followed
-          ? this.#isFollowedWork(w)
-          : this.#searchState.unfollowed
-            ? this.#isUnfollowedWork(w)
-            : false,
+        s.followed ? this.#isFollowedWork(w) : s.unfollowed ? this.#isUnfollowedWork(w) : false,
       );
     }
-    if (this.#searchState.sort === "authorCount") {
-      // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）。
-      // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
-      const counts = new Map();
-      for (const w of source) {
-        const key = w.uid || w.nickname || "";
-        counts.set(key, (counts.get(key) || 0) + 1);
-      }
-      const rank = new Map(
-        [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : 1)).map((k, i) => [k, i]),
-      );
-      const authorKey = (w) => w.uid || w.nickname || "";
-      list = [...list].sort((a, b) => (rank.get(authorKey(a)) ?? 0) - (rank.get(authorKey(b)) ?? 0) || (b.savedAt || 0) - (a.savedAt || 0));
-    } else {
-      // bg 端已按 savedAt 降序返回（DomainHandlers.get），本地变更（静默移除/splice/update）
-      // 均原地保序、渐进分页按同序追加——不再重复排序；仅拷贝防外部原地改动 state
-      list = [...list];
-    }
-    if (this.#searchState.reverse) list.reverse();
+    if (list === source) list = [...source]; // 无任何过滤命中：仍拷贝，视图数组与数据源物理解耦
     return list;
   }
 
+  // sorted 段：saved 序保持 bg 端返回的 savedAt 降序（本地变更原地保序，不重复排序）；
+  // authorCount 序按全库 rank 升序 + 簇内保存时间降序
+  #sortWorkLike(base, source) {
+    if (this.#searchState.sort !== "authorCount") return base;
+    // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）：
+    // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
+    const rank = this.#authorRank(source);
+    // decorate-sort-undecorate：比较键预计算成并行数组，消掉 comparator 内逐对比较的
+    // 重复字符串拼接与 Map 查找（万级列表排序的主要开销）
+    const dec = base.map((w) => {
+      const m = lcFields(w);
+      return { w, r: rank.get(m.ak) ?? 0, s: w.savedAt || 0 };
+    });
+    dec.sort((a, b) => a.r - b.r || b.s - a.s);
+    return dec.map((d) => d.w);
+  }
+
+  #authorRank(source) {
+    if (this.#rankCache.source === source) return this.#rankCache.rank;
+    const counts = new Map();
+    for (const w of source) {
+      const key = lcFields(w).ak;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const rank = new Map(
+      [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : 1)).map((k, i) => [k, i]),
+    );
+    this.#rankCache = { source, rank };
+    return rank;
+  }
+
+  // 三段流水线（关注域）：同 getWorksView，返回共享缓存数组，调用方只读
   getFollowingsView() {
-    const kw = this.#searchState.keyword.trim().toLowerCase();
-    // 关注域无标题维度：title 范围（域切换残留）按昵称处理。
-    // 无关键词也须拷贝后再排序，不得原地改动 state.followings
-    let list = kw
-      ? state.followings.filter((f) => {
-          switch (this.#searchState.scope) {
-            case "author":
-            case "title":
-              return (f.nickname || "").toLowerCase().includes(kw);
-            case "id":
-              return String(f.uid).toLowerCase().includes(kw);
-            default:
-              return (f.nickname || "").toLowerCase().includes(kw) || String(f.uid).toLowerCase().includes(kw);
-          }
-        })
-      : [...state.followings];
-    // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定
-    const field =
-      { works: "awemeCount", update: "lastUpdateAt" }[this.#searchState.followingsSort] || "followerCount";
-    list.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
-    if (this.#searchState.reverse) list.reverse();
-    return list;
+    const s = this.#searchState;
+    const source = state.followings;
+    const kw = s.keyword.trim().toLowerCase();
+    const c = this.#viewCache;
+    const baseKey = `followings|${state.dataVersion}|${kw}|${s.scope}`;
+    if (c.baseKey !== baseKey || c.baseSource !== source) {
+      // 关注域无标题维度：title 范围（域切换残留）按昵称处理。
+      // 无关键词也须拷贝后再排序，不得原地改动 state.followings
+      c.base = kw
+        ? source.filter((f) => {
+            const m = lcFields(f);
+            switch (s.scope) {
+              case "author":
+              case "title":
+                return m.nick.includes(kw);
+              case "id":
+                return m.uidLc.includes(kw);
+              default:
+                return m.nick.includes(kw) || m.uidLc.includes(kw);
+            }
+          })
+        : [...source];
+      c.baseKey = baseKey;
+      c.baseSource = source;
+      c.sortKey = "";
+    }
+    const sortKey = `${baseKey}|${s.followingsSort}`;
+    if (c.sortKey !== sortKey) {
+      // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定。
+      // base 为缓存私有数组，原地排序安全
+      const field = { works: "awemeCount", update: "lastUpdateAt" }[s.followingsSort] || "followerCount";
+      c.sorted = c.base.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
+      c.sortKey = sortKey;
+      c.viewKey = "";
+    }
+    const viewKey = `${sortKey}|${s.reverse}`;
+    if (c.viewKey !== viewKey) {
+      c.view = s.reverse ? [...c.sorted].reverse() : c.sorted;
+      c.viewKey = viewKey;
+    }
+    return c.view;
   }
 
   // ---------- UI 同步 ----------
@@ -167,20 +261,34 @@ class SearchBar {
     if (this.#isSearchBarOpen()) this.syncForDomain();
   }
 
-  // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数
+  // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数。
+  // 视图全程只计算一次，同一结果贯穿渲染与计数（历史实现经 renderCards/syncCount 各算
+  // 一遍，大库下重复付出整段过滤+排序成本）；结果数组与上次实际渲染恒等时跳过重渲
+  // （切了不改变结果集的筛选、重复点击同段），只刷新计数
   refreshGridView() {
     // 视图顺序可能已变（排序/关键词/归属/域/分组/同步）：旧 shift 锚点在新顺序中的
     // 索引与点击时不一致，先清空锚点，防止区间按错误索引圈选
     batch.resetRangeAnchor();
-    if (this.#isWorkLikeDomain()) this.activeWorkLikeGrid().renderCards();
-    else followingsGrid.renderFollowingCards();
-    this.syncCount();
+    const isWorkLike = this.#isWorkLikeDomain();
+    const view = isWorkLike ? this.getWorksView() : this.getFollowingsView();
+    if (view !== this.#lastRenderedView) {
+      const grid = isWorkLike ? this.activeWorkLikeGrid() : followingsGrid;
+      const anchor = grid.captureViewportAnchor();
+      if (isWorkLike) grid.renderCards(view);
+      else grid.renderFollowingCards(view);
+      grid.restoreViewportAnchor(anchor, view);
+      this.#lastRenderedView = view;
+    }
+    this.syncCount(view.length);
   }
 
-  // 结果数 K/N：K 为当前过滤视图条数，N 为当前域全量条数
-  syncCount() {
+  // 结果数 K/N：K 为当前过滤视图条数，N 为当前域全量条数。
+  // count 可由调用方注入（refreshGridView 已持有视图）；缺省经视图函数取（内部有阶段缓存）
+  syncCount(count) {
+    if (count === undefined) {
+      count = this.#isWorkLikeDomain() ? this.getWorksView().length : this.getFollowingsView().length;
+    }
     const total = this.#isWorkLikeDomain() ? state[state.domain].length : state.followings.length;
-    const count = this.#isWorkLikeDomain() ? this.getWorksView().length : this.getFollowingsView().length;
     dom.sbCount.textContent = `${count}/${total}`;
   }
 

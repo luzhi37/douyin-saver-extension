@@ -54,6 +54,10 @@ export const config = {
   // 预铺槽位上限 + 接近底部扩容阈值（剩余空间 < N 屏时倍增扩容）：
   // 活 DOM 规模由此封顶——切组拆卸、布局、绘制的 O(N) 成本全部以 N=已挂载数为分母
   GRID_PREMOUNT_CAP: 1500,
+  // 筛选态（封闭视图）预铺上限：筛选视图全量已知、无「未来分页」占位需求，且每次
+  // 筛选切换都全量拆建——预铺数直接决定切换的 DOM 成本；滚近底部由键控扩容
+  // （#extendIfNeeded 键控分支）倍增补齐真实键卡
+  GRID_PREMOUNT_CAP_FILTER: 600,
   GRID_EXTEND_THRESHOLD: 1.5,
 
   // 分组/存储
@@ -194,6 +198,11 @@ export const state = {
   // 渐进加载的一次性预铺额度 { domain, groupId, total }：首页渲染时消费（renderCards
   // 读取后即清），按 total 一次铺满全量骨架，余页经 fillSlots 以键前缀自锚定回填
   gridSlots: null,
+  // 域数据写入版本号：SearchBar 视图阶段缓存（#viewCache）的失效判据。store 的数据
+  // 变更方法自动自增；绕过 store 封装的原地写入（main.js tryHeadInsert/applyStoreUpserts、
+  // detail.removeWork 静默移除）与归属判定输入重载（services.loadFollowedUids）必须手动
+  // 自增，否则缓存读到脏视图（红线见 docs/11「视图阶段缓存」）
+  dataVersion: 0,
 };
 
 // ---------- store ----------
@@ -217,7 +226,11 @@ export const store = {
   set(key, val) {
     const old = state[key];
     state[key] = val;
-    if (old !== val) this.notify(key, val, old);
+    if (old !== val) {
+      // 域数据替换计入数据版本（domain/currentGroupId/batchMode 等非数据键不计）
+      if (key === "followings" || config.WORK_LIKE_DOMAINS.includes(key)) state.dataVersion++;
+      this.notify(key, val, old);
+    }
   },
 
   // 触发 groups 数据重新加载（总是从 background 获取最新分组数据）
@@ -229,6 +242,7 @@ export const store = {
     const idx = state.works.findIndex((w) => w.awemeId === awemeId);
     if (idx === -1) return false;
     state.works[idx] = newWork;
+    state.dataVersion++;
     this.notify("work-updated", awemeId, newWork);
     return true;
   },
@@ -236,6 +250,7 @@ export const store = {
   // 作品型三域通用的静默移除（按当前域数据源过滤）
   removeWorkLikeSilent(domain, idSet) {
     state[domain] = state[domain].filter((w) => !idSet.has(w.awemeId));
+    state.dataVersion++;
   },
 
   // 分页渐进加载追加（作品型三域）：push 进域数组后发专属事件，与 set 的全量替换
@@ -246,15 +261,18 @@ export const store = {
   appendWorkLike(domain, groupId, items, done) {
     const start = state[domain].length;
     state[domain].push(...items);
+    state.dataVersion++;
     this.notify("work-like-appended", { domain, groupId, items, start, done });
   },
 
   removeFollowingsSilent(idSet) {
     state.followings = state.followings.filter((f) => !idSet.has(f.uid));
+    state.dataVersion++;
   },
 
   spliceWork(idx, deleteCount = 1) {
     state.works.splice(idx, deleteCount);
+    state.dataVersion++;
     this.notify("works", state.works);
   },
 };
@@ -452,6 +470,8 @@ export const services = {
     if (!res || !Array.isArray(res.followings)) return false;
     state.followedUidsLoaded = true;
     state.followedUids = new Set(res.followings.filter((f) => f && f.uid).map((f) => String(f.uid)));
+    // 归属筛选（已关注/未关注）的判定输入变化：计入数据版本，视图缓存随之失效
+    state.dataVersion++;
     return true;
   },
 
