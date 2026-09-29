@@ -124,13 +124,12 @@
           <button class="menu-item" id="btnSync">同步</button>
           <button class="menu-item" id="btnGroupManage">分组</button>
           <button class="menu-item" id="btnSearch">搜索</button>
-          <button class="menu-item" id="btnBackup">备份</button>
           <button class="menu-item" id="btnAuthorImport">入库</button>
           <button class="menu-item" id="btnSettings">设置</button>
         </nav>
         <div class="menu-spacer"></div>
         <div class="menu-divider"></div>
-        <button class="menu-item danger" id="btnReset">重置</button>
+        <button class="menu-item" id="btnDataTools">维护</button>
         <div class="menu-storage" id="menuStorage">— MB</div>
       </div>
     </aside>
@@ -144,7 +143,7 @@
       </svg>
     </button>
     <div class="detail-body">
-      <!-- 清晰画面区（居中 39.3vw 裁切铺满，两侧由 overlay 模糊背景填充） -->
+      <!-- 清晰画面区（宽度随媒体宽高比自适应，按可视高等比铺满、超视口宽截断；列内留白由 overlay 模糊背景透出填充） -->
       <div class="media-view">
         <div id="detailVideoContainer" class="flex-col hidden">
           <div id="detailVideoWrap" class="flex-center">
@@ -157,7 +156,7 @@
         </div>
         <div id="detailImageContainer" class="hidden">
           <div class="detail-image-container flex-center">
-            <img id="detailImage" style="transition: opacity 0.2s" />
+            <div id="detailImage" role="img" style="transition: opacity 0.2s"></div>
             <audio id="detailAudio" style="display: none"></audio>
           </div>
         </div>
@@ -209,6 +208,7 @@
       <div class="bar-group bar-meta flex-row">
         <a id="detailAuthor" class="detail-bar-text detail-bar-author hidden" target="_blank" rel="noopener"></a>
         <a id="detailTitle" class="detail-bar-title text-ellipsis" target="_blank" rel="noopener"></a>
+        <span id="detailCreateTime" class="detail-bar-text detail-bar-date hidden"></span>
       </div>
       <span class="bar-divider"></span>
       <div class="bar-group bar-actions flex-row">
@@ -271,7 +271,6 @@
         <!-- 封面必须是 div+background-image：背景图失败浏览器不绘制裂图图标，内联 onerror 一并废除 -->
         <div class="sidebar-work-cover"></div>
         <div class="sidebar-work-cover-placeholder">📹</div>
-        <div class="sidebar-work-plays"></div>
         <div class="work-type-badge flex-row hidden">
           <svg width="12" height="12">
             <use href="#icon-image-badge" />
@@ -305,7 +304,10 @@
       <div class="work-checkbox" role="checkbox" aria-checked="false" aria-label="选择作品"></div>
       <div class="work-info flex-col">
         <a class="work-title-text text-ellipsis" target="_blank" rel="noopener"></a>
-        <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
+        <div class="work-author-row">
+          <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
+          <span class="work-create-time hidden"></span>
+        </div>
       </div>
     </div>
   </template>
@@ -315,7 +317,10 @@
       <div class="work-media"></div>
       <div class="work-info flex-col">
         <a class="work-title-text text-ellipsis" target="_blank" rel="noopener"></a>
-        <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
+        <div class="work-author-row">
+          <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
+          <span class="work-create-time hidden"></span>
+        </div>
       </div>
     </div>
   </template>
@@ -390,7 +395,7 @@
     </div>
   </template>
 
-  <!-- ====== 备份弹窗模板（四域导出/导入聚合，按钮由 DOMAINS_META 生成） ====== -->
+  <!-- ====== 数据维护弹窗模板（四域导出/导入/重置聚合，按钮由 DOMAINS_META 生成） ====== -->
   <template id="ioDialogTemplate">
     <div class="io-dialog">
       <div class="io-col">
@@ -400,6 +405,10 @@
       <div class="io-col">
         <div class="io-col-title">从文件导入</div>
         <div class="io-col-actions" id="ioImportCol"></div>
+      </div>
+      <div class="io-col">
+        <div class="io-col-title">重置域数据</div>
+        <div class="io-col-actions" id="ioResetCol"></div>
       </div>
     </div>
   </template>
@@ -433,7 +442,7 @@
             <div class="cache-divider"></div>
             <div class="settings-mode-row"><span>同步关注后校准作品/粉丝数</span><div class="mode-switch" id="settingsCalibrateSwitch"><div class="mode-slider"></div><button class="mode-btn" data-mode="off">关闭</button><button class="mode-btn active" data-mode="on">开启</button></div></div>
             <div class="cache-divider"></div>
-            <div class="settings-mode-row"><span>启用独立模式（无需抖音标签页）</span><div class="mode-switch" id="settingsModeSwitch"><div class="mode-slider" id="settingsModeSlider"></div><button class="mode-btn active" data-mode="off">关闭</button><button class="mode-btn" data-mode="on">开启</button></div></div>
+            <div class="settings-mode-row"><span>启用独立模式（无需抖音标签页）</span><div class="mode-switch" id="settingsModeSwitch"><div class="mode-slider"></div><button class="mode-btn active" data-mode="off">关闭</button><button class="mode-btn" data-mode="on">开启</button></div></div>
             <p class="settings-hint" id="settingsModeHint">加载中…</p>
             <div class="kv-row bf-item" style="margin-top:6px">
               <label class="bf-label">secUid（用户身份）</label>

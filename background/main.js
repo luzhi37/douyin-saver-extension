@@ -93,7 +93,10 @@ class App {
       case "SAVE_WORKS":
         return utils.asyncHandler(() => worksHandlers.save(message.works, sendResponse), sendResponse);
       case "GET_WORKS":
-        return utils.asyncHandler(() => worksHandlers.get(message.groupId, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => worksHandlers.get(message.groupId, sendResponse, message.page, message.cursor),
+          sendResponse,
+        );
       case "DELETE_WORKS":
         return utils.asyncHandler(() => worksHandlers.delete(message.awemeIds, sendResponse), sendResponse);
       case "MOVE_WORKS":
@@ -106,7 +109,10 @@ class App {
 
       // 点赞域
       case "GET_LIKES":
-        return utils.asyncHandler(() => likesHandlers.get(message.groupId, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => likesHandlers.get(message.groupId, sendResponse, message.page, message.cursor),
+          sendResponse,
+        );
       case "DELETE_LIKES":
         return utils.asyncHandler(() => likesHandlers.delete(message.awemeIds, sendResponse), sendResponse);
       case "MOVE_LIKES":
@@ -117,7 +123,10 @@ class App {
 
       // 收藏域
       case "GET_FAVORITES":
-        return utils.asyncHandler(() => favoritesHandlers.get(message.groupId, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => favoritesHandlers.get(message.groupId, sendResponse, message.page, message.cursor),
+          sendResponse,
+        );
       case "DELETE_FAVORITES":
         return utils.asyncHandler(() => favoritesHandlers.delete(message.awemeIds, sendResponse), sendResponse);
       case "MOVE_FAVORITES":
@@ -125,6 +134,21 @@ class App {
           () => favoritesHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
           sendResponse,
         );
+      // 作品型三域通用按 id 补拉（bulk STORE_CHANGED 收口的配套通道）：域由消息指定，
+      // 无需逐域重复消息形态（GET_WORKS/GET_LIKES/GET_FAVORITES 的 keyset 分页不适用
+      // 任意 id 集——主键直取即可）
+      case "GET_WORKS_BY_IDS": {
+        const handlers = {
+          [CONFIG.STORAGE_KEYS.WORKS]: worksHandlers,
+          [CONFIG.STORAGE_KEYS.LIKES]: likesHandlers,
+          [CONFIG.STORAGE_KEYS.FAVORITES]: favoritesHandlers,
+        }[message.domain];
+        if (!handlers) {
+          sendResponse({ error: "BAD_DOMAIN" });
+          return true;
+        }
+        return utils.asyncHandler(() => handlers.getByIds(message.ids, sendResponse), sendResponse);
+      }
 
       // 关注域
       case "SAVE_FOLLOWINGS":
@@ -209,16 +233,6 @@ class App {
         }, sendResponse);
       case "IMPORT_FOLLOWING":
         return utils.asyncHandler(() => scanTasks.importFollowing(message.secUid, sendResponse), sendResponse);
-      case "RESOLVE_AUTHOR":
-        return utils.asyncHandler(async () => {
-          const id = String(message.id || "");
-          if (!id) return sendResponse({ ok: false, error: "BAD_PARAMS" });
-          // sec_uid 直通；纯数字 uid 经 im/user/info 兑换
-          if (message.idType !== "uid") return sendResponse({ ok: true, secUid: id });
-          const secUid = await independentClient.resolveSecUidById(id);
-          if (!secUid) return sendResponse({ ok: false, error: "RESOLVE_FAILED" });
-          sendResponse({ ok: true, secUid });
-        }, sendResponse);
       case "CANCEL_LIKE":
         return utils.asyncHandler(async () => {
           // 点赞取消无独立模式分支（a_bogus 与 XHR 原型链深度绑定，SW 无法直连，见 docs/06）

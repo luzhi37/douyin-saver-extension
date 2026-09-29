@@ -215,6 +215,12 @@ const CONFIG = {
     COLLECTION: 20,
     AUTHOR: 20,
     FOLLOWING: 20,
+    GRID: 500,
+  },
+  // STORE_CHANGED 广播的点变化阈值：changed ≤ UPSERTS_MAX 时携带合并后记录（upserts），
+  // options 局部应用；超过则发无载荷广播走整刷收口（批量变化逐条局部更新反而 thrash）
+  BROADCAST: {
+    UPSERTS_MAX: 8,
   },
   WEBID_API: "https://mcs.zijieapi.com/webid",
   WEBID_QUERY: "aid=6383&sdk_version=5.1.18_zip&device_platform=web",
@@ -366,6 +372,17 @@ const runtimeConfig = {
 // ---------- utils ----------
 // 纯函数集（无状态，对标 options/core.js 的 utils）
 const utils = {
+  // aweme_id 高 32 位 = 发布 Unix 秒（fiber 捕获等响应缺 create_time 时的兜底推导）；
+  // 区间守卫：抖音上线(2016-09) ~ 明天，防畸形 ID 产出离谱时间
+  awemeIdCreateTime(id) {
+    try {
+      if (!/^\d+$/.test(String(id))) return 0;
+      const sec = Number(BigInt(id) >> 32n);
+      return sec > 1475000000 && sec < Date.now() / 1000 + 86400 ? sec : 0;
+    } catch {
+      return 0;
+    }
+  },
   parseExpire(value) {
     const n = Number(value);
     if (!isFinite(n) || n <= 0) return null;
@@ -554,8 +571,7 @@ const formatters = {
         .map((i) => utils.stripHttp((i.url_list || i.urlList || [])[0] || ""))
         .filter(Boolean),
       music: (aw.music && (aw.music.play_url || aw.music.playUrl || {}).uri) || "",
-      createTime: aw.create_time || 0,
-      statistics: aw.statistics || {},
+      createTime: aw.create_time || aw.createTime || utils.awemeIdCreateTime(aw.aweme_id) || 0,
       authorFollowed,
     };
   },

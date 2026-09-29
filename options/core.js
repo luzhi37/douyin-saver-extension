@@ -45,10 +45,16 @@ export const config = {
 
   // 分块渲染
   RENDER_CHUNK_SIZE: 50,
-  OBSERVER_ROOT_MARGIN: "200px",
+  RENDER_BUILD_BUDGET_MS: 8,
+  OBSERVER_ROOT_MARGIN: "600px",
   OBSERVE_CHUNK_SIZE: 48,
   FILL_FRAME_BUDGET_MS: 8,
-  UNLOAD_ROOT_MARGIN: "1200px",
+  UNLOAD_ROOT_MARGIN: "2400px",
+  FAST_SCROLL_THRESHOLD: 300,
+  // 预铺槽位上限 + 接近底部扩容阈值（剩余空间 < N 屏时倍增扩容）：
+  // 活 DOM 规模由此封顶——切组拆卸、布局、绘制的 O(N) 成本全部以 N=已挂载数为分母
+  GRID_PREMOUNT_CAP: 1500,
+  GRID_EXTEND_THRESHOLD: 1.5,
 
   // 分组/存储
   TAB_SCROLL_THRESHOLD: 2,
@@ -109,6 +115,7 @@ export const dom = {
   detailTime: document.querySelector("#detailTime"),
   detailAuthor: document.querySelector("#detailAuthor"),
   detailTitle: document.querySelector("#detailTitle"),
+  detailCreateTime: document.querySelector("#detailCreateTime"),
   detailMuteBtn: document.querySelector("#detailMuteBtn"),
   detailRemoveBtn: document.querySelector("#detailRemoveBtn"),
   detailLoopBtn: document.querySelector("#detailLoopBtn"),
@@ -124,9 +131,8 @@ export const dom = {
   dialogFooter: document.querySelector("#dialogFooter"),
   dialogClose: document.querySelector("#dialogClose"),
   fileInput: document.querySelector("#fileInput"),
-  btnBackup: document.querySelector("#btnBackup"),
+  btnDataTools: document.querySelector("#btnDataTools"),
   btnSync: document.querySelector("#btnSync"),
-  btnReset: document.querySelector("#btnReset"),
   btnBatch: document.querySelector("#btnBatch"),
   btnGroupManage: document.querySelector("#btnGroupManage"),
   mainGrid: document.querySelector("#mainGrid"),
@@ -185,6 +191,9 @@ export const state = {
   followedUidsLoaded: false,
   // 短操作弹窗锁：为 true 时禁止点击 X 关闭，待操作完成才解锁
   preventDialogClose: false,
+  // 渐进加载的一次性预铺额度 { domain, groupId, total }：首页渲染时消费（renderCards
+  // 读取后即清），按 total 一次铺满全量骨架，余页经 fillSlots 以键前缀自锚定回填
+  gridSlots: null,
 };
 
 // ---------- store ----------
@@ -227,6 +236,17 @@ export const store = {
   // 作品型三域通用的静默移除（按当前域数据源过滤）
   removeWorkLikeSilent(domain, idSet) {
     state[domain] = state[domain].filter((w) => !idSet.has(w.awemeId));
+  },
+
+  // 分页渐进加载追加（作品型三域）：push 进域数组后发专属事件，与 set 的全量替换
+  // 事件分流——避免逐页触发 refreshGridView 全量重渲（骨架闪烁 + 封面重探）。
+  // start = push 前的域数组长度，作回填落点的上界提示：网格侧 #applyFill 以键前缀
+  // 自锚定实际落点（删除会使 #slots 相对页序收缩，固定下标会整页写偏）。
+  // 消费方（main.js）按筛选态决定按槽回填或静默累积
+  appendWorkLike(domain, groupId, items, done) {
+    const start = state[domain].length;
+    state[domain].push(...items);
+    this.notify("work-like-appended", { domain, groupId, items, start, done });
   },
 
   removeFollowingsSilent(idSet) {
@@ -289,6 +309,13 @@ export const utils = {
     if (d.getFullYear() === now.getFullYear()) return d.getMonth() + 1 + "月" + d.getDate() + "日 " + hm;
     return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
   },
+  // 作品发布日期展示：create_time 为秒级 Unix 时间戳 → "YYYY-MM-DD"；缺失/0 返回空串（调用方隐藏日期位）
+  formatPublishDate(sec) {
+    if (!sec) return "";
+    const d = new Date(sec * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  },
 };
 
 // ---------- runtimeConfig ----------
@@ -340,6 +367,13 @@ export const runtimeConfig = {
 
 // ---------- services ----------
 export const services = {
+  // 网格渐进加载的全局代际计数：每次 loadDomainData 递增，作废所有在途分页循环
+  _gridLoadSeq: 0,
+  // 在途分页加载计数（并发加载各自 +1/-1，finally 保证必减）：STORE_CHANGED 增量收口
+  // 的守卫输入——>0 时头插会与在途 fillSlots 的落点锚定交错（rAF 窗口内 start 基准
+  // 过期），须整刷兜底（整刷重载本就会作废在途循环，口径最稳）
+  _gridLoadCount: 0,
+
   bgMsg(msg) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(msg, (res) => {
@@ -398,21 +432,17 @@ export const services = {
   async loadWorkLikeItems(domain, groupId) {
     const meta = config.DOMAINS_META[domain];
     const res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId });
-    return (res[meta.itemKey] || [])
-      .filter((w) => w && w.awemeId)
-      .map((w) => (typeof w.awemeId === "string" ? w : { ...w, awemeId: String(w.awemeId) }));
+    return (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
   },
 
   async loadWorks(groupId) {
-    // IDB 主键读取天然无重复；主键已统一为 string 存储，仅在遇到历史 number 主键时才拷贝归一化
+    // IDB 主键读取天然无重复
     return this.loadWorkLikeItems("works", groupId);
   },
 
   async loadFollowings(groupId) {
     const res = await this.bgMsg({ type: "GET_FOLLOWINGS", groupId: groupId || state.currentGroupId });
-    return (res.followings || [])
-      .filter((f) => f && f.uid)
-      .map((f) => (typeof f.uid === "string" ? f : { ...f, uid: String(f.uid) }));
+    return (res.followings || []).filter((f) => f && f.uid);
   },
 
   // 作者归属判定用关注全集（方案A）：全量加载不受分组影响，直接建 uid 集合。
@@ -430,15 +460,56 @@ export const services = {
     return res.groups || [];
   },
 
+  isGridLoading() {
+    return this._gridLoadCount > 0;
+  },
+
+  // 网格数据加载：作品型三域分页渐进（首页 store.set 即渲染，余量逐页 appendWorkLike，
+  // 消费方决定追加渲染或静默累积）；followings 记录小，维持单发全量。
+  // 翻页协议：page=0 取首页，后续以 bg 回传的 nextCursor（末条索引键）keyset 续传——
+  // bg 端索引游标直出、无全量读取，首页延迟在几十毫秒量级。
+  // _gridLoadSeq 为全局加载代际：任何新加载（切组/切域/STORE_CHANGED）作废在途旧循环；
+  // 循环体内再校验当前域/分组，双保险防止旧页混入新视图
   async loadDomainData() {
     const groupId = state.currentGroupId;
     const domain = state.domain;
-    let data;
-    if (domain === "works") data = await this.loadWorks(groupId);
-    else if (domain === "followings") data = await this.loadFollowings(groupId);
-    else data = await this.loadWorkLikeItems(domain, groupId);
-    if (state.currentGroupId !== groupId || state.domain !== domain) return;
-    store.set(domain, data);
+    this._gridLoadCount++;
+    try {
+      if (domain === "followings") {
+        const data = await this.loadFollowings(groupId);
+        if (state.currentGroupId !== groupId || state.domain !== domain) return;
+        store.set(domain, data);
+        return;
+      }
+      const meta = config.DOMAINS_META[domain];
+      const seq = ++this._gridLoadSeq;
+      const stale = () => seq !== this._gridLoadSeq || state.currentGroupId !== groupId || state.domain !== domain;
+      const t0 = performance.now();
+      let res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, page: 0 });
+      if (res.error) throw new Error(res.error);
+      if (stale()) return;
+      // 预铺额度：首页响应携带 total，render 按它一次铺满全量骨架（未到达页为占位卡）
+      state.gridSlots = { domain, groupId, total: res.total || 0 };
+      store.set(domain, (res[meta.itemKey] || []).filter((w) => w && w.awemeId));
+      let pages = 1;
+      while (res.hasMore) {
+        res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, cursor: res.nextCursor });
+        if (res.error) {
+          // 游标续页失败（SW 被强制重启等）：网格停在已加载部分，badge 数字为准，
+          // 下次加载自愈；不自动重启避免循环
+          console.warn("[DDM] grid load stopped:", res.error);
+          break;
+        }
+        if (stale()) return;
+        pages++;
+        store.appendWorkLike(domain, groupId, (res[meta.itemKey] || []).filter((w) => w && w.awemeId), !res.hasMore);
+      }
+      console.debug(
+        `[DDM] grid load ${domain}/${groupId}: ${pages} page(s) in ${Math.round(performance.now() - t0)}ms`,
+      );
+    } finally {
+      this._gridLoadCount--;
+    }
   },
 
   async deleteFollowings(uids) {

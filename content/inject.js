@@ -221,6 +221,18 @@
       return url && url.startsWith("http:") ? url.replace("http:", "") : url || "";
     }
 
+    // 与 background 侧同款：aweme_id 高 32 位 = 发布 Unix 秒（fiber 水合对象缺 create_time 的兜底推导）；
+    // 区间守卫：抖音上线(2016-09) ~ 明天，防畸形 ID 产出离谱时间
+    #awemeIdCreateTime(id) {
+      try {
+        if (!/^\d+$/.test(String(id))) return 0;
+        const sec = Number(BigInt(id) >> 32n);
+        return sec > 1475000000 && sec < Date.now() / 1000 + 86400 ? sec : 0;
+      } catch {
+        return 0;
+      }
+    }
+
     // 与 background 侧同款：从 CDN 直链 query 解析过期时间戳
     #parseExpire(value) {
       const n = Number(value);
@@ -410,8 +422,7 @@
         videoExpireAt: vid.expireAt || 0,
         images: this.#extractImages(raw),
         music: this.#extractMusic(raw),
-        createTime: raw.create_time || 0,
-        statistics: raw.statistics || {},
+        createTime: raw.create_time || raw.createTime || this.#awemeIdCreateTime(awemeId) || 0,
       };
     }
 

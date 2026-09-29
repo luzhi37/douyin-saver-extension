@@ -38,11 +38,11 @@ class AuthorImport {
     body.className = "import-rows";
     body.innerHTML = `
       <div class="import-row">
-        <input class="import-input works-input" placeholder="sec_uid / uid / 主页链接" spellcheck="false" aria-label="作品域入库作者">
+        <input class="import-input works-input" placeholder="作者主页链接（douyin.com/user/…）" spellcheck="false" aria-label="作品域入库作者">
         <button class="dy-btn flex-inline-center dy-btn-primary btn-import-works">作品域入库</button>
       </div>
       <div class="import-row">
-        <input class="import-input followings-input" placeholder="sec_uid / uid / 主页链接" spellcheck="false" aria-label="关注域入库作者">
+        <input class="import-input followings-input" placeholder="作者主页链接（douyin.com/user/…）" spellcheck="false" aria-label="关注域入库作者">
         <button class="dy-btn flex-inline-center dy-btn-primary btn-import-followings">关注域入库</button>
       </div>
     `;
@@ -83,13 +83,13 @@ class AuthorImport {
     }
     const parsed = this.#parseAuthorInput(this.#worksInput.value);
     if (!parsed) {
-      dialog.showToast("请输入作者主页链接、sec_uid 或数字 uid", "error");
+      dialog.showToast("请粘贴作者主页链接（douyin.com/user/…）", "error");
       return;
     }
     const secUid = await this.#resolveSecUid(parsed);
     if (!this.#worksInput) return; // 解析期间弹窗已被关闭
     if (!secUid) {
-      dialog.showToast("无法解析该 uid，请改用主页链接或 sec_uid", "error");
+      dialog.showToast("无法解析该主页对应的 sec_uid", "error");
       return;
     }
 
@@ -112,6 +112,10 @@ class AuthorImport {
     } catch (err) {
       if (!this.#running) return;
       this.#showError(err.message || String(err));
+    } finally {
+      // 终态复位与 closeDialog 的复位并存：finally 管完成/失败落地（允许原地再发起），closeDialog 管取消窗口期
+      this.#running = false;
+      this.#requestId = null;
     }
   }
 
@@ -120,7 +124,7 @@ class AuthorImport {
     if (this.#followingsBusy || !this.#followingsInput) return;
     const parsed = this.#parseAuthorInput(this.#followingsInput.value);
     if (!parsed) {
-      dialog.showToast("请输入作者主页链接、sec_uid 或数字 uid", "error");
+      dialog.showToast("请粘贴作者主页链接（douyin.com/user/…）", "error");
       return;
     }
     this.#followingsBusy = true;
@@ -129,7 +133,7 @@ class AuthorImport {
       const secUid = await this.#resolveSecUid(parsed);
       if (!this.#followingsInput) return; // 解析期间弹窗已被关闭
       if (!secUid) {
-        dialog.showToast("无法解析该 uid，请改用主页链接或 sec_uid", "error");
+        dialog.showToast("无法解析该主页对应的 sec_uid", "error");
         return;
       }
       const res = await services.bgMsg({ type: "IMPORT_FOLLOWING", secUid });
@@ -166,6 +170,15 @@ class AuthorImport {
 
   // ---------- 私有：弹窗三态 ----------
 
+  // 进度层专用关闭：只复位任务态与进度层元素引用。基层「入库」弹窗的输入/按钮引用
+  // 必须保留（弹窗仍开着，原地可再次发起）——全量清空仅走 closeDialog（整窗关闭时）
+  #closeProgressDialog() {
+    dialog.closeDialog();
+    this.#running = false;
+    this.#requestId = null;
+    this.#countEl = this.#summaryEl = this.#statusEl = null;
+  }
+
   #openProgressDialog() {
     const tmpl = document.getElementById("syncDialogBodyTemplate");
     const body = tmpl.content.cloneNode(true);
@@ -176,7 +189,7 @@ class AuthorImport {
     this.#summaryEl.textContent = "正在获取作者作品…";
     this.#statusEl.textContent = "SYNCING";
     // 进度层叠于「入库」弹窗之上：关闭后回到弹窗继续操作（结果就地改写同层内容）
-    dialog.pushDialog("导入作者作品", body, [], () => this.closeDialog());
+    dialog.pushDialog("导入作者作品", body, [], () => this.#closeProgressDialog());
   }
 
   #showDone(res) {
@@ -200,8 +213,9 @@ class AuthorImport {
     dom.dialogBody.appendChild(body);
     dom.dialogFooter.innerHTML = "";
     dialog.showOkDialog();
-    // 当前正处于作品域才刷新（不替用户切域；switchDomain 本就会重载目标域）
-    if (state.domain === "works") services.loadDomainData();
+    // 网格/分组数字刷新由 background 收尾的 STORE_CHANGED 统一承担（全部批次落库完才
+    // 发一次：refreshGroups 重算分组数字 + 当前域一致时 loadDomainData，含取消/部分失败）；
+    // 此处不再手动 loadDomainData，避免与广播的双重整网格重载
   }
 
   // 错误展示：进度弹窗内联（summary 清空 + status 显示错误，DomainScanSync 同款）；
@@ -224,10 +238,12 @@ class AuthorImport {
     this.#btnFollowings.textContent = busy ? "入库中…" : "关注域入库";
   }
 
-  // ---------- 私有：输入解析与 secUid 兑换 ----------
+  // ---------- 私有：输入解析与 secUid 提取 ----------
 
-  // 输入三形态：主页链接（pathname /user/<sec_uid>，天然免疫 query；兼容无协议的
-  // 地址栏复制形态）、裸 sec_uid（长 token）、纯数字 uid。返回 { idType, id } 或 null
+  // 仅支持作者主页链接：pathname /user/<sec_uid>，天然免疫 query；兼容无协议的
+  // 地址栏复制形态。uid 需经 im/user/info 兑换（多一次请求且对陌生作者不可靠）、
+  // 裸 sec_uid 难以脱离页面上下文取得，均已裁撤——不是链接直接判无效。
+  // 返回 sec_uid 字符串或 null
   #parseAuthorInput(text) {
     const raw = (text || "").trim();
     if (!raw) return null;
@@ -235,21 +251,19 @@ class AuthorImport {
       try {
         const url = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw);
         const m = url.pathname.match(config.SEC_UID_REGEX);
-        // 是链接但解析不到 sec_uid（@handle 主页 / 短链）直接判无效，不落入裸 id 分支
-        return m ? { idType: "secUid", id: m[1] } : null;
+        return m ? m[1] : null;
       } catch (_) {
         return null;
       }
     }
-    if (/^\d+$/.test(raw)) return { idType: "uid", id: raw };
-    if (/^[A-Za-z0-9_-]{30,}$/.test(raw)) return { idType: "secUid", id: raw };
     return null;
   }
 
-  // 解析输入为 secUid：sec_uid 直通；uid 经 RESOLVE_AUTHOR 兑换（im/user/info），失败返回空串
-  async #resolveSecUid(parsed) {
-    if (parsed.idType === "secUid") return parsed.id;
-    const res = await services.bgMsg({ type: "RESOLVE_AUTHOR", id: parsed.id, idType: "uid" }).catch(() => null);
+  // 链接即 sec_uid；唯一例外是自己主页（登录态地址栏是 /user/self，无真实 sec_uid），
+  // 经 RESOLVE_SEC_UID 用 uid cookie 兑换（本人场景 im/user/info 必然可用），失败返回空串
+  async #resolveSecUid(secUid) {
+    if (secUid !== "self") return secUid;
+    const res = await services.bgMsg({ type: "RESOLVE_SEC_UID" }).catch(() => null);
     return res && res.ok ? res.secUid || "" : "";
   }
 }

@@ -16,9 +16,7 @@
     "*://*.douyinvod.com/*",
     "*://*.douyinpic.com/*",
     "*://mssdk.bytedance.com/*",
-    "*://mcs.zijieapi.com/*",
-    "*://ttwid.bytedance.com/*",
-    "*://*.tiktok.com/*"
+    "*://mcs.zijieapi.com/*"
   ],
   "background": {
     "service_worker": "background/main.js",

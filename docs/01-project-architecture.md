@@ -37,10 +37,14 @@ manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douy
 ```
 chrome.runtime.onMessage (background/main.js App.route switch)
   │
-  ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORK
+  ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORK / GET_WORKS_BY_IDS
   │                            SAVE_FOLLOWINGS / GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS
   │                            GET_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / RELOAD_CONFIG
+  │     （作品型三域 GET_* 分页：page:0 经复合索引 savedAt_id / groupId_savedAt_id
+  │       （DB v3，升级回填缺失 savedAt/groupId）keyset 游标直出首页 + hasMore/nextCursor；
+  │       cursor 以上页末条索引键（含主键，全序唯一）为开区间上界续页，免疫并发增删位移；
+  │       省略 page/cursor = 一次性全量。每次只物化 PAGE.GRID 条，无全量读取）
   │
   ├─ 按模式分支（读 independentClient.loadMode()）──→
   │     SYNC_WORKS          → im ? independentTasks.syncWorks         : scanTasks.syncWorks（逐条 tabBridge.sendAsync）
@@ -127,6 +131,12 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 // BRIDGE 表：chrome 消息类型 ↔ CustomEvent 事件对 的映射（10 个条目），每项定义：
 // { req: "DY_..._REQUEST", res: "DY_..._RESULT", timeout: (msg)=>ms, detail: (msg)=>{...} }
 ```
+
+### 长任务链路模式
+
+- `tabBridge.send`（`sendToTab`）：生成 `requestId` 向抖音标签页发消息，等待超时 `CONFIG.TIMEOUT.REQUEST`（默认 30s，`GET_SECURITY_STATUS` 5s）；内部 `.catch()` 处理 `find()` 极端异常路径。
+- `tabBridge.sendAsync`（`sendToTabAsync`）：`send` 的 Promise 封装，background 循环 handler 中逐条/逐页请求（同步/扫描/取消循环）均用此模式；独立模式 `CANCEL_COLLECTION` 由 `independentTasks.cancel` 在 background 内直接循环，不走此路径。
+- `requestResponse`：content.js **先 `addEventListener(resultEvent)` 再 `dispatchEvent(requestEvent)`**，消除同步 handler 的 `setTimeout(0)` workaround 需求。
 
 ### 进度消息（background 循环 handler 直接发给 options，不经 content 转发）
 
@@ -218,7 +228,7 @@ DOMAIN_CONFIG = {
 
 ### Work 记录字段（formatWork / normalizeWork 共同产出）
 
-`awemeId, type("video"|"note"), desc, nickname, uid, authorHomeUrl, cover, video, videoExpireAt, images[], music, createTime, statistics, authorFollowed(bool|null)`
+`awemeId, type("video"|"note"), desc, nickname, uid, authorHomeUrl, cover, video, videoExpireAt, images[], music, createTime（抖音发布时间，秒级 Unix 时间戳；卡片作者行右侧与详情底栏标题右侧展示。fiber 捕获路径的原始对象缺 create_time，采集与落库均按 aweme_id 高 32 位推导兜底，mergeWork 恒保证非零）, authorFollowed(bool|null)`
 视频直链三级取链语义见 [02](./02-independent-sync-works.md) / [09](./09-inject-tab-mode.md)。落库合并规则（groupId/savedAt 保护、长效链降级防护、导入分组对账等**全部写入路径语义**）统一见 [10](./10-storage-write-and-import.md)，本文只维护字段模型。
 
 ### Following 记录字段（7 个稳定字段）
@@ -289,9 +299,23 @@ DOMAIN_CONFIG = {
 
 键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数（含校准开关）随存随恢复，重开扩展（非重载）不回退编译期默认值；`IndependentClient.isCalibrateEnabled` 另有 storage 惰性加载兜底（首次调用才读，跨 SW 重建仍生效）。
 
-### options/core.js 顶层 `config`（UI 侧，35 键）
+### options/core.js 顶层 `config`（UI 侧，47 键，权威键表）
 
-按分组速查：视频重试（`VIDEO_RETRY_DELAYS:[200,400,600]` 等）、媒体熔断（`MEDIA_FAIL_WINDOW:5000` / `MEDIA_FAIL_MAX:10` / `MEDIA_BREAK_COOLDOWN:15000`）、超时（`FETCH_RETRY_DELAY/SYNC_TIMEOUT/VIDEO_FALLBACK_TIMEOUT`）、详情页（`DETAIL_TITLE_MAX_LEN:40` / `TOAST_DURATION:2000` / `DOWNLOAD_MAX_RETRY:1`）、UI 延迟（`HOVER_PREVIEW_DELAY:200` / `BLOB_REVOKE_DELAY:10000` / `NOTE_AUTO_PLAY_INTERVAL:3000`）、侧边栏（`SIDEBAR_SNAP_POINTS:[650,0]` 等 5 键）、网格项尺寸（`CARD_SIZE_FALLBACK:261` 等 3 键）、分块渲染（`RENDER_CHUNK_SIZE:50` / `OBSERVER_ROOT_MARGIN:'200px'` / `OBSERVE_CHUNK_SIZE:48` / `FILL_FRAME_BUDGET_MS:8` / `UNLOAD_ROOT_MARGIN:'1200px'`）、分组/存储（`GROUP_NAME_MAX_LEN:20` / `STORAGE_MAX_BYTES:10MB` / `TRASH_GROUP_NAME:'稍后删除'`）、Tab 滚动（`TAB_SCROLL_THRESHOLD:2`）、抖音 URL 与正则/图标（`URL_BASE` / `SEC_UID_REGEX` / `icons`）。
+| 分组       | 键（默认值）                                                                                                                                                  |
+|------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 视频重试   | `VIDEO_RETRY_DELAYS` `[200,400,600]` / `VIDEO_RETRY_MAX` `3` / `VIDEO_RETRY_FALLBACK_DELAY` `1000`                                                            |
+| 媒体熔断   | `MEDIA_FAIL_WINDOW` `5000` / `MEDIA_FAIL_MAX` `10` / `MEDIA_BREAK_COOLDOWN` `15000`                                                                           |
+| 超时       | `FETCH_RETRY_DELAY` `1000` / `SYNC_TIMEOUT` `30000` / `VIDEO_FALLBACK_TIMEOUT` `5000`                                                                         |
+| 详情页     | `DETAIL_TITLE_MAX_LEN` `40` / `TOAST_DURATION` `2000` / `TOAST_ERROR_DURATION` `4500` / `DOWNLOAD_MAX_RETRY` `1`                                              |
+| UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000` / `SEARCH_DEBOUNCE` `200`                                        |
+| 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
+| 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `11` / `CARD_HEIGHT_OFFSET` `44`                                                                                      |
+| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'600px'` / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'` / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_EXTEND_THRESHOLD` `1.5` |
+| 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                                                      |
+| Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                                                    |
+| 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_LIKE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                                                    |
+| 域元数据   | `WORK_LIKE_DOMAINS` `['works','likes','favorites']` / `DOMAINS_META`（四域 label/itemKey/idKey/isFollowings）                                                 |
+| 正则/图标  | `SEC_UID_REGEX` `/^\/user\/([^/?]+)/` / `icons` `{}`（init 填充）                                                                                             |
 
 ## 相关文档
 

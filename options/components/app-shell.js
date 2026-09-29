@@ -52,15 +52,48 @@ class AppShell {
     dom.leftSidebar.classList.toggle("collapsed", collapsed);
   }
 
-  switchDomain(domain) {
-    if (domain === state.domain) return;
-
-    // 先中止所有网格未完成的分块渲染，防止旧域骨架卡在下一帧追加进共享容器
+  // 分组/域切换共用的同步清场：中止所有网格未完成的渲染/拼装（防旧骨架卡在下一帧
+  // 追加进共享容器）+ 清空共享容器。只清不铺，数据到达后由 render() 重建
+  // （首屏同步铺骨架 + 余量拼装一次挂载 + 渐进按槽回填）。
+  // 「旧网格冻结-定格」变体已于 2026-09-27 用户定案否决：定格被感知为卡顿，必须先清空
+  clearActiveGrid() {
     worksGrid.abortRender();
     followingsGrid.abortRender();
     likesGrid.abortRender();
     favoritesGrid.abortRender();
-    dom.mainContainer.innerHTML = "";
+    // 万级子树的同步 innerHTML="" 拆卸是大→小切组「慢一拍」的主源（整树脱离 +
+    // LayoutObject 销毁 100-300ms，GC 再补一拍）：先 O(1) 换空壳让画面立即清空，
+    // 旧子树脱离渲染树后由 #destroyDetached 分批销毁，拆卸与 GC 离开点击关键路径
+    const stale = dom.mainContainer;
+    const fresh = document.createElement("div");
+    fresh.className = "main-container";
+    stale.replaceWith(fresh);
+    dom.mainContainer = fresh;
+    worksGrid.attachContainer(fresh);
+    followingsGrid.attachContainer(fresh);
+    likesGrid.attachContainer(fresh);
+    favoritesGrid.attachContainer(fresh);
+    this.#destroyDetached(stale);
+  }
+
+  // 空闲分批销毁脱离渲染树的旧网格子树：每轮 8ms 预算、逐个移除直接子节点，
+  // 拆卸与 GC 压力摊到空闲帧，不与点击→首屏的渲染路径竞争
+  #destroyDetached(node) {
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 0));
+    const step = () => {
+      const deadline = performance.now() + 8;
+      while (node.firstChild && performance.now() < deadline) {
+        node.firstChild.remove();
+      }
+      if (node.firstChild) idle(step);
+    };
+    step();
+  }
+
+  switchDomain(domain) {
+    if (domain === state.domain) return;
+
+    this.clearActiveGrid();
 
     state.selectedIds.clear();
     store.set("batchMode", false);

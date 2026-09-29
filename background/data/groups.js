@@ -27,10 +27,6 @@ class Groups {
 
       normalized.forEach((g, i) => (g.order = i));
 
-      // 顺序与存储不一致时回写，修复历史错位的脏数据（自愈，只读路径最多写一次）
-      if (list.length && normalized.some((g, i) => list[i] !== g)) {
-        await storage.putGroups(groupsName, normalized);
-      }
       sendResponse({ groups: normalized });
     } catch (err) {
       sendResponse({ error: err.message });
