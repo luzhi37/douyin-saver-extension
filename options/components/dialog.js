@@ -74,6 +74,8 @@ class Dialog {
     layer.footer.innerHTML = "";
     layer.onClose = onClose || null;
     this.#syncTopDom();
+    // 顶层 onClose 登记给 requestDialogClose：X/Esc 关闭时调用并联动 CANCEL_ACTIVE_TASK
+    state.activeDialog = layer.onClose;
 
     if (typeof body === "string") {
       layer.body.innerHTML = body;
@@ -194,8 +196,8 @@ class Dialog {
   }
 
   showNoSignatureDialog(tabUrl, stepLabel, scanLabel) {
-    dom.dialogTitle.textContent = "未捕获到签名";
-    dom.dialogBody.innerHTML = `
+    const body = document.createElement("div");
+    body.innerHTML = `
       <p>扩展需要先从抖音页面捕获请求签名才能${scanLabel}。</p>
       <p style="margin-top:8px">请按以下步骤操作：</p>
       <ol style="margin-top:4px;padding-left:20px;line-height:1.8">
@@ -204,7 +206,10 @@ class Dialog {
         <li>回到本扩展，再次点击「${scanLabel}」</li>
       </ol>
     `;
-    this.showOkDialog();
+    // 必须走 showDialog：直接写 dom.dialog* 不会解除基层 hidden（栈空时弹窗不可见）
+    this.showDialog("未捕获到签名", body, [
+      { text: "好的", primary: true, callback: () => this.closeDialog() },
+    ]);
   }
 }
 

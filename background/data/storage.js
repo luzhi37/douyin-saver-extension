@@ -1,18 +1,53 @@
 // background/data/storage.js — IndexedDB 封装层（class Storage + 单例）
 
+import { CONFIG } from "../core.js";
+
 const DB_NAME = "douyin-saver";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 const STORES = {
-  works: { keyPath: "awemeId", indexes: ["groupId"] },
+  works: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
   works_groups: { keyPath: "id" },
   followings: { keyPath: "uid", indexes: ["groupId"] },
   followings_groups: { keyPath: "id" },
-  likes: { keyPath: "awemeId", indexes: ["groupId"] },
+  likes: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
   likes_groups: { keyPath: "id" },
-  favorites: { keyPath: "awemeId", indexes: ["groupId"] },
+  favorites: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
   favorites_groups: { keyPath: "id" },
 };
+
+// 复合索引名 → keyPath（其余同名同路径）。尾部拼主键使索引键全序唯一：
+// keyset 翻页的开区间上界不会丢掉同 savedAt 的平级记录（同毫秒批量导入是真实场景）
+const INDEX_KEY_PATHS = {
+  savedAt_id: ["savedAt", "awemeId"],
+  groupId_savedAt_id: ["groupId", "savedAt", "awemeId"],
+};
+
+// v3 升级回填：savedAt/groupId 是网格 keyset 翻页索引的依赖字段，老记录缺失会被复合
+// 索引静默跳过（分页查询不可见）。savedAt 缺失按 createTime（Unix 秒）推导、兜底当前
+// 时间；groupId 缺失归「未分组」。仅写缺失记录，存量完整时零写入
+function backfillPagingKeys(tx, db) {
+  const now = Date.now();
+  for (const name of ["works", "likes", "favorites"]) {
+    if (!db.objectStoreNames.contains(name)) continue;
+    const store = tx.objectStore(name);
+    store.openCursor().onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (!cursor) return;
+      const w = cursor.value;
+      if (w.savedAt && w.groupId) {
+        cursor.continue();
+        return;
+      }
+      cursor.update({
+        ...w,
+        savedAt: w.savedAt || (w.createTime ? w.createTime * 1000 : now),
+        groupId: w.groupId || CONFIG.GROUPS.DEFAULT_ID,
+      });
+      cursor.continue();
+    };
+  }
+}
 
 // ---------- Storage ----------
 // IndexedDB 封装层；单例连接以 #db 私有字段持有（首次打开后缓存 Promise）。
@@ -25,14 +60,19 @@ class Storage {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
+        const tx = e.target.transaction;
         for (const [name, cfg] of Object.entries(STORES)) {
-          if (!db.objectStoreNames.contains(name)) {
-            const store = db.createObjectStore(name, { keyPath: cfg.keyPath });
-            for (const idx of cfg.indexes || []) {
-              store.createIndex(idx, idx, { unique: false });
+          // 已存在的 store（版本升级）经升级事务取出，补建后加的索引；新建 store 直接持引用
+          const store = db.objectStoreNames.contains(name)
+            ? tx.objectStore(name)
+            : db.createObjectStore(name, { keyPath: cfg.keyPath });
+          for (const idx of cfg.indexes || []) {
+            if (!store.indexNames.contains(idx)) {
+              store.createIndex(idx, INDEX_KEY_PATHS[idx] || idx, { unique: false });
             }
           }
         }
+        backfillPagingKeys(tx, db);
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => {
@@ -122,6 +162,34 @@ class Storage {
       const tx = db.transaction(storeName, "readonly");
       const req = tx.objectStore(storeName).index(indexName).getAll(value);
       req.onsuccess = () => resolve(this.#toMap(req.result, keyField));
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // 索引 keyset 翻页：prev 方向迭代取 limit 条，多读 1 条探测 hasMore（不物化进结果）。
+  // 返回 { items, hasMore, lastKey }，lastKey 为末条索引键（复合键含主键，全序唯一），
+  // 调用方作下页开区间上界回传——并发增删不产生页间位移/重复
+  async readIndexPage(storeName, indexName, range, limit) {
+    const db = await this.#openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).index(indexName).openCursor(range, "prev");
+      const items = [];
+      let lastKey = null;
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve({ items, hasMore: false, lastKey });
+          return;
+        }
+        if (items.length >= limit) {
+          resolve({ items, hasMore: true, lastKey });
+          return; // 不再 continue，事务随无挂起请求自动结束
+        }
+        items.push(cursor.value);
+        lastKey = cursor.key;
+        cursor.continue();
+      };
       req.onerror = () => reject(req.error);
     });
   }

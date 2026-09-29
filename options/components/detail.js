@@ -43,37 +43,50 @@ class Detail {
   }
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
-    const img = dom.detailImage;
-    // 模糊背景跟随当前图（对齐抖音：同画面放大模糊）
-    this.#applyDetailBg([this.#noteWork.images[idx]]);
-    // 淡出当前图片
-    img.style.opacity = '0';
-    requestAnimationFrame(() => {
-      const url = utils.pickHttpsUrl(this.#noteWork.images[this.#noteImgIndex])
-        || utils.pickHttpsUrl(this.#noteWork.cover)
-        || "";
-      // 探针先行：失败 URL 不落可见节点（裂图无载体），失败时恢复显示上一张
-      const token = ++this.#imgProbeToken;
-      if (!url) {
-        img.style.opacity = '1';
-        return;
-      }
-      const probe = new Image();
-      probe.onload = () => {
-        if (token !== this.#imgProbeToken) return;
-        this.markMediaOk();
-        img.addEventListener('load', () => { img.style.opacity = '1'; }, { once: true });
-        img.src = url;
-      };
-      probe.onerror = () => {
-        if (token !== this.#imgProbeToken) return;
-        this.markMediaFail();
-        img.style.opacity = '1';
-      };
-      probe.src = url;
-    });
+    // 预取下一张：翻页/自动播放到下一图时命中缓存（自动播放 3s/张，预取窗口充裕）
+    this.#prefetchNoteImage(idx + 1);
+    const url = utils.pickHttpsUrl(this.#noteWork.images[idx])
+      || utils.pickHttpsUrl(this.#noteWork.cover)
+      || "";
     this.#updateCounters(this.#noteWork);
+    if (!url) return;
+    // div+background-image 载体的零空档切图：背景在提交前保持旧图，失败在结构上不可见
+    //（不存在 img 的裂图态）；探针先行，失败 URL 永不落到可见节点，失败时旧图本就未离开
+    const token = ++this.#imgProbeToken;
+    const probe = new Image();
+    probe.onload = () => {
+      if (token !== this.#imgProbeToken) return;
+      this.markMediaOk();
+      // 图集逐图自适应列宽（图组内比例不一致时随图切换）
+      this.#setMediaAspect(probe.naturalWidth, probe.naturalHeight);
+      this.#hideImageFailed();
+      const doCommit = () => {
+        if (token !== this.#imgProbeToken) return;
+        dom.detailImage.style.backgroundImage = utils.cssUrl(url);
+        dom.detailImage.setAttribute("aria-label", this.#noteWork.desc || "");
+        // 模糊背景跟随当前图（对齐抖音：同画面放大模糊），与前景同帧提交
+        this.#applyDetailBg([this.#noteWork.images[idx]]);
+      };
+      // decode 保证首帧完整可绘后再提交；decode 失败（罕见）也照常提交——背景失败不可见
+      if (typeof probe.decode === "function") probe.decode().then(doCommit, doCommit);
+      else doCommit();
+    };
+    probe.onerror = () => {
+      if (token !== this.#imgProbeToken) return;
+      this.markMediaFail();
+    };
+    probe.src = url;
   }
+
+  // 预取指定图（仅预热 HTTP 缓存：无回调、不进熔断计数，展示探针才是计数决策点）；
+  // 熔断冷却期跳过，避免冷却窗口内继续打请求
+  #prefetchNoteImage(idx) {
+    if (this.mediaRetryBlocked()) return;
+    const url = utils.pickHttpsUrl(this.#noteWork?.images?.[idx] || "");
+    if (!url) return;
+    new Image().src = url;
+  }
+
   // 图集分段进度条：N 段对应 N 张图（仅在段数变化时重建，避免 resume 时清空填充）
   #buildNoteSegs() {
     const work = this.#noteWork;
@@ -411,6 +424,14 @@ class Detail {
     dom.detailLoader.classList.toggle("hidden", !isVideo);
   }
 
+  // 清晰列宽自适应：写入 --media-aspect（.media-view 宽度 = min(视口宽, 可视高×比例)）。
+  // 视频=loadedmetadata 的 videoWidth/Height，图片=探针 naturalWidth/Height；
+  // 宽高无效（未加载/音频流）回落 9:16 缺省，切作品时主动复位防上一件比例残留
+  #setMediaAspect(w, h) {
+    const aspect = w > 0 && h > 0 ? w / h : 9 / 16;
+    dom.detailOverlay.style.setProperty("--media-aspect", aspect.toFixed(4));
+  }
+
   // 背景虚化的健壮提交：候选 URL 逐个探针，成功才写入 --bg-url（带引号转义）；
   // 全部失效或本件无可用封面时降级为统一深色底（--bg-url:none），绝不回退到上一件作品的模糊封面。
   // 直接给 CSS 背景塞失效链接会静默变成纯黑——note 类型"虚化丢失"的根源即此。
@@ -525,6 +546,8 @@ class Detail {
 
       // 切作品先复位背景为统一深色底，避免探针完成前残留上一件作品的模糊封面
       dom.detailOverlay.style.setProperty("--bg-url", "none");
+      // 列宽比例同步复位 9:16 缺省，新作品元数据就绪后再收窄/放宽
+      this.#setMediaAspect(0, 0);
 
       const isVideo = work.type === "video" && utils.getVideoUrl(work);
       if (isVideo) {
@@ -579,6 +602,8 @@ class Detail {
       // 描述全文进入播放条（CSS 单行省略 + hover title 提示），不再 JS 截断
       dom.detailTitle.textContent = work.desc || "无作品描述";
       dom.detailTitle.title = "在抖音打开作品页";
+      dom.detailCreateTime.textContent = utils.formatPublishDate(work.createTime);
+      dom.detailCreateTime.classList.toggle("hidden", !dom.detailCreateTime.textContent);
 
       this.updateLoopBtn(isVideo);
 
@@ -604,7 +629,10 @@ class Detail {
         probe.onload = () => {
           if (token !== this.#imgProbeToken) return;
           this.markMediaOk();
-          dom.detailImage.src = work.cover;
+          this.#setMediaAspect(probe.naturalWidth, probe.naturalHeight);
+          // div+background-image 载体：探针成功即提交，可见加载失败在结构上不存在
+          dom.detailImage.style.backgroundImage = utils.cssUrl(work.cover);
+          dom.detailImage.setAttribute("aria-label", work.desc || "");
           onReady();
         };
         probe.onerror = () => {
@@ -662,6 +690,10 @@ class Detail {
     };
     video.addEventListener("canplay", fireLoaded, { once: true });
     video.addEventListener("loadedmetadata", fireLoaded, { once: true });
+    // 列宽收窄依据：元数据就绪即按真实宽高比自适应（与 fireLoaded 的 once 监听互不干扰）
+    video.addEventListener("loadedmetadata", () => {
+      this.#setMediaAspect(video.videoWidth, video.videoHeight);
+    }, { once: true });
 
     video.play().catch((err) => {
       if (err.name === "NotAllowedError") {
@@ -701,7 +733,6 @@ class Detail {
     this.#noteAutoPlayTimer = null;
     this.#noteIsPlaying = false;
     this.#noteSegOffset = 0;
-    const img = dom.detailImage;
     const audio = dom.detailAudio;
 
     const readyFn = () => { if (onReady) onReady(); };
@@ -712,12 +743,11 @@ class Detail {
       readyFired = true;
       readyFn();
     };
-    img.alt = "";
     // 切到新作品先清空上个作品的图，避免链接失效时残留上一作品内容
     this.#clearDetailImage();
     // 先加载 cover：网格卡已加载过同一 cover 大概率命中缓存，探针通过即先落为占位，
     // 再换高清首帧。候选去重防 cover 与首帧同 URL 重复加载；全部失败才进失效态。
-    // 期间 img 无 src 不写 alt，杜绝中央区闪现作品标题文本（见 #clearDetailImage）
+    // 期间无 aria-label，杜绝中央区闪现作品标题文本（见 #clearDetailImage）
     const candidates = [...new Set([
       utils.pickHttpsUrl(work.cover || ""),
       utils.pickHttpsUrl(work.images?.[0] || ""),
@@ -727,17 +757,11 @@ class Detail {
       fireReady();
     } else {
       const token = ++this.#imgProbeToken;
-      const loadUrl = (url) => {
-        // 无障碍标注在图片真正加载成功后才落，避免失效时以文本展示标题
-        img.addEventListener("load", () => { img.alt = work.desc || ""; }, { once: true });
-        img.addEventListener("load", fireReady, { once: true });
-        img.addEventListener("error", fireReady, { once: true });
-        img.src = url;
-      };
       const tryCandidate = (i) => {
         if (i >= candidates.length) {
           // 全部失效：保持清空并显示失效态，绝不回退到上一个作品
           this.markMediaFail();
+          this.#clearDetailImage();
           this.#showImageFailed();
           fireReady();
           return;
@@ -746,7 +770,12 @@ class Detail {
         probe.onload = () => {
           if (token !== this.#imgProbeToken) return;
           this.markMediaOk();
-          loadUrl(candidates[i]);
+          this.#setMediaAspect(probe.naturalWidth, probe.naturalHeight);
+          // div+background-image 载体：探针成功即提交，可见加载失败在结构上不存在
+          //（背景失败不可见，无需 img error 兜底）
+          dom.detailImage.style.backgroundImage = utils.cssUrl(candidates[i]);
+          dom.detailImage.setAttribute("aria-label", work.desc || "");
+          fireReady();
         };
         probe.onerror = () => {
           if (token !== this.#imgProbeToken) return;
@@ -757,6 +786,9 @@ class Detail {
       };
       tryCandidate(0);
     }
+
+    // 预取第二张：首图经 cover 候选链落地后，翻页/自动播放到 images[1] 直接命中缓存
+    this.#prefetchNoteImage(1);
 
     // 图集/作品计数统一走计数展示逻辑（底栏 [K/N] 图片页序 + 作品序号）
     this.#updateCounters(work);
@@ -1072,9 +1104,9 @@ class Detail {
 
   // 切作品时清空详情主图，杜绝链接失效时残留上一作品的内容
   #clearDetailImage() {
-    dom.detailImage.removeAttribute("src");
-    // 无 src 的 <img> 会以文本渲染 alt 属性——清空 alt，杜绝加载期中央区闪现作品标题
-    dom.detailImage.alt = "";
+    dom.detailImage.style.backgroundImage = "";
+    // div 载体以 role="img" + aria-label 提供无障碍标注，清空杜绝加载期中央区闪现作品标题
+    dom.detailImage.removeAttribute("aria-label");
     this.#hideImageFailed();
   }
 

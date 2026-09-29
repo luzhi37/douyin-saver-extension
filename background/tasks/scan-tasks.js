@@ -1,10 +1,11 @@
-// background/tasks/scan-tasks.js — Tab 模式长任务（calibrateStats / calibrateOne / fetchFollowing / persistScan / fetchFavorites / fetchCollection / runCancelBatch / syncWorks）
+// background/tasks/scan-tasks.js — Tab 模式长任务（calibrateStats / calibrateOne / fetchFollowing / persistScan / fetchFavorites / fetchCollection / runCancelBatch / importUserWorks / syncWorks / importFollowing）
 
 import { CONFIG, formatters, utils, runtimeConfig } from "../core.js";
 import { credentials } from "../identity/credentials.js";
 import { independentClient } from "../identity/independent-client.js";
 import { tabBridge } from "../identity/tab-bridge.js";
 import { domainStore } from "../data/domain-store.js";
+import { runAuthorWorksImport } from "./author-works-import.js";
 
 // ---------- ScanTasks ----------
 // Tab 模式长任务（经 TabBridge 循环）
@@ -75,6 +76,10 @@ class ScanTasks {
       const record = formatters.formatFollowingFromProfile(user);
       record.lastUpdateAt = (await this.#fetchLatestWorkTime(secUid).catch(() => 0)) || 0;
       const result = await domainStore.mergeAndSaveFollowings(CONFIG.STORAGE_KEYS.FOLLOWINGS, [record]);
+      // 内容真有变化才广播：重复收录同一作者（字段全等）是 no-op，不该触发 options 重载
+      if (result.changed > 0) {
+        utils.sendMessageSafe({ type: "STORE_CHANGED", domain: CONFIG.STORAGE_KEYS.FOLLOWINGS });
+      }
       sendResponse({ ok: true, following: record, added: result.added, updated: result.updated });
     } catch (err) {
       sendResponse({ ok: false, error: err.message });
@@ -311,77 +316,31 @@ class ScanTasks {
     });
   }
 
-  // 作者作品批量入库（Tab 模式）：FETCH_WORKS_PAGE 分页循环 + 每页 mergeAndSave 落库。
+  // 作者作品批量入库（Tab 模式）：FETCH_WORKS_PAGE 取页器 + runAuthorWorksImport 共用循环壳。
   // 与收藏扫描（#paginate）的差异：
   // 1. 响应字段是 works/maxCursor 而非 items/cursor，不能直接套用 #paginate；
   // 2. 无丢失检测——他人作品列表不是本域全集，persistScan 会把存量误判 lost；
-  // 3. 每页即落库，取消/异常保留已扫部分。
-  // 分组语义与「添加作品」一致：已在作品域的保留原分组、新条目落「未分组」——
-  // 分页结果不加工（不预置 groupId），交给 mergeWork 的 old?.groupId || w.groupId || DEFAULT 链
+  // 3. 每页即落库，取消/异常保留已扫部分（落库/进度/去重/收尾在共用壳内）。
   async importUserWorks(secUid, sendResponse) {
-    try {
-      if (!secUid) return sendResponse({ ok: false, error: "BAD_PARAMS" });
-      const requestId = crypto.randomUUID();
-      const guard = utils.withCancelGuard();
-
-      const seen = new Set();
-      let collected = 0;
-      let added = 0;
-      let updated = 0;
-      let cursor = 0;
-      let hasMore = true;
-      let lastError = "";
-
-      while (hasMore && !guard.isCancelled()) {
+    return runAuthorWorksImport(
+      secUid,
+      async (cursor) => {
         const resp = await tabBridge.sendAsync("FETCH_WORKS_PAGE", {
           secUid,
           cursor,
           count: CONFIG.PAGE.AUTHOR,
           timeout: CONFIG.TIMEOUT.REQUEST,
         });
-        if (!resp?.ok || !Array.isArray(resp.works)) {
-          lastError = resp?.error || "FETCH_FAILED";
-          break;
-        }
-        // 服务端偶发返回重叠页：去重后为空即终止，防死循环
-        const newWorks = resp.works.filter((w) => w && w.awemeId && !seen.has(String(w.awemeId)));
-        if (newWorks.length === 0) break;
-        newWorks.forEach((w) => seen.add(String(w.awemeId)));
-        collected += newWorks.length;
-        const result = await domainStore.mergeAndSave(CONFIG.STORAGE_KEYS.WORKS, newWorks);
-        added += result.added;
-        updated += result.updated;
-        hasMore = resp.hasMore === true;
-        cursor = resp.maxCursor || cursor;
-        utils.sendMessageSafe({
-          type: "IMPORT_WORKS_PROGRESS",
-          requestId,
-          collected,
-          saved: added + updated,
+        if (!resp?.ok || !Array.isArray(resp.works)) throw new Error(resp?.error || "FETCH_FAILED");
+        return {
+          works: resp.works,
+          hasMore: resp.hasMore === true,
+          maxCursor: resp.maxCursor,
           total: resp.total || 0,
-          hasMore,
-        });
-        if (hasMore && !guard.isCancelled()) {
-          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFavorites")));
-        }
-      }
-      guard.dispose();
-      if (collected === 0 && lastError) {
-        sendResponse({ ok: false, error: lastError, requestId });
-        return;
-      }
-      sendResponse({
-        ok: true,
-        requestId,
-        collected,
-        added,
-        updated,
-        timedOut: guard.isCancelled(),
-        error: lastError || undefined,
-      });
-    } catch (err) {
-      sendResponse({ ok: false, error: err.message });
-    }
+        };
+      },
+      sendResponse,
+    );
   }
 
   async runCancelBatch(awemeIds, tabType, progressType, persistDomain, sendResponse) {

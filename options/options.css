@@ -55,10 +55,10 @@ optgroup {
   --dy-card-size: 249px;
   --dy-following-card-size: 212px;
   --topbar-height: 50px;
+  --detail-bar-height: 56px;
   --dy-danger: #f5222d;
   --dy-transition: 0.1s cubic-bezier(0.4, 0, 0.2, 1);
   --dy-font-size-sm: 13px;
-  --dy-radius-pill: 20px;
   --dy-avatar-size: 28px;
   --dy-tab-mask-width: 24px;
 }
@@ -102,11 +102,6 @@ optgroup {
   to   { opacity: 1; }
 }
 
-@keyframes shimmer {
-  from { transform: translateX(-100%); }
-  to   { transform: translateX(100%); }
-}
-
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -123,7 +118,6 @@ optgroup {
 
 
 :root {
-  --dy-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --dy-ease-out: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -177,7 +171,8 @@ optgroup {
   display: flex;
   flex-direction: column;
   background: rgba(255, 255, 255, 0.08);
-  border-radius: var(--dy-radius);
+  /* 容器矩形（用户定案）：圆角仅保留在滑块与按钮自身 */
+  border-radius: 0;
   padding: 3px;
   gap: 2px;
   flex-shrink: 0;
@@ -237,6 +232,28 @@ optgroup {
   gap: 2px;
   overflow-x: auto;
   padding: 2px 0;
+  /* 滑块定位基准：offsetLeft/offsetWidth 相对条内测量 */
+  position: relative;
+}
+
+/* 分组切换滑块（对齐 .ds-slider 动效参数）：高亮职责整体移交滑块，
+   .group-tab.active 自身背景必须保持透明，否则过渡期间双重高亮。
+   滑块在滚动条内部，随内容滚动/遮罩渐隐天然一致 */
+.group-slider {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 0;
+  border-radius: var(--dy-radius);
+  background: rgba(255, 255, 255, 0.12);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.group-slider.no-anim {
+  transition: none;
 }
 
 .group-tabs::-webkit-scrollbar {
@@ -272,6 +289,8 @@ optgroup {
   border: none;
   background: rgba(255, 255, 255, 0.04);
   font-weight: 500;
+  position: relative;
+  z-index: 1;
 }
 
 .group-tab:hover {
@@ -279,9 +298,10 @@ optgroup {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* 激活态高亮由 .group-slider 承载，此处仅字色/字重；背景透明防过渡期双重高亮 */
 .group-tab.active {
   color: #fff;
-  background: rgba(255, 255, 255, 0.12);
+  background: transparent;
   font-weight: 600;
 }
 
@@ -398,14 +418,6 @@ body.batch-mode #btnBatch {
   background: var(--dy-surface-hover);
 }
 
-.menu-item.danger {
-  color: var(--dy-danger);
-}
-
-.menu-item.danger:hover {
-  background: rgba(245, 34, 45, 0.1);
-}
-
 /* 容量使用：功能区最后一行 */
 .menu-storage {
   display: flex;
@@ -480,25 +492,25 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   cursor: pointer;
   isolation: isolate;
   animation: cardFadeIn 0.35s ease both;
-  content-visibility: auto;
-  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 44px);
   z-index: 1;
 }
 
+/* 不用 content-visibility:auto：屏外卡被整棵跳过渲染后，远跳落点要走
+   「相关性判定→补布局→绘制→光栅」的按需管线，瞬间只见空占位框（透出底色），
+   骨架延迟出现；摘除后落点由合成器从已记录 paint ops 直接光栅化，1-2 帧出骨架。
+   预铺挂载本就是单次 O(N) 布局，摘除不新增成本（2026-09 定案） */
 .work-skeleton {
-  content-visibility: auto;
-  contain-intrinsic-size: calc(var(--dy-card-size) * 4 / 3 + 44px);
   position: relative;
   opacity: 1;
 }
 
-/* 骨架扫描光带只在封面矩形内扫（媒体区 overflow:hidden + 圆角裁切） */
+/* 骨架静态高光：曾为 shimmer 扫光动画，万级预铺骨架下动画元素各自晋升合成层
+   + 逐帧重绘成本过高，静态化；overflow:hidden + 圆角裁切不变 */
 .work-skeleton .work-media::after {
   content: '';
   position: absolute;
   inset: 0;
   background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
-  animation: shimmer 1.2s ease-in-out infinite;
 }
 
 .work-skeleton .work-info {
@@ -517,11 +529,11 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
-  /* 圆角矩形载体：圆角/描边/裁切/悬停反馈都在媒体区，信息块在矩形外 */
-  border-radius: var(--dy-radius-lg);
+  /* 媒体区矩形上圆下方：上部圆角、下部与信息块平接；圆角/描边/裁切/悬停反馈都在媒体区 */
+  border-radius: var(--dy-radius-lg) var(--dy-radius-lg) 0 0;
   border: 2px solid rgba(255, 255, 255, 0.03);
   overflow: hidden;
-  transition: border-color 0.25s ease;
+  transition: border-color 0.15s ease;
   /* 封面未就绪时的占位底：中性渐变，避免"死灰板"被误读为加载失败 */
   background: linear-gradient(135deg, var(--dy-surface-elevated), #1e1f28);
 }
@@ -550,8 +562,10 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   display: none;
 }
 
+/* 显隐由 body.batch-mode 纯 CSS 驱动（见批量模式规则区），禁止逐元素写 inline display——
+   万级域滚动后勾选框可达数千，逐个 style 写入会让进/出批量模式秒级卡顿 */
 .work-checkbox {
-  display: flex;
+  display: none;
   position: absolute;
   top: 8px;
   left: 8px;
@@ -581,7 +595,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 .following-checkbox {
-  display: flex;
+  display: none;
   position: absolute;
   top: 8px;
   left: 8px;
@@ -617,8 +631,9 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   background-size: cover;
   background-position: center;
   display: block;
-  /* 淡入由 .media-loading 类在探针成功后移除触发，不再用插入即播的 thumbFadeIn */
-  transition: transform 0.3s ease, opacity 0.3s ease;
+  /* 淡入由 .media-loading 类在探针成功后移除触发，不再用插入即播的 thumbFadeIn；
+     transform 半段是悬浮 zoom（0.15s 保持跟手），opacity 半段是就绪淡入勿改短 */
+  transition: transform 0.15s ease, opacity 0.3s ease;
 }
 
 .work-media:hover .work-thumb {
@@ -747,6 +762,26 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   color: var(--dy-primary);
 }
 
+/* 作者行右侧发布日期（createTime → utils.formatPublishDate）：行高维持 16px（.work-info 44px
+   高度数学依赖）；日期赋值与作者分支解耦，作者位缺失时日期仍靠右显示 */
+.work-author-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.work-author-row .work-author {
+  min-width: 0;
+}
+
+.work-create-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
 .batch-mode .work-video-player.video-ready {
   opacity: 0 !important;
 }
@@ -755,12 +790,18 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   opacity: 1 !important;
 }
 
-/* 批量模式 Shift 快速多选时禁止卡片文本被浏览器选中高亮 */
-.batch-mode .work-card,
-.batch-mode .following-card {
-  user-select: none;
-  -webkit-user-select: none;
+/* 批量模式勾选框显隐：纯 CSS 驱动（勾选框常驻 DOM、进模式才显示，基类 display:none）。
+   逐元素 inline display 切换已撤销——万级域滚动后勾选框可达数千，逐个 style 写入
+   会让进/出批量模式触发秒级样式重算+重排 */
+body.batch-mode .work-checkbox,
+body.batch-mode .following-checkbox {
+  display: flex;
 }
+
+/* 批量模式 Shift 快速多选时禁止卡片文本被浏览器选中高亮：不走 CSS——user-select 类
+   规则（无论挂在卡片还是 #mainGrid 容器靠继承覆盖）都会随 body class 翻转触发全网格
+   级联重算，万级 DOM 实测数百 ms，是进入批量模式卡顿主因；改由 main.js 在批量模式下
+   对 #mainGrid mousedown preventDefault（O(1)，零样式成本） */
 
 .work-syncing svg {
   animation: spin 0.6s linear infinite;
@@ -779,9 +820,8 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   cursor: pointer;
   position: relative;
   transition: background var(--dy-transition), border-color var(--dy-transition), transform var(--dy-transition), box-shadow var(--dy-transition);
-  /* 视口外的卡片跳过渲染：骨架 shimmer 动画若不由此隔离，几千行的无限动画会把 Layerize/样式重算拖垮 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 132px;
+  /* 视口外的卡片不跳过渲染（同 .work-skeleton 的 CV 定案）：followings 骨架动画已
+     静态化，无隔离需求；跳过反而引入远跳落点的按需渲染空白 */
 }
 
 .following-card:hover {
@@ -872,8 +912,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* 骨架态与完整卡共享同一 DOM 结构（填充/降级只切换类名，不换根节点，
-   否则 grid 容器会全量重排）；仅以 .following-skeleton 覆盖占位样式，
-   shimmer 用卡片级单个 ::after，避免每卡多个无限动画 */
+   否则 grid 容器会全量重排）；仅以 .following-skeleton 覆盖占位样式 */
 .following-skeleton .following-avatar {
   background: var(--dy-surface-elevated);
 }
@@ -906,12 +945,12 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   width: 96px;
 }
 
+/* 骨架静态高光（同 .work-skeleton .work-media::after 的静态化定案） */
 .following-skeleton::after {
   content: '';
   position: absolute;
   inset: 0;
   background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.07) 50%, transparent 70%);
-  animation: shimmer 1.2s ease-in-out infinite;
 }
 
 /* ===== 侧边栏 ===== */
@@ -976,18 +1015,6 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   background: var(--dy-surface-elevated);
   color: var(--dy-text-muted);
   font-size: 24px;
-}
-
-.sidebar-work-plays {
-  position: absolute;
-  bottom: 4px;
-  left: 6px;
-  font-size: 11px;
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  display: flex;
-  align-items: center;
-  gap: 3px;
 }
 
 .sidebar-loader {
@@ -1219,14 +1246,18 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   position: relative;
 }
 
-/* 清晰画面区：居中 39.3vw，媒体 cover 裁切铺满，两侧由 overlay 模糊背景填充 */
+/* 清晰画面区：居中，宽度随媒体宽高比自适应（--media-aspect 由详情 JS 写入：视频
+   loadedmetadata / 图片探针 naturalWidth，切作品复位 9:16 缺省）。竖版/横版/方形一律
+   按可视高度等比铺满零裁切、超出视口宽才截断——旧 39.3vw 封顶会让横版在满高列内只剩
+   一条居中横带（2026-09-29 废弃）；媒体 contain 完整显示，列内留白由 overlay 模糊
+   背景透出填充 */
 .media-view {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 50%;
   transform: translateX(-50%);
-  width: 39.3vw;
+  width: min(100%, calc((100vh - var(--detail-bar-height)) * var(--media-aspect, 0.5625)));
   overflow: hidden;
 }
 
@@ -1245,13 +1276,8 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   width: 100%;
   height: 100%;
   outline: none;
-  object-fit: cover;
-}
-
-.detail-body img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  /* contain：列宽已随媒体比例收窄，竖版恰好铺满；比例缺失/横版封顶时完整显示不出裁切 */
+  object-fit: contain;
 }
 
 .detail-image-container {
@@ -1259,6 +1285,16 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+/* 详情大图 div 载体：background-image 承载画面（探针成功才提交，失败在结构上不可见——
+   不存在 img 的裂图态），background-size: contain 配合列宽自适应完整显示不裁切 */
+#detailImage {
+  width: 100%;
+  height: 100%;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 /* 主图链接失效态：详情主图已清空，叠加「链接已失效」提示，绝不回退显示上一作品 */
@@ -1375,7 +1411,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   padding: 0 20px;
   flex-shrink: 0;
   z-index: 30;
-  height: 56px;
+  height: var(--detail-bar-height);
 }
 
 .bar-group {
@@ -1547,11 +1583,14 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 /* 上/下作品切换胶囊（对齐抖音 ⌃⌄）：右缘垂直居中。
    必须用 ID 选择器：#detailOverlay>*（1,0,0）会覆盖类选择器的 position:fixed，
    导致切换器跌回流内布局、把播放条顶下来，内容区底部与进度条之间出现空隙。
+   垂直基准 = 视口减去底栏（--detail-bar-height）：与左右导航箭头一致，
+   居中不考虑底栏高度（箭头绝对定位于 .detail-body 内天然排除底栏，此处的 fixed
+   必须用 calc 显式扣除，否则比箭头中心线低半个底栏高度）。
    底色/hover 对齐左上角关闭钮（轻透明圆底，无毛玻璃） */
 #detailSwitcher {
   position: fixed;
   right: 18px;
-  top: 50%;
+  top: calc((100% - var(--detail-bar-height)) / 2);
   transform: translateY(-50%);
   z-index: 30;
   display: flex;
@@ -1631,6 +1670,13 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 
 .detail-bar-title:hover {
   color: var(--dy-primary);
+}
+
+/* 标题右侧发布日期（createTime → utils.formatPublishDate）：.detail-bar-text 已有 flex-shrink:0，
+   标题 flex:1 自动省略、日期恒贴右 */
+.detail-bar-date {
+  color: rgba(255, 255, 255, 0.5);
+  padding: 0 4px;
 }
 
 /* 作品序号（建议12 修订版）：播放条最右端 */
@@ -1962,7 +2008,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 /* ===== 备份弹窗（四域导出/导入聚合） ===== */
 .io-dialog {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 14px;
 }
 
@@ -2662,11 +2708,6 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
-  }
-  /* 骨架扫描光带：直接停用，避免停在 translateX(100%) 的残留亮条 */
-  .work-skeleton .work-media::after,
-  .following-skeleton::after {
-    animation: none !important;
   }
   /* spinner 旋转保留：加载反馈必需，其余装饰性动效已压到不可感知 */
   .spinner {

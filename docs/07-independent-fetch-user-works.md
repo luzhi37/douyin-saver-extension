@@ -164,7 +164,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 
 ## 衍生长任务：作者作品批量入库（IMPORT_USER_WORKS）
 
-> 同端点的循环形态：菜单「入库」弹窗（options `AuthorImport`）触发，把**任意作者**（不要求在关注域）的全部作品分页批量落库作品域。双模实现与 `FETCH_WORKS_PAGE` 单次请求完全同源——Tab 模式 `scanTasks.importUserWorks` 经 `tabBridge.sendAsync` 循环；独立模式 `independentTasks.importUserWorks` 直连 `API.POST` 循环。
+> 同端点的循环形态：菜单「入库」弹窗（options `AuthorImport`）触发，把**任意作者**（不要求在关注域）的全部作品分页批量落库作品域。双模循环壳抽为共用模块 `tasks/author-works-import.js` 的 `runAuthorWorksImport(secUid, fetchPage, sendResponse)`——去重/落库/进度/取消守卫/收尾全在壳内，两个任务类只注入各自取页器：Tab 模式 `scanTasks.importUserWorks` 经 `tabBridge.sendAsync` 取页；独立模式 `independentTasks.importUserWorks` 直连 `API.POST` 取页（取页器内抛错即记入 `lastError`）。
 
 ### 与收藏扫描（#paginate）的结构差异
 
@@ -183,6 +183,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 ### 消息与进度
 
 - `IMPORT_USER_WORKS { secUid }` → 循环期间逐页发 `IMPORT_WORKS_PROGRESS { requestId, collected, saved, total, hasMore }`，终态 `sendResponse { ok, collected, added, updated, timedOut, error? }`（`added`/`updated` 即「新增入未分组/更新保留原分组」计数；首页即失败才 `ok:false`）。
+- **UI 刷新时机**：循环内**不发** `STORE_CHANGED`（进度弹窗数字由 `IMPORT_WORKS_PROGRESS` 驱动）；全部批次落库完成后统一广播一次 `STORE_CHANGED { domain: works, changedIds, addedIds }`——载荷为轻量 id 集（实际写入记录 id + 其中的新增子集，万级 ≈ 几十 KB，禁全量记录防消息膨胀），options flush 时经 `GET_WORKS_BY_IDS` 补拉合并后记录，走与点载荷相同的增量收口管线（视图内新增头插、已有记录原地更新，**零整刷**）+ `refreshGroups()` 重算分组数字。取消/部分失败同样补发（已落库部分收口），一页未落（`collected=0`）或 `changed=0`（全部为无变化重复入库）不发。`AuthorImport.#showDone` 不再手动 `loadDomainData`（避免与广播双重收口）。
 - 取消：进度弹窗 X/Esc → `requestDialogClose` → `CANCEL_ACTIVE_TASK` → `withCancelGuard` 置位 → 下一页前退出。
 - 错误映射（options `AuthorImport`）：`NO_SIGNATURE` → 关进度弹窗改弹签名引导（URL 指向作者主页）；错误串含 `2096` → 「账号作品因隐私设置不可见」。
 
@@ -191,7 +192,6 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | 消息 | 语义 | 实现位置 |
 |------|------|----------|
 | `IMPORT_FOLLOWING { secUid }` | profile/other 单请求收录作者档案入关注域；`formatFollowingFromProfile` + `#fetchLatestWorkTime` 补 lastUpdateAt；`mergeAndSaveFollowings` 非 import 分支（已在域保组/新作者落未分组） | `scanTasks.importFollowing`（双模分支内联，与 `calibrateOne` 共用 `#fetchProfileUser`） |
-| `RESOLVE_AUTHOR { id, idType }` | 输入解析：sec_uid 直通；纯数字 uid 经 `im/user/info` 兑换（`IndependentClient.resolveSecUidById`，任意 uid 未实测，失败降级提示） | `background/main.js` route |
 
 ## 相关文档
 

@@ -5,6 +5,9 @@ import { detail } from '../components/detail.js';
 
 // ---------- Groups ----------
 class Groups {
+  // 新增分组请求进行中：防双击重复提交
+  #addingGroup = false;
+
   async renderGroupTabs() {
     const [stats, groupList] = await Promise.all([services.loadStats(), services.loadGroups()]);
     this.#updateStorageIndicator(stats);
@@ -19,7 +22,41 @@ class Groups {
       tab.addEventListener("click", () => this.#switchGroup(g.id));
       dom.groupTabs.appendChild(tab);
     }
+    // 滑块随重建重建：只在新集合落定时无动画就位（带动画会从旧位置横穿飞过）
+    const slider = document.createElement("div");
+    slider.className = "group-slider";
+    dom.groupTabs.appendChild(slider);
+    this.updateGroupSlider(false);
     this.updateTabMask();
+  }
+
+  // 分组切换的轻量同步（tab 集合未变）：只切 active 类 + 滑块带动画滑动，
+  // 不重建 tab——滑块元素跨切换存活才有滑动起点
+  syncActiveTabs() {
+    for (const tab of dom.groupTabs.querySelectorAll(".group-tab")) {
+      tab.classList.toggle("active", tab.dataset.groupId === state.currentGroupId);
+    }
+    this.updateGroupSlider(true);
+  }
+
+  // 滑块定位到 active tab（offsetLeft/offsetWidth 相对 .group-tabs）。
+  // animated=false（重建/resize）时 no-anim 瞬移：尺寸变化绝不允许滑块横穿飞行
+  updateGroupSlider(animated) {
+    const slider = dom.groupTabs.querySelector(".group-slider");
+    if (!slider) return;
+    if (!animated) slider.classList.add("no-anim");
+    const active = dom.groupTabs.querySelector(".group-tab.active");
+    if (!active) {
+      // active 缺失（如删除当前分组的重建瞬间）：收拢滑块，绝不残留旧位置高亮
+      slider.style.width = "0px";
+      return;
+    }
+    slider.style.transform = `translateX(${active.offsetLeft}px)`;
+    slider.style.width = `${active.offsetWidth}px`;
+    if (!animated) {
+      slider.getBoundingClientRect();
+      slider.classList.remove("no-anim");
+    }
   }
 
   updateTabMask() {
@@ -50,11 +87,16 @@ class Groups {
     if (input && addBtn) {
       addBtn.addEventListener("click", async () => {
         const name = input.value.trim();
-        if (!name) return;
-        const res = await services.bgMsg({ type: "ADD_GROUP", domain: state.domain, name });
-        if (res.ok) {
-          input.value = "";
-          await this.#refreshGroupList();
+        if (!name || this.#addingGroup) return;
+        this.#addingGroup = true;
+        try {
+          const res = await services.bgMsg({ type: "ADD_GROUP", domain: state.domain, name });
+          if (res.ok) {
+            input.value = "";
+            await this.#refreshGroupList();
+          }
+        } finally {
+          this.#addingGroup = false;
         }
       });
       input.addEventListener("keydown", (e) => {
@@ -109,7 +151,8 @@ class Groups {
         const delTmpl = document.getElementById("confirmDeleteGroupTemplate");
         const delBody = delTmpl.content.cloneNode(true);
         delBody.querySelector(".confirm-delete-group-name").textContent = g.name;
-        dialog.showDialog("确认删除", delBody, [
+        // pushDialog 叠于分组管理之上：确认/删除后回到管理列表（父层原地保留，item 保持连接、移除即生效）
+        dialog.pushDialog("确认删除", delBody, [
           { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
           {
             text: "删除",
@@ -118,12 +161,20 @@ class Groups {
               dialog.updateDialog("正在删除…", "");
               state.preventDialogClose = true;
               try {
-                await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
+                const res = await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
+                if (!res || res.ok !== true) {
+                  dialog.closeDialog();
+                  dialog.showToast("删除失败: " + (res?.error || "未知错误"), "error");
+                  return;
+                }
                 item.remove();
                 store.refreshGroups();
                 dom.dialogTitle.textContent = "删除完成";
                 dom.dialogBody.innerHTML = `<p>已删除"${g.name}"</p>`;
                 dialog.showOkDialog();
+              } catch (err) {
+                dialog.closeDialog();
+                dialog.showToast("删除失败: " + (err.message || String(err)), "error");
               } finally {
                 state.preventDialogClose = false;
               }
@@ -182,7 +233,9 @@ class Groups {
   #switchGroup(groupId) {
     state.selectedIds.clear();
     detail.closeDetail();
-    window.scrollTo(0, 0);
+    // 滚动容器是 #mainGrid 自身（overflow-y:auto），window.scrollTo 不作用于它；
+    // 清场 wipe 会 clamp 归零，这里显式复位保证语义正确
+    dom.mainGrid.scrollTop = 0;
     store.set("batchMode", false);
     store.set("currentGroupId", groupId);
   }
