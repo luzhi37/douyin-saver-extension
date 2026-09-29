@@ -49,11 +49,23 @@
 ```js
 // background/data/domain-store.js —— 作品合并
 function mergeWork(w, old) -> Work              // 纯函数：字段覆盖 + 三项保护（见代码片段）
-async function mergeAndSaveWorks(works) -> Promise<{ added, updated, total }>
+async function mergeAndSave(domain, works) -> Promise<{ added, updated, changed, total, written, addedIds }>
+// changed = 真实变更计数（新增 + 内容有变化的更新，逐键浅比较 merged vs old 判定）；
+// 内容全等的重复入库不写库、不计入 changed——广播方（DomainHandlers.save 等）据它
+// 决定是否发 STORE_CHANGED，options 不为 no-op 重载网格（2026-09 定案）。
+// written = 本次实际写入的合并后记录（仅真实变更条目）；addedIds = written 中属于新增
+// 的记录 id——DomainHandlers.save 在 changed ≤ BROADCAST.UPSERTS_MAX 时把两者作为
+// STORE_CHANGED 的 upserts/addedIds 载荷发给 options 局部应用（原地替换 vs 新增插入
+// 的区分依据），响应路径则剔除这两字段防大批量保存响应膨胀。
+// 批量变化（changed > UPSERTS_MAX，如作者入库收尾 runAuthorWorksImport）广播降为
+// 轻量 id 集 changedIds/addedIds（万级 ≈ 几十 KB），options flush 时经
+// GET_WORKS_BY_IDS（DomainHandlers.getByIds，IDB 主键直取）补拉合并后记录，走与点
+// 载荷相同的增量收口管线——视图内新增头插（VirtualGrid.insertItems）、已有记录原地
+// 更新，不再整域重载（2026-09 定案：整刷 wipe→骨架→封面重探即「页面闪烁」）
 
 // background/data/domain-store.js —— 关注合并
-async function handleSaveFollowings(followings, sendResponse, isImport = false)
-// 出参：{ ok:true, added, updated, lost, lostUids: string[], total } | { ok:false, error:"EMPTY" }
+async function mergeAndSaveFollowings(domain, followings, isImport = false) -> Promise<{ added, updated, changed, lost, lostUids, total }>
+// 出参：{ ok:true, added, updated, changed, lost, lostUids: string[], total } | { ok:false, error:"EMPTY" }
 
 // background/data/data-tools.js —— 导入
 function extractImportItems(data, domain) -> any[]     // data[cfg.itemKey] 或空数组
@@ -73,6 +85,7 @@ function mergeWork(w, old) {
     ...w,
     groupId: old?.groupId || w.groupId || CONFIG.GROUPS.DEFAULT_ID,  // 手动分组不丢
     savedAt: old?.savedAt || w.savedAt || Date.now(),                // 首次保存时间不变
+    createTime: w.createTime || awemeIdCreateTime(w.awemeId) || 0,   // 发布时间恒非零（aweme_id 高 32 位推导）
   };
   // 旧记录已存长效 v1/play 链接而新结果是短效 CDN 直链 → 保留旧链接，
   // 避免手动添加的作品被同步以短效直链覆盖降级

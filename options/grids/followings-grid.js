@@ -48,7 +48,6 @@ class FollowingsGrid extends VirtualGrid {
       card.prepend(checkbox);
     }
     batch.updateCheckboxDOM(checkbox, state.selectedIds.has(following.uid));
-    checkbox.style.display = state.batchMode ? "" : "none";
 
     const avatar = card.querySelector(".following-avatar");
     const fallback = card.querySelector(".following-avatar-fallback");
@@ -102,11 +101,8 @@ class FollowingsGrid extends VirtualGrid {
     card.querySelector(".stat-followers").textContent = "";
     card.querySelector(".stat-works").textContent = "";
     card.querySelector(".following-update").textContent = "";
-    const checkbox = card.querySelector(".following-checkbox");
-    if (checkbox) {
-      batch.updateCheckboxDOM(checkbox, false);
-      checkbox.style.display = state.batchMode ? "" : "none";
-    }
+    // 降级即移除勾选框（同 works-grid.clearCard：防勾选框随浏览量无界累积，回填时重建）
+    card.querySelector(".following-checkbox")?.remove();
   }
 
   // 头像分帧预载：离屏探针先行请求，只有成功的 URL 才提交给头像节点。

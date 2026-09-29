@@ -397,14 +397,6 @@ class Sidebar {
       if (isNote) placeholder.textContent = "📰";
     }
 
-    const plays = work.statistics && work.statistics.play_count ? utils.formatCount(work.statistics.play_count) : "";
-    const playsEl = link.children[2];
-    if (plays) {
-      playsEl.textContent = "\u25B6 " + plays;
-    } else {
-      playsEl.style.display = "none";
-    }
-
     return item;
   }
 }

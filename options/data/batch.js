@@ -63,10 +63,6 @@ class Batch {
     return el.closest("[data-aweme-id]")?.dataset?.awemeId || el.closest("[data-uid]")?.dataset?.uid;
   }
 
-  #forEachCheckbox(fn) {
-    document.querySelectorAll(".work-checkbox, .following-checkbox").forEach(fn);
-  }
-
   #clearAllCheckboxes() {
     const selector = config.WORK_LIKE_DOMAINS.includes(state.domain) ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => this.updateCheckboxDOM(el, false));
@@ -78,7 +74,9 @@ class Batch {
     const domain = state.domain;
     const isFollowings = domain === "followings";
 
-    await serviceFn(ids, isFollowings);
+    const res = await serviceFn(ids, isFollowings);
+    // 失败即抛、不动选区：确认弹窗的 catch 统一反馈，选中项保留可重试
+    if (!res || res.ok !== true) throw new Error(res?.error || "OPERATION_FAILED");
     state.selectedIds.clear();
 
     const grid = isFollowings ? followingsGrid : search.activeWorkLikeGrid();
@@ -124,6 +122,7 @@ class Batch {
   }
 
   updateCheckboxDOM(checkboxEl, isSelected) {
+    if (!checkboxEl) return; // 骨架卡无勾选框（模板本不含、降级即移除）：批量点击直启路径容错
     if (isSelected) {
       checkboxEl.classList.add("checked");
       checkboxEl.innerHTML = (config.icons && config.icons.check) || "";
@@ -180,18 +179,18 @@ class Batch {
   handleBatchToggle() {
     const newMode = this.toggleBatchMode();
     store.set("batchMode", newMode);
+    // 勾选框显隐由 body.batch-mode 纯 CSS 驱动（options.css 基类 display:none + 批量模式
+    // flex），禁止逐元素写 inline display：万级域滚动后勾选框可达数千，逐个 style 写入
+    // 会让进/出批量模式秒级卡顿
     if (!newMode) {
-      // 退出批量模式：清空选区与范围选择锚点
+      // 退出批量模式：清空选区与范围选择锚点；DOM 勾选态只清 checked 的（未勾选框本就无内容）
       this.#lastSelectedId = null;
-      this.#forEachCheckbox((el) => {
-        el.style.display = "none";
-        el.innerHTML = "";
-        el.classList.remove("checked");
-      });
+      document
+        .querySelectorAll(".work-checkbox.checked, .following-checkbox.checked")
+        .forEach((el) => this.updateCheckboxDOM(el, false));
       this.#setSelectAllBtn(false);
       this.syncSaveToWorksBtn();
     } else {
-      this.#forEachCheckbox((el) => (el.style.display = ""));
       this.syncSaveToWorksBtn();
     }
     this.syncSelectionUI();
@@ -235,6 +234,9 @@ class Batch {
               dialog.closeDialog();
               dialog.showToast(`已移除 ${count} 个${name}`, "success");
             }
+          } catch (err) {
+            dialog.closeDialog();
+            dialog.showToast("移除失败: " + (err.message || String(err)), "error");
           } finally {
             state.preventDialogClose = false;
           }
@@ -275,6 +277,9 @@ class Batch {
               dialog.closeDialog();
               dialog.showToast(`已移除 ${count} 个作品`, "success");
             }
+          } catch (err) {
+            dialog.closeDialog();
+            dialog.showToast("移除失败: " + (err.message || String(err)), "error");
           } finally {
             state.preventDialogClose = false;
           }
@@ -289,6 +294,7 @@ class Batch {
           try {
             const res = await services.bgMsg({ type: cancelType, awemeIds: ids, domain });
             if (!res || res.ok !== true) {
+              dialog.closeDialog();
               dialog.showToast(`${actionLabel}失败: ${res?.error || "未知错误"}`, "error");
               return;
             }
@@ -326,6 +332,9 @@ class Batch {
                 : `已${actionLabel}并移除 ${deletedIds.size} 个作品`,
               failedCount > 0 ? "error" : "success",
             );
+          } catch (err) {
+            dialog.closeDialog();
+            dialog.showToast(`${actionLabel}失败: ` + (err.message || String(err)), "error");
           } finally {
             state.preventDialogClose = false;
           }
@@ -352,6 +361,9 @@ class Batch {
           dialog.closeDialog();
           dialog.showToast(`已移动 ${count} 个${name}`, "success");
         }
+      } catch (err) {
+        dialog.closeDialog();
+        dialog.showToast("移动失败: " + (err.message || String(err)), "error");
       } finally {
         state.preventDialogClose = false;
       }
@@ -463,6 +475,10 @@ class Batch {
             if (failed > 0) parts.push(`${failed} 个失败`);
             if (skipped > 0) parts.push(`${skipped} 个无链接跳过`);
             dialog.showToast(parts.join("，"), failed > 0 ? "error" : "success");
+          } catch (err) {
+            console.error("[DY] batch download failed:", err);
+            dialog.closeDialog();
+            dialog.showToast("批量下载失败: " + (err.message || String(err)), "error");
           } finally {
             state.preventDialogClose = false;
           }
