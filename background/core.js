@@ -12,10 +12,10 @@ const CONFIG = {
     WORKS_GROUPS: "works_groups",
     FOLLOWINGS: "followings",
     FOLLOWINGS_GROUPS: "followings_groups",
-    LIKES: "likes",
-    LIKES_GROUPS: "likes_groups",
     FAVORITES: "favorites",
     FAVORITES_GROUPS: "favorites_groups",
+    COLLECTIONS: "collections",
+    COLLECTIONS_GROUPS: "collections_groups",
   },
   // 四个域的默认分组结构一致（全部 → 未分组），共用同一份定义；消费处通过 .map 拷贝，避免原地改写污染共享引用
   DEFAULT_GROUPS: [
@@ -196,8 +196,11 @@ const CONFIG = {
     syncFollowings: { MIN: 500, MAX: 1000 },
     syncFavorites: { MIN: 500, MAX: 1000 },
     syncCollection: { MIN: 500, MAX: 1000 },
-    cancelLike: { MIN: 500, MAX: 1000 },
+    cancelFavorites: { MIN: 500, MAX: 1000 },
     cancelCollection: { MIN: 500, MAX: 1000 },
+    // 作者作品入库翻页延迟（author-works-import 共用循环壳；曾错用 syncFavorites 键，
+    // 域词对齐后延迟键一律按业务链路命名，不跨链路借用）
+    importWorks: { MIN: 500, MAX: 1000 },
   },
   SYNC: {
     BATCH_SIZE: 40,
@@ -211,9 +214,10 @@ const CONFIG = {
     DEFAULT_ID: "uncategorized",
   },
   PAGE: {
+    // 页大小键沿用 API 词：FAVORITE=点赞扫描（favorite 端点）、COLLECTION=收藏扫描（listcollection 端点）、POST=作者作品（post 端点）
     FAVORITE: 20,
     COLLECTION: 20,
-    AUTHOR: 20,
+    POST: 20,
     FOLLOWING: 20,
     // 网格渐进加载页大小：keyset 游标串行依赖上一页末键，页间无法并行——吞吐提升
     // 靠加大页体摊薄每页固定开销（事务建立 + 消息往返）。2000 条 ≈ 2-4MB/页
@@ -234,6 +238,9 @@ const CONFIG = {
     STR_DATA: MSSDK_STR_DATA,
   },
   AWEME_TYPE_NOTE: 68,
+  // 端点常量引用抖音 API 路径原文，命名沿用端点词：favorite 端点=点赞列表（点赞链路
+  // 标识符沿用 favorite）、listcollection 端点=收藏列表（收藏域键为 collections、链路词
+  // 为 collection）。favorite 永远只指点赞，禁止指收藏
   API: {
     FOLLOWING: "/aweme/v1/web/user/following/list",
     PROFILE_OTHER: "/aweme/v1/web/user/profile/other/",
@@ -246,8 +253,9 @@ const CONFIG = {
   WEB_SIGN_SALT: "A96D855A08C0A9707F8BEF0D9A527E4E",
   CANCEL: {
     // 独立模式仅取消收藏：点赞取消结构性不可行（Turing/XHR 签名限制——路由层显式拒绝
-    // UNSUPPORTED_INDEPENDENT，Tab 模式走 inject 侧 XHR 的 LIKE_URL，见 docs/06），
-    // 不设 like 配置位
+    // UNSUPPORTED_INDEPENDENT，Tab 模式走 inject 侧 XHR 的 CANCEL.favorites，见 docs/06），
+    // 不设 favorites 配置位。键沿用 API 词 collection（与 CANCEL_COLLECTION 消息对齐）；
+    // url 值引用 collect 端点原文
     collection: {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
       body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
@@ -283,18 +291,18 @@ const DOMAIN_CONFIG = {
     idField: "uid",
     idToString: true,
   },
-  [CONFIG.STORAGE_KEYS.LIKES]: {
-    storeName: CONFIG.STORAGE_KEYS.LIKES,
-    groupsName: CONFIG.STORAGE_KEYS.LIKES_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.LIKES,
-    idField: "awemeId",
-  },
   [CONFIG.STORAGE_KEYS.FAVORITES]: {
     storeName: CONFIG.STORAGE_KEYS.FAVORITES,
     groupsName: CONFIG.STORAGE_KEYS.FAVORITES_GROUPS,
     defaultGroups: CONFIG.DEFAULT_GROUPS,
     itemKey: CONFIG.STORAGE_KEYS.FAVORITES,
+    idField: "awemeId",
+  },
+  [CONFIG.STORAGE_KEYS.COLLECTIONS]: {
+    storeName: CONFIG.STORAGE_KEYS.COLLECTIONS,
+    groupsName: CONFIG.STORAGE_KEYS.COLLECTIONS_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.COLLECTIONS,
     idField: "awemeId",
   },
 };
@@ -316,10 +324,12 @@ const runtimeConfig = {
     syncFavoritesDelayMax: CONFIG.DELAY.syncFavorites.MAX,
     syncCollectionDelayMin: CONFIG.DELAY.syncCollection.MIN,
     syncCollectionDelayMax: CONFIG.DELAY.syncCollection.MAX,
-    cancelLikeDelayMin: CONFIG.DELAY.cancelLike.MIN,
-    cancelLikeDelayMax: CONFIG.DELAY.cancelLike.MAX,
+    cancelFavoritesDelayMin: CONFIG.DELAY.cancelFavorites.MIN,
+    cancelFavoritesDelayMax: CONFIG.DELAY.cancelFavorites.MAX,
     cancelCollectionDelayMin: CONFIG.DELAY.cancelCollection.MIN,
     cancelCollectionDelayMax: CONFIG.DELAY.cancelCollection.MAX,
+    importWorksDelayMin: CONFIG.DELAY.importWorks.MIN,
+    importWorksDelayMax: CONFIG.DELAY.importWorks.MAX,
     syncBatchSize: CONFIG.SYNC.BATCH_SIZE,
     syncBatchPauseMin: CONFIG.SYNC.BATCH_PAUSE_MIN,
     syncBatchPauseMax: CONFIG.SYNC.BATCH_PAUSE_MAX,
@@ -344,8 +354,9 @@ const runtimeConfig = {
     CONFIG.DELAY.syncFollowings = { MIN: cfg.syncFollowingsDelayMin ?? CONFIG.DELAY.syncFollowings.MIN, MAX: cfg.syncFollowingsDelayMax ?? CONFIG.DELAY.syncFollowings.MAX };
     CONFIG.DELAY.syncFavorites = { MIN: cfg.syncFavoritesDelayMin ?? CONFIG.DELAY.syncFavorites.MIN, MAX: cfg.syncFavoritesDelayMax ?? CONFIG.DELAY.syncFavorites.MAX };
     CONFIG.DELAY.syncCollection = { MIN: cfg.syncCollectionDelayMin ?? CONFIG.DELAY.syncCollection.MIN, MAX: cfg.syncCollectionDelayMax ?? CONFIG.DELAY.syncCollection.MAX };
-    CONFIG.DELAY.cancelLike = { MIN: cfg.cancelLikeDelayMin ?? CONFIG.DELAY.cancelLike.MIN, MAX: cfg.cancelLikeDelayMax ?? CONFIG.DELAY.cancelLike.MAX };
+    CONFIG.DELAY.cancelFavorites = { MIN: cfg.cancelFavoritesDelayMin ?? CONFIG.DELAY.cancelFavorites.MIN, MAX: cfg.cancelFavoritesDelayMax ?? CONFIG.DELAY.cancelFavorites.MAX };
     CONFIG.DELAY.cancelCollection = { MIN: cfg.cancelCollectionDelayMin ?? CONFIG.DELAY.cancelCollection.MIN, MAX: cfg.cancelCollectionDelayMax ?? CONFIG.DELAY.cancelCollection.MAX };
+    CONFIG.DELAY.importWorks = { MIN: cfg.importWorksDelayMin ?? CONFIG.DELAY.importWorks.MIN, MAX: cfg.importWorksDelayMax ?? CONFIG.DELAY.importWorks.MAX };
     CONFIG.SYNC.BATCH_SIZE = cfg.syncBatchSize ?? CONFIG.SYNC.BATCH_SIZE;
     CONFIG.SYNC.BATCH_PAUSE_MIN = cfg.syncBatchPauseMin ?? CONFIG.SYNC.BATCH_PAUSE_MIN;
     CONFIG.SYNC.BATCH_PAUSE_MAX = cfg.syncBatchPauseMax ?? CONFIG.SYNC.BATCH_PAUSE_MAX;

@@ -385,12 +385,12 @@ class Detail {
 
   async removeWork(awemeId) {
     // 作品型三域按当前域删除本地记录（点赞/收藏域仅删本地，远端取消走批量入口）
-    if (config.WORK_LIKE_DOMAINS.includes(state.domain)) {
-      await services.deleteWorkLike(state.domain, [awemeId]);
+    if (config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+      await services.deleteWorkRecord(state.domain, [awemeId]);
       state[state.domain] = state[state.domain].filter((w) => w.awemeId !== awemeId);
       state.dataVersion++; // 绕过 store 封装的原地移除，须手动计入数据版本（视图缓存失效判据）
       state.selectedIds.delete(awemeId);
-      search.activeWorkLikeGrid().removeItems(new Set([awemeId]));
+      search.activeWorkRecordGrid().removeItems(new Set([awemeId]));
       store.refreshGroups();
       search.syncCount();
       return;
@@ -406,7 +406,7 @@ class Detail {
     const work = this.getCurrentWork();
     if (!work) return;
     // 点赞/收藏域的详情「移除」仅删本地记录（远端取消走批量入口），文案区分
-    const localOnly = config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works";
+    const localOnly = config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works";
     const removeBody = document.createElement("p");
     removeBody.className = "confirm-delete-msg";
     removeBody.textContent = localOnly

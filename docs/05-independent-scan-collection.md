@@ -4,7 +4,7 @@
 
 ## 概述
 
-options「扫描收藏」→ `favorites.openScanDialog(cfg)`（`needSecUid:false`，收藏归属由 Cookie 决定，不传 sec_user_id）→ `FETCH_COLLECTION` → background 分流到 `handleIndependentFetchCollection`：
+options「扫描收藏」→ `collections.openScanDialog(cfg)`（`needSecUid:false`，收藏归属由 Cookie 决定，不传 sec_user_id）→ `FETCH_COLLECTION` → background 分流到 `handleIndependentFetchCollection`：
 
 - while 循环翻页：环境参数走 query（`buildBaseParams()`），业务分页参数 `count/cursor` 走 urlencoded body——空 body 的 POST 固定被 Argus 以 `Signature Not Found` 拒绝；
 - 每页经 `independentRequest(..., { method:"POST", ... })` 发出，叠加 Argus webSign 三件套头（request 内默认开启）；
@@ -16,7 +16,7 @@ options「扫描收藏」→ `favorites.openScanDialog(cfg)`（`needSecUid:false
 ## 核心流程图（文字描述）
 
 ```
-options: favorites.openScanDialog({ buildFetchArgs: () => ({ type:"FETCH_COLLECTION" }), needSecUid:false })
+options: collections.openScanDialog({ buildFetchArgs: () => ({ type:"FETCH_COLLECTION" }), needSecUid:false })
   → bgMsg(FETCH_COLLECTION)
     → background switch → loadIndependentMode() === true
       → handleIndependentFetchCollection(sendResponse)
@@ -312,7 +312,7 @@ CryptoJS.MD5 = (msg, ...rest) => {
 | 配置 | 默认 | 作用 |
 |------|------|------|
 | `CONFIG.WEB_SIGN_SALT` | `A96D855A08C0A9707F8BEF0D9A527E4E` | Argus webSign 盐；盐轮换时更新此处 |
-| `CONFIG.PAGE.COLLECTION` | 20 | body 中每页条数 |
+| `CONFIG.PAGE.FAVORITES` | 20 | body 中每页条数 |
 | `runtimeConfig.syncCollectionDelayMin/Max` | 500/1000ms | 页间延迟 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 单请求超时 |
 | `CONFIG.MSSDK.API` + `MSSDK_STR_DATA` | — | msToken 兑换端点与静态载荷 |

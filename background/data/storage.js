@@ -3,17 +3,17 @@
 import { CONFIG } from "../core.js";
 
 const DB_NAME = "douyin-saver";
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 
 const STORES = {
   works: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
   works_groups: { keyPath: "id" },
   followings: { keyPath: "uid", indexes: ["groupId"] },
   followings_groups: { keyPath: "id" },
-  likes: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
-  likes_groups: { keyPath: "id" },
   favorites: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
   favorites_groups: { keyPath: "id" },
+  collections: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
+  collections_groups: { keyPath: "id" },
 };
 
 // 复合索引名 → keyPath（其余同名同路径）。尾部拼主键使索引键全序唯一：
@@ -28,7 +28,7 @@ const INDEX_KEY_PATHS = {
 // 时间；groupId 缺失归「未分组」。仅写缺失记录，存量完整时零写入
 function backfillPagingKeys(tx, db) {
   const now = Date.now();
-  for (const name of ["works", "likes", "favorites"]) {
+  for (const name of ["works", "favorites", "collections"]) {
     if (!db.objectStoreNames.contains(name)) continue;
     const store = tx.objectStore(name);
     store.openCursor().onsuccess = (e) => {
@@ -61,6 +61,9 @@ class Storage {
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         const tx = e.target.transaction;
+        // store 名即域键终态（favorites=点赞、collections=收藏，与 API 关键词一致），此版本
+        // 起不再携带改名迁移——低版本旧库升上来时旧 store 不会改名，数据将不可见（升级前
+        // 务必先在旧版导出备份）。将来若再改 store 名，必须配套升级迁移块。
         for (const [name, cfg] of Object.entries(STORES)) {
           // 已存在的 store（版本升级）经升级事务取出，补建后加的索引；新建 store 直接持引用
           const store = db.objectStoreNames.contains(name)

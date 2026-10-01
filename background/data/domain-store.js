@@ -78,7 +78,7 @@ class DomainStore {
     return merged;
   }
 
-  // 作品型三域（works/likes/favorites）共用的合并落库：mergeWork 三项保护 + 长效链降级防护。
+  // 作品型三域（works/favorites/collections）共用的合并落库：mergeWork 三项保护 + 长效链降级防护。
   // changed = 真实变更计数（新增 + 内容有变化的更新）：内容全等的重复入库（重添已有作品）
   // 不写库、不计入 changed——广播方据它决定是否发 STORE_CHANGED，options 不该为 no-op 重载。
   // written = 本次实际写入的合并后记录（点变化广播的 upserts 载荷），addedIds = 其中属于

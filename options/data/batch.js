@@ -28,9 +28,9 @@ class Batch {
 
   selectAll() {
     // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
-    const isWorkLike = config.WORK_LIKE_DOMAINS.includes(state.domain);
-    const items = isWorkLike ? search.getWorksView() : search.getFollowingsView();
-    const idKey = isWorkLike ? "awemeId" : "uid";
+    const isWorkRecord = config.WORK_RECORD_DOMAINS.includes(state.domain);
+    const items = isWorkRecord ? search.getWorksView() : search.getFollowingsView();
+    const idKey = isWorkRecord ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
     if (allSelected) {
       state.selectedIds.clear();
@@ -64,7 +64,7 @@ class Batch {
   }
 
   #clearAllCheckboxes() {
-    const selector = config.WORK_LIKE_DOMAINS.includes(state.domain) ? ".work-checkbox" : ".following-checkbox";
+    const selector = config.WORK_RECORD_DOMAINS.includes(state.domain) ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => this.updateCheckboxDOM(el, false));
   }
 
@@ -79,10 +79,10 @@ class Batch {
     if (!res || res.ok !== true) throw new Error(res?.error || "OPERATION_FAILED");
     state.selectedIds.clear();
 
-    const grid = isFollowings ? followingsGrid : search.activeWorkLikeGrid();
+    const grid = isFollowings ? followingsGrid : search.activeWorkRecordGrid();
     const removeSilent = isFollowings
       ? store.removeFollowingsSilent
-      : (idSet) => store.removeWorkLikeSilent(domain, idSet);
+      : (idSet) => store.removeWorkRecordSilent(domain, idSet);
     if (!conditionallyRemove || state.currentGroupId !== "all") {
       removeSilent.call(store, new Set(ids));
       grid.removeItems(new Set(ids));
@@ -99,7 +99,7 @@ class Batch {
 
   deleteSelected() {
     return this.#executeBatchOp((ids, isFollowings) =>
-      isFollowings ? services.deleteFollowings(ids) : services.deleteWorkLike(state.domain, ids),
+      isFollowings ? services.deleteFollowings(ids) : services.deleteWorkRecord(state.domain, ids),
     );
   }
 
@@ -108,7 +108,7 @@ class Batch {
       (ids, isFollowings) =>
         isFollowings
           ? services.moveFollowings(ids, targetGroupId)
-          : services.moveWorkLike(state.domain, ids, targetGroupId),
+          : services.moveWorkRecord(state.domain, ids, targetGroupId),
       { conditionallyRemove: true },
     );
   }
@@ -154,9 +154,9 @@ class Batch {
   // 范围选择：把视图顺序中 [from, to] 区间的条目全部置为选中并同步勾选圆。
   // 视图顺序与网格视觉一致（含关键词/排序/归属过滤），保证所见即所选
   #rangeSelect(fromId, toId) {
-    const isWorkLike = config.WORK_LIKE_DOMAINS.includes(state.domain);
-    const view = isWorkLike ? search.getWorksView() : search.getFollowingsView();
-    const idKey = isWorkLike ? "awemeId" : "uid";
+    const isWorkRecord = config.WORK_RECORD_DOMAINS.includes(state.domain);
+    const view = isWorkRecord ? search.getWorksView() : search.getFollowingsView();
+    const idKey = isWorkRecord ? "awemeId" : "uid";
     const ids = view.map((x) => x[idKey]);
     const a = ids.indexOf(fromId);
     const b = ids.indexOf(toId);
@@ -169,7 +169,7 @@ class Batch {
       const [start, end] = a < b ? [a, b] : [b, a];
       for (let i = start; i <= end; i++) state.selectedIds.add(ids[i]);
     }
-    const selector = isWorkLike ? ".work-checkbox" : ".following-checkbox";
+    const selector = isWorkRecord ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => {
       const id = this.#checkboxId(el);
       if (state.selectedIds.has(id)) this.updateCheckboxDOM(el, true);
@@ -210,7 +210,7 @@ class Batch {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
     // 点赞/收藏域：移除 = 取消远端点赞/收藏 + 删本地（长任务链路）
-    if (config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works") {
+    if (config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works") {
       await this.cancelAndRemoveSelected();
       return;
     }
@@ -245,17 +245,17 @@ class Batch {
     ]);
   }
 
-  // 点赞/收藏域批量「取消并移除」：CANCEL_LIKE/CANCEL_COLLECTION { awemeIds, domain }
+  // 点赞/收藏域批量「取消并移除」：CANCEL_FAVORITES/CANCEL_COLLECTION { awemeIds, domain }
   // → background 逐条取消远端并对成功条目删本地 → CANCEL_DONE { deletedIds } 驱动 UI 刷新
   async cancelAndRemoveSelected() {
     const domain = state.domain;
-    const isLikes = domain === "likes";
+    const isFavorites = domain === "favorites";
     const count = this.selectedCount();
     const ids = Array.from(state.selectedIds);
-    const cancelType = isLikes ? "CANCEL_LIKE" : "CANCEL_COLLECTION";
-    const actionLabel = isLikes ? "取消点赞" : "取消收藏";
+    const cancelType = isFavorites ? "CANCEL_FAVORITES" : "CANCEL_COLLECTION";
+    const actionLabel = isFavorites ? "取消点赞" : "取消收藏";
 
-    if (isLikes && (await this.#isIndependentMode())) {
+    if (isFavorites && (await this.#isIndependentMode())) {
       dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
       return;
     }
@@ -320,8 +320,8 @@ class Batch {
             });
             const deletedIds = new Set(done?.deletedIds || []);
             state.selectedIds.clear();
-            store.removeWorkLikeSilent(domain, deletedIds);
-            search.activeWorkLikeGrid().removeItems(deletedIds);
+            store.removeWorkRecordSilent(domain, deletedIds);
+            search.activeWorkRecordGrid().removeItems(deletedIds);
             store.refreshGroups();
             search.syncCount();
             dialog.closeDialog();
@@ -374,7 +374,7 @@ class Batch {
   async saveSelectedToWorks() {
     if (this.selectedCount() === 0) return;
     const domain = state.domain;
-    // 剥离源域（点赞/收藏）的 groupId：它属于 likes/favorites 域的分组 id，带入作品域会让
+    // 剥离源域（点赞/收藏）的 groupId：它属于 favorites/collections 域的分组 id，带入作品域会让
     // mergeWork 误用（作品只出现在「全部」、不落「未分组」，也不被任何作品分组命中）。
     // 剥离后新作品回落到作品域默认分组「未分组」，已在作品域分组过的旧作品保留原分组
     const targets = state[domain]
@@ -389,7 +389,7 @@ class Batch {
         return;
       }
       state.selectedIds.clear();
-      search.activeWorkLikeGrid().clearSelectionUI();
+      search.activeWorkRecordGrid().clearSelectionUI();
       this.syncSelectionUI();
       dialog.showToast(`已存入作品域（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`, "success");
     } finally {
@@ -401,7 +401,7 @@ class Batch {
   syncSaveToWorksBtn() {
     if (!dom.batchSaveToWorks) return;
     const show =
-      config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works" && state.batchMode;
+      config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works" && state.batchMode;
     dom.batchSaveToWorks.classList.toggle("hidden", !show);
     if (show) dom.batchSaveToWorks.disabled = state.selectedIds.size === 0;
   }
@@ -409,7 +409,7 @@ class Batch {
   // 「批量下载」按钮显隐与可用态：仅作品型三域（作品/点赞/收藏）且批量模式下显示，关注域无媒体可下
   syncDownloadBtn() {
     if (!dom.batchDownload) return;
-    const show = config.WORK_LIKE_DOMAINS.includes(state.domain) && state.batchMode;
+    const show = config.WORK_RECORD_DOMAINS.includes(state.domain) && state.batchMode;
     dom.batchDownload.classList.toggle("hidden", !show);
     if (show) dom.batchDownload.disabled = state.selectedIds.size === 0;
   }
@@ -418,7 +418,7 @@ class Batch {
   // 无可用视频/图片链接的条目跳过不计入失败，仅在确认文案与结果 toast 中说明
   async handleBatchDownload() {
     if (this.selectedCount() === 0) return;
-    if (!config.WORK_LIKE_DOMAINS.includes(state.domain)) return;
+    if (!config.WORK_RECORD_DOMAINS.includes(state.domain)) return;
     const count = this.selectedCount();
     const label = config.DOMAINS_META[state.domain].label;
     const all = state[state.domain].filter((w) => state.selectedIds.has(w.awemeId));

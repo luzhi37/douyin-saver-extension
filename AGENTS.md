@@ -38,13 +38,13 @@ options/ (管理 UI)          — ES 模块化：core.js 共享基础（7 全局
 DOMAIN_CONFIG = {
   works:       { storeName, groupsName, defaultGroups, itemKey: 'works',       idField: 'awemeId' },
   followings:  { storeName, groupsName, defaultGroups, itemKey: 'followings',  idField: 'uid', idToString: true },
-  likes:       { storeName, groupsName, defaultGroups, itemKey: 'likes',       idField: 'awemeId' },
-  favorites:   { storeName, groupsName, defaultGroups, itemKey: 'favorites',   idField: 'awemeId' },
+  favorites:       { storeName, groupsName, defaultGroups, itemKey: 'favorites',       idField: 'awemeId' },
+  collections:   { storeName, groupsName, defaultGroups, itemKey: 'collections',   idField: 'awemeId' },
 }
 ```
 
 - `works` — `{ [awemeId]: Work }`（每条含 `video` 直链与 `videoExpireAt`；三级取链与防短效覆盖长效细则见 docs/02）
-- `likes` / `favorites` — 与 `works` 同构的 Work 记录（itemKey 各自独立）；无独立保存消息，落库经 `persistScan` 的 `mergeAndSave`（persist="likes"/"favorites"）与跨域 `SAVE_WORKS`
+- `favorites` / `collections` — 与 `works` 同构的 Work 记录（itemKey 各自独立）；无独立保存消息，落库经 `persistScan` 的 `mergeAndSave`（persist="favorites"/"collections"）与跨域 `SAVE_WORKS`
 - `followings` — `{ [uid]: Following }`（7 个稳定字段：uid/nickname/avatarLarger/followerCount/awemeCount/profileUrl/lastUpdateAt；计数与 lastUpdateAt 仅由校准写入、未校准占位 0 且 `SAVE_FOLLOWINGS` 对 0 值保留旧计数——见 docs/01/04/10）
 - `*_groups`（四域同构）— `[{ id, name, fixed, order? }]`
 
@@ -54,15 +54,15 @@ DOMAIN_CONFIG = {
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_LIKES` / `DELETE_LIKES` / `MOVE_LIKES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES`（likes/favorites 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见 docs/01） |
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见 docs/01） |
 | 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
 | 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准，见 docs/04） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
 | 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options 触发 background 循环扫描、逐页透传进度；`FETCH_FOLLOWING` 收集完成后自动校准（门控与细节见 docs/04）                              |
 | 入库                       | `IMPORT_USER_WORKS` / `IMPORT_FOLLOWING` — 作者作品分页入作品域 + 作者档案入关注域，均双模支持（分组/去重语义见 docs/07）；过程消息 `IMPORT_WORKS_PROGRESS`。入口为菜单「入库」弹窗（`AuthorImport`） |
 | 存储广播                   | `STORE_CHANGED { domain, upserts?, addedIds?, changedIds? }` — 落库成功后 background 广播（发送方可能是抖音标签页等外部上下文），**仅在 `changed>0` 时发**（no-op 不广播）。两种载荷：**point**（works 域单发保存，`changed ≤ BROADCAST.UPSERTS_MAX`=8 时附带合并后记录 `upserts` 与新增 id 集 `addedIds`）；**bulk**（入库循环收尾等批量变化，附带轻量 id 集 `changedIds`/`addedIds`——禁止改回全量记录载荷防消息膨胀；关注域无载荷）。载荷语义见 [docs/10](./docs/10-storage-write-and-import.md)；options 侧去抖/flush/头插收口管线与红线见 [docs/11](./docs/11-options-ui.md)「STORE_CHANGED 增量收口」 |
-| 取消入口                   | `CANCEL_LIKE` / `CANCEL_COLLECTION` — options 触发 background 批量取消：tab 模式逐条派发 `CANCEL_ONE_*` 到 inject；独立模式仅 `CANCEL_COLLECTION` 在 background 循环 POST（细节见 docs/06）                                                                                                     |
+| 取消入口                   | `CANCEL_FAVORITES` / `CANCEL_COLLECTION` — options 触发 background 批量取消：tab 模式逐条派发 `CANCEL_ONE_*` 到 inject；独立模式仅 `CANCEL_COLLECTION` 在 background 循环 POST（细节见 docs/06）                                                                                                     |
 | 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环；仅在长操作弹窗关闭时发送（无 `state.activeDialog` 时不发送）                                                                                              |
-| Tab 转发（background→tab） | `FETCH_SINGLE_WORK` / `FETCH_FOLLOWING_PAGE` / `FETCH_USER_PROFILE` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_LIKE` / `CANCEL_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`（tab 模式经 content→inject；独立模式由 background 直接 POST，见 docs/07） |
+| Tab 转发（background→tab） | `FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`（tab 模式经 content→inject；独立模式由 background 直接 POST，见 docs/07） |
 | 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发（`FOLLOWING_PROGRESS` 带 `phase:"calibrate"` 表示关注校准阶段）                                                                                                |
 
 > 长任务链路原语（`tabBridge.send`/`sendAsync`/`requestResponse`）与同步/扫描/取消的完整链路、时序差异、分页参数见 [docs/01](./docs/01-project-architecture.md) 与 docs/02–09 各分册（索引见文末「文档索引」）。
@@ -75,7 +75,7 @@ DOMAIN_CONFIG = {
 |--------------------|----------------------------------------------------------------------------------------------------------|
 | `'domain'`         | 更新同步按钮、渲染分组 tab、加载域数据 |
 | `'works'`          | `worksGrid.renderCards()`（仅 domain=works）                                                             |
-| `'work-like-appended'` | 渐进分页回填（作品型三域，loadDomainData 逐页发）：默认视图 `fillSlots` 回填 + `syncCount`，`done` 时 `pruneEmptyTail` 摘尾；筛选激活时静默累积、加载完成整渲；domain/groupId 双校验防旧页混入（细节见 docs/11） |
+| `'work-record-appended'` | 渐进分页回填（作品型三域，loadDomainData 逐页发）：默认视图 `fillSlots` 回填 + `syncCount`，`done` 时 `pruneEmptyTail` 摘尾；筛选激活时静默累积、加载完成整渲；domain/groupId 双校验防旧页混入（细节见 docs/11） |
 | `'followings'`     | `followingsGrid.renderFollowingCards()`（仅 domain=followings）                                          |
 | `'groups'`         | `groups.renderGroupTabs()`                                                                               |
 | `'currentGroupId'` | `groups.renderGroupTabs()` + 加载域数据                                                                  |
@@ -112,9 +112,9 @@ DOMAIN_CONFIG = {
 | `ABogus`               | `identity/crypto.js`        | a_bogus 签名算法类（按 UA/浏览器特性实例化，`Credentials.ensureABogus` 使用）；同文件导出 `MSSDK_STR_DATA`（mssdk 兑换载荷）                          |
 | `Credentials`          | `identity/credentials.js`    | 客户端凭据/签名：`ensureABogus`/`getClockSkew`/`buildBaseParams`/`getMsToken`/`refreshWebIdChain`；吸收凭据类消息（见「消息协议」工具行） |
 | `IndependentClient`    | `identity/independent-client.js` | 独立模式开关/校准开关 + 签名直连 `request` + `resolveSelfSecUid`（内含 `resolveSecUidById` 兑换）；`request` 经 `credentials` 跨类取签名/时钟/msToken |
-| `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`，DB v3：作品型三域 `savedAt_id`/`groupId_savedAt_id` 复合索引 + 升级回填缺失 savedAt/groupId）；`readIndexPage` keyset 翻页（prev 取 limit+1 探测），API 全集见文件 |
+| `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`，DB v5：无改名迁移代码——低版本旧库升级前须先在旧版导出备份；作品型三域 `savedAt_id`/`groupId_savedAt_id` 复合索引 + 升级回填缺失 savedAt/groupId）；`readIndexPage` keyset 翻页（prev 取 limit+1 探测），API 全集见文件 |
 | `DomainStore`          | `data/domain-store.js`       | 域存储封装：`storeName`/`groupsName`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护）——两者均做**真实变更检测**：内容全等的重复入库不写库、不计入 `changed`（写入路径语义见 docs/10） |
-| `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 仅 `changed>0` 广播 `STORE_CHANGED`（`changed ≤ BROADCAST.UPSERTS_MAX` 附 point 载荷，`#saveFollowings` 恒 bulk——followings 无单卡更新原语）、响应剔除 `written`/`addedIds` 防大批量保存响应膨胀；`get`（keyset 游标翻页，无参一次性全量）/`delete`/`move`/`getByIds`（bulk 收口补拉通道）；写入语义见 docs/10 |
+| `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/favorites/collections）；`save` 仅 `changed>0` 广播 `STORE_CHANGED`（`changed ≤ BROADCAST.UPSERTS_MAX` 附 point 载荷，`#saveFollowings` 恒 bulk——followings 无单卡更新原语）、响应剔除 `written`/`addedIds` 防大批量保存响应膨胀；`get`（keyset 游标翻页，无参一次性全量）/`delete`/`move`/`getByIds`（bulk 收口补拉通道）；写入语义见 docs/10 |
 | `TabBridge`            | `identity/tab-bridge.js`     | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                    |
 | `Groups`               | `data/groups.js`             | 分组 tab + 管理（域感知）                                                                                                                            |
 | `DataTools`            | `data/data-tools.js`         | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                 |
@@ -131,6 +131,10 @@ DOMAIN_CONFIG = {
 
 - **所有共享全局变量定义在 `options/core.js` 顶部** — `config` / `dom` / `state` / `store` / `utils` / `runtimeConfig` / `services` 在此定义并 export，其余模块经 ES import 引用；类内自引用一律 `this.xxx()`，不用模块级单例变量。
 - **私有方法用 `#` 语法**；class field 箭头仅用于 add/remove 对称的事件回调（如 `Sidebar.#onResizeDown/Move/Up`、`Detail.#noteKeyHandler`）。
+- **词汇与 API 关键词一一对应：点赞=favorite（域键 favorites、链路 FETCH_FAVORITES 族、延迟 syncFavorites/cancelFavorites）、收藏=collection(s)（域键 collections、链路 FETCH_COLLECTION 族、延迟 syncCollection/cancelCollection）、作品/关注=works/followings** — 每个语义恰好一个词，like/digg 词形标识符全仓清零（favorite/collect/digg/listcollection 仅存于端点路径、`API_PATTERNS`、DNR urlFilter、`URL_FAVORITE_TAB` 值 `?showTab=like` 等**字符串值**）。历史教训：域键曾误用 favorites 指收藏、又曾以 likes 作点赞近义词与链路 favorite 并存，两次一词两用后于 v2.0.3 定案为域键=链路同词；本版本不再携带 IDB 改名迁移（升级前须先在旧版导出备份），导出带 `schemaVersion: 2`、导入按版本区分旧备份（favorites 键 v1=收藏数据、v2=点赞数据，旧收藏备份误投点赞域报 `LEGACY_COLLECTION_BACKUP`）。取消操作四要素按域组构：inject `CANCEL.favorites`（digg 端点）/`CANCEL.collection`（collect 端点）与 background `CANCEL.collection` 同构。延迟键按业务链路命名（含独立的 `importWorks`），禁止跨链路借用。
+- **aweme 为平台实体词，视同端点值白名单** — 记录字段 `awemeId`（持久化！）、API 响应字段 `aweme_list`/`aweme_id`/`aweme_type`、`AWEME_TYPE_NOTE`、`transformAwemeItem` 保留 aweme 词形，禁止"规范化"为 works（改名牵涉数据迁移且与 API 字段脱钩）。
+- **动词语义定案：SYNC_WORKS ≠ 列表扫描** — `SYNC_WORKS` 是对**已存**作品逐条重取详情；`FETCH_FOLLOWING/FETCH_FAVORITES/FETCH_COLLECTION` 是列表扫描入口。延迟键族统一 `sync*` 前缀（syncFollowings/syncFavorites/syncCollection 服务于对应 FETCH_* 扫描），属既定族名非动词错位。
+- **捕获层词汇分层：页面捕获事件用域词、签名捕获用端点词** — inject 派发的 `DY_CAPTURE_WORKS`（按钮捕获，载荷为 Work 记录）与 fetch-hook 被动捕获用域词 works；`signatureCapture` 的 `postQuery/favoriteQuery/collectionQuery/detailQuery/followingQuery/profileQuery` 按其拦截的端点原文命名，两者分层自洽、勿互改。单作品详情两条通道名字含 detail 词根且传输分层：tab 转发 `FETCH_WORK_DETAIL`（带任务控制）、WorkSaver 直调 `FETCH_DETAIL`（免任务控制）——事件名不同不可合并，合并会导致同一请求双触发双取数。
 
 ### 消息与通信
 

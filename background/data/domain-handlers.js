@@ -1,11 +1,11 @@
-// background/data/domain-handlers.js — 域数据操作入口（4 实例：works/followings/likes/favorites）
+// background/data/domain-handlers.js — 域数据操作入口（4 实例：works/followings/favorites/collections）
 
 import { CONFIG, DOMAIN_CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
 
 // ---------- DomainHandlers ----------
-// 域数据操作的对外入口；save 已改域驱动（决策 8），闭合 likes/favorites 断路缺陷。
+// 域数据操作的对外入口；save 已改域驱动（决策 8），闭合 favorites/collections 断路缺陷。
 class DomainHandlers {
   #cfg;
   #domain;
@@ -93,7 +93,7 @@ class DomainHandlers {
     }
   }
 
-  // save 必须域驱动：works/likes/favorites → domainStore.mergeAndSave；followings → #saveFollowings
+  // save 必须域驱动：works/favorites/collections → domainStore.mergeAndSave；followings → #saveFollowings
   async save(items, sendResponse, isImport = false) {
     if (this.#domain === CONFIG.STORAGE_KEYS.FOLLOWINGS) return this.#saveFollowings(items, isImport, sendResponse);
     const result = await domainStore.mergeAndSave(this.#domain, items);
@@ -141,7 +141,7 @@ class DomainHandlers {
 }
 const worksHandlers = new DomainHandlers(CONFIG.STORAGE_KEYS.WORKS);
 const followingsHandlers = new DomainHandlers(CONFIG.STORAGE_KEYS.FOLLOWINGS);
-const likesHandlers = new DomainHandlers(CONFIG.STORAGE_KEYS.LIKES);
 const favoritesHandlers = new DomainHandlers(CONFIG.STORAGE_KEYS.FAVORITES);
+const collectionsHandlers = new DomainHandlers(CONFIG.STORAGE_KEYS.COLLECTIONS);
 
-export { worksHandlers, followingsHandlers, likesHandlers, favoritesHandlers };
+export { worksHandlers, followingsHandlers, favoritesHandlers, collectionsHandlers };

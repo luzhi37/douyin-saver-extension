@@ -42,17 +42,23 @@
       FETCH_PAGE: 15000,
       FETCH_DETAIL: 8000,
     },
+    // 取消操作端点四要素，按域组构（与 background CONFIG.CANCEL 同构）：
+    // favorites=点赞域（digg 端点）、collection=收藏（collect 端点）——url 值引用端点原文
     CANCEL: {
-      COLLECTION_URL: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
-      LIKE_URL: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
-      COLLECTION_REFERRER: "https://www.douyin.com/user/self?showTab=favorite_collection",
-      LIKE_REFERRER: "https://www.douyin.com/user/self?showTab=like",
-      COLLECTION_BODY: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
-      LIKE_BODY: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+      favorites: {
+        url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
+        referrer: "https://www.douyin.com/user/self?showTab=like",
+        body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+      },
+      collection: {
+        url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
+        referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
+        body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
+      },
     },
     SECURITY_KEY: "security-sdk/s_sdk_cert_key",
     CANCEL_CONTENT_TYPE: "application/x-www-form-urlencoded; charset=UTF-8",
-    COLLECTION_CONTENT_TYPE: "application/x-www-form-urlencoded",
+    FORM_CONTENT_TYPE: "application/x-www-form-urlencoded",
     AWEME_TYPE_NOTE: 68,
     TOOLTIP_DESC_MAX_LEN: 30,
     BUTTON: {
@@ -66,8 +72,8 @@
       CAPTURE_WORKS: "DY_CAPTURE_WORKS",
       FETCH_DETAIL_REQUEST: "DY_FETCH_DETAIL_REQUEST",
       FETCH_DETAIL_RESULT: "DY_FETCH_DETAIL_RESULT",
-      FETCH_SINGLE_WORK_REQUEST: "DY_FETCH_SINGLE_WORK_REQUEST",
-      FETCH_SINGLE_WORK_RESULT: "DY_FETCH_SINGLE_WORK_RESULT",
+      FETCH_WORK_DETAIL_REQUEST: "DY_FETCH_WORK_DETAIL_REQUEST",
+      FETCH_WORK_DETAIL_RESULT: "DY_FETCH_WORK_DETAIL_RESULT",
       FETCH_FOLLOWING_PAGE_REQUEST: "DY_FETCH_FOLLOWING_PAGE_REQUEST",
       FETCH_FOLLOWING_PAGE_RESULT: "DY_FETCH_FOLLOWING_PAGE_RESULT",
       FETCH_PROFILE_OTHER_REQUEST: "DY_FETCH_PROFILE_OTHER_REQUEST",
@@ -76,12 +82,12 @@
       FETCH_FAVORITES_PAGE_RESULT: "DY_FETCH_FAVORITES_PAGE_RESULT",
       FETCH_COLLECTION_PAGE_REQUEST: "DY_FETCH_COLLECTION_PAGE_REQUEST",
       FETCH_COLLECTION_PAGE_RESULT: "DY_FETCH_COLLECTION_PAGE_RESULT",
-      FETCH_WORKS_REQUEST: "DY_FETCH_WORKS_REQUEST",
-      FETCH_WORKS_RESULT: "DY_FETCH_WORKS_RESULT",
+      FETCH_WORKS_PAGE_REQUEST: "DY_FETCH_WORKS_PAGE_REQUEST",
+      FETCH_WORKS_PAGE_RESULT: "DY_FETCH_WORKS_PAGE_RESULT",
       CANCEL_ONE_COLLECTION_REQUEST: "DY_CANCEL_ONE_COLLECTION_REQUEST",
       CANCEL_ONE_COLLECTION_RESULT: "DY_CANCEL_ONE_COLLECTION_RESULT",
-      CANCEL_ONE_LIKE_REQUEST: "DY_CANCEL_ONE_LIKE_REQUEST",
-      CANCEL_ONE_LIKE_RESULT: "DY_CANCEL_ONE_LIKE_RESULT",
+      CANCEL_ONE_FAVORITES_REQUEST: "DY_CANCEL_ONE_FAVORITES_REQUEST",
+      CANCEL_ONE_FAVORITES_RESULT: "DY_CANCEL_ONE_FAVORITES_RESULT",
       BUTTON_CLICK: "DY_BUTTON_CLICK",
       CAPTURE_BROWSER_FEATURES: "DY_CAPTURE_BROWSER_FEATURES",
     },
@@ -787,7 +793,7 @@
         signal,
         headers: {
           Referer: window.location.origin + "/",
-          "content-type": CONFIG.COLLECTION_CONTENT_TYPE,
+          "content-type": CONFIG.FORM_CONTENT_TYPE,
         },
       });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -850,16 +856,16 @@
       });
     }
 
-    cancelOneLike(awemeId, signal) {
-      return this.#cancelOne(awemeId, CONFIG.CANCEL.LIKE_URL, CONFIG.CANCEL.LIKE_BODY, CONFIG.CANCEL.LIKE_REFERRER, signal);
+    cancelOneFavorites(awemeId, signal) {
+      return this.#cancelOne(awemeId, CONFIG.CANCEL.favorites.url, CONFIG.CANCEL.favorites.body, CONFIG.CANCEL.favorites.referrer, signal);
     }
 
     cancelOneCollection(awemeId, signal) {
       return this.#cancelOne(
         awemeId,
-        CONFIG.CANCEL.COLLECTION_URL,
-        CONFIG.CANCEL.COLLECTION_BODY,
-        CONFIG.CANCEL.COLLECTION_REFERRER,
+        CONFIG.CANCEL.collection.url,
+        CONFIG.CANCEL.collection.body,
+        CONFIG.CANCEL.collection.referrer,
         signal,
       );
     }
@@ -1130,14 +1136,14 @@
   // 请求事件路由：监听 content.js 转发的请求事件，派发结果事件。
   class EventRouter {
     constructor() {
-      document.addEventListener(CONFIG.EVENTS.FETCH_SINGLE_WORK_REQUEST, (e) => this.#onFetchSingleWork(e));
+      document.addEventListener(CONFIG.EVENTS.FETCH_WORK_DETAIL_REQUEST, (e) => this.#onFetchWorkDetail(e));
       document.addEventListener(CONFIG.EVENTS.FETCH_DETAIL_REQUEST, (e) => this.#onFetchDetail(e));
-      document.addEventListener(CONFIG.EVENTS.FETCH_WORKS_REQUEST, (e) => this.#onFetchWorks(e));
+      document.addEventListener(CONFIG.EVENTS.FETCH_WORKS_PAGE_REQUEST, (e) => this.#onFetchWorks(e));
       document.addEventListener(CONFIG.EVENTS.FETCH_FOLLOWING_PAGE_REQUEST, (e) => this.#onFetchFollowing(e));
       document.addEventListener(CONFIG.EVENTS.FETCH_PROFILE_OTHER_REQUEST, (e) => this.#onFetchProfileOther(e));
       document.addEventListener(CONFIG.EVENTS.FETCH_FAVORITES_PAGE_REQUEST, (e) => this.#onFetchFavorites(e));
       document.addEventListener(CONFIG.EVENTS.FETCH_COLLECTION_PAGE_REQUEST, (e) => this.#onFetchCollection(e));
-      document.addEventListener(CONFIG.EVENTS.CANCEL_ONE_LIKE_REQUEST, (e) => this.#onCancelOneLike(e));
+      document.addEventListener(CONFIG.EVENTS.CANCEL_ONE_FAVORITES_REQUEST, (e) => this.#onCancelOneFavorites(e));
       document.addEventListener(CONFIG.EVENTS.CANCEL_ONE_COLLECTION_REQUEST, (e) => this.#onCancelOneCollection(e));
       document.addEventListener("DY_GET_SECURITY_STATUS_REQUEST", (e) => this.#onGetSecurityStatus(e));
       document.addEventListener("DY_REQUEST_BROWSER_FEATURES", (e) => this.#onRequestBrowserFeatures(e));
@@ -1165,10 +1171,10 @@
         .catch((e) => this.#dispatchResult(eventName, { requestId, error: e.message }));
     }
 
-    #onFetchSingleWork(e) {
+    #onFetchWorkDetail(e) {
       const { requestId, awemeId } = e.detail || {};
       if (!requestId || !awemeId) return;
-      this.#wrapTask(requestId, CONFIG.EVENTS.FETCH_SINGLE_WORK_RESULT, (controller) =>
+      this.#wrapTask(requestId, CONFIG.EVENTS.FETCH_WORK_DETAIL_RESULT, (controller) =>
         apiClient.fetchOneDetail(awemeId, controller).then((work) => ({ work: work || null, ok: !!work })),
       );
     }
@@ -1184,7 +1190,7 @@
     #onFetchWorks(e) {
       const detail = e.detail || {};
       if (!detail.requestId) return;
-      this.#wrapRequest(detail.requestId, CONFIG.EVENTS.FETCH_WORKS_RESULT, async () => {
+      this.#wrapRequest(detail.requestId, CONFIG.EVENTS.FETCH_WORKS_PAGE_RESULT, async () => {
         const result = await apiClient.fetchAuthorWorks(detail.secUid, detail.maxCursor || 0, detail.count);
         return { works: result.works, hasMore: result.hasMore, maxCursor: result.maxCursor };
       });
@@ -1294,11 +1300,11 @@
       );
     }
 
-    #onCancelOneLike(e) {
+    #onCancelOneFavorites(e) {
       const { requestId, awemeId } = e.detail || {};
       if (!requestId || !awemeId) return;
-      this.#wrapTask(requestId, CONFIG.EVENTS.CANCEL_ONE_LIKE_RESULT, (controller) =>
-        cancelHandler.cancelOneLike(awemeId, controller.signal).then(() => ({ ok: true })),
+      this.#wrapTask(requestId, CONFIG.EVENTS.CANCEL_ONE_FAVORITES_RESULT, (controller) =>
+        cancelHandler.cancelOneFavorites(awemeId, controller.signal).then(() => ({ ok: true })),
       );
     }
 

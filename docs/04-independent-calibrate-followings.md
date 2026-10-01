@@ -11,7 +11,7 @@
 
 两条入口的 `fetchStats` 都按模式注入：
 
-- Tab模式：`sendToTabAsync("FETCH_USER_PROFILE")` → inject `fetchProfileOther`；
+- Tab模式：`sendToTabAsync("FETCH_PROFILE_OTHER")` → inject `fetchProfileOther`；
 - 独立模式：`independentRequest(CONFIG.API.PROFILE_OTHER, buildBaseParams({ sec_user_id }))` 直接 GET。
 
 ## 核心流程图（文字描述）
@@ -40,13 +40,13 @@ handleIndependentFetchFollowing / handleFetchFollowing 收集完成
 fetchStats 注入：
   独立模式：(sec_uid) => independentRequest(API.PROFILE_OTHER, …)
             data.user 缺失 → throw "PROFILE_FETCH_FAILED"
-  Tab模式：  (sec_uid) => sendToTabAsync("FETCH_USER_PROFILE", { secUid })
+  Tab模式：  (sec_uid) => sendToTabAsync("FETCH_PROFILE_OTHER", { secUid })
             !resp.ok → throw resp.error || "PROFILE_FETCH_FAILED"
 
 fetchLatestWorkTime 注入（scanTasks 私有方法 #fetchLatestWorkTime，两模式分支取作品第一页）：
-  独立模式：independentRequest(API.POST, buildBaseParams({ sec_user_id, max_cursor:"0", count:PAGE.AUTHOR }))
+  独立模式：independentRequest(API.POST, buildBaseParams({ sec_user_id, max_cursor:"0", count:PAGE.POST }))
             → data.aweme_list → formatWork 归一化 → max createTime
-  Tab模式：  sendToTabAsync("FETCH_WORKS_PAGE", { secUid, cursor:"", count:PAGE.AUTHOR, timeout })
+  Tab模式：  sendToTabAsync("FETCH_WORKS_PAGE", { secUid, cursor:"", count:PAGE.POST, timeout })
             → resp.works → max createTime
   返回 max × 1000（毫秒）；无作品/全 0 返回 0
 ```
@@ -62,7 +62,7 @@ options Sidebar.openSidebar(following)
         ├─ loadIndependentMode()
         │   ├─ true：ensureABogus → independentRequest(PROFILE_OTHER, { sec_user_id })
         │   │        data.user 缺失 → throw PROFILE_FETCH_FAILED
-        │   └─ false：sendToTabAsync("FETCH_USER_PROFILE", { secUid })
+        │   └─ false：sendToTabAsync("FETCH_PROFILE_OTHER", { secUid })
         ├─ ds.get(String(uid)) 无记录 → { ok:false, error:"NOT_FOUND" }
         ├─ record.awemeCount/followerCount ← stats
         ├─ record.lastUpdateAt ← fetchLatestWorkTime(secUid) || record.lastUpdateAt || 0   // 失败保留旧值
@@ -89,8 +89,8 @@ async function handleCalibrateFollowing(uid, secUid, sendResponse)
 
 async #fetchLatestWorkTime(secUid) -> Promise<number>
 // 最近更新日期采集（毫秒）：作品列表第一页 max(create_time)×1000；失败抛错由调用方吞掉；无作品/全 0 → 0
-// 独立模式：independentRequest(API.POST, { sec_user_id, max_cursor:"0", count:PAGE.AUTHOR })
-// Tab 模式：sendToTabAsync("FETCH_WORKS_PAGE", { secUid, cursor:"", count:PAGE.AUTHOR, timeout })
+// 独立模式：independentRequest(API.POST, { sec_user_id, max_cursor:"0", count:PAGE.POST })
+// Tab 模式：sendToTabAsync("FETCH_WORKS_PAGE", { secUid, cursor:"", count:PAGE.POST, timeout })
 
 async function independentRequest(CONFIG.API.PROFILE_OTHER, params)   // GET，a_bogus + webSign（request 默认叠加）
 ```
@@ -209,9 +209,9 @@ Tab 模式对照：同一 URL 由 inject `fetchProfileOther` 以 DEVICE_PARAMS +
 |------|------|------|
 | `runtimeConfig.calibrateFollowings` | true | 设置面板「运行参数 → 同步关注后校准作品/粉丝数」开关；仅门控批量校准 |
 | `runtimeConfig.syncFollowingsDelayMin/Max` | 500/1000ms | 校准条目间延迟 |
-| `runtimeConfig.timeoutRequest` | 30000ms | profile/other 与作品第一页单请求超时（独立模式）；Tab 模式经 FETCH_USER_PROFILE / FETCH_WORKS_PAGE 的 msg.timeout |
+| `runtimeConfig.timeoutRequest` | 30000ms | profile/other 与作品第一页单请求超时（独立模式）；Tab 模式经 FETCH_PROFILE_OTHER / FETCH_WORKS_PAGE 的 msg.timeout |
 | `CONFIG.API.PROFILE_OTHER` | `/aweme/v1/web/user/profile/other/` | 权威计数端点（逐用户、无分页） |
-| `CONFIG.API.POST` | `/aweme/v1/web/aweme/post/` | lastUpdateAt 采集端点（作品第一页，`max_cursor=0`）；页大小 `CONFIG.PAGE.AUTHOR`（20） |
+| `CONFIG.API.POST` | `/aweme/v1/web/aweme/post/` | lastUpdateAt 采集端点（作品第一页，`max_cursor=0`）；页大小 `CONFIG.PAGE.POST`（20） |
 
 ## 相关文档
 

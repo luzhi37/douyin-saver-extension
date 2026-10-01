@@ -7,9 +7,9 @@
   const INJECT_URL = chrome.runtime.getURL("content/inject.js");
 
   const BRIDGE = {
-    FETCH_SINGLE_WORK: {
-      req: "DY_FETCH_SINGLE_WORK_REQUEST",
-      res: "DY_FETCH_SINGLE_WORK_RESULT",
+    FETCH_WORK_DETAIL: {
+      req: "DY_FETCH_WORK_DETAIL_REQUEST",
+      res: "DY_FETCH_WORK_DETAIL_RESULT",
       timeout: (msg) => msg.timeout,
       detail: (msg) => ({ awemeId: msg.awemeId }),
     },
@@ -19,15 +19,15 @@
       timeout: (msg) => msg.timeout,
       detail: (msg) => ({ secUid: msg.secUid, offset: msg.offset || 0, count: msg.count }),
     },
-    FETCH_USER_PROFILE: {
+    FETCH_PROFILE_OTHER: {
       req: "DY_FETCH_PROFILE_OTHER_REQUEST",
       res: "DY_FETCH_PROFILE_OTHER_RESULT",
       timeout: (msg) => msg.timeout,
       detail: (msg) => ({ secUid: msg.secUid }),
     },
     FETCH_WORKS_PAGE: {
-      req: "DY_FETCH_WORKS_REQUEST",
-      res: "DY_FETCH_WORKS_RESULT",
+      req: "DY_FETCH_WORKS_PAGE_REQUEST",
+      res: "DY_FETCH_WORKS_PAGE_RESULT",
       timeout: () => 60000,
       detail: (msg) => ({ secUid: msg.secUid, maxCursor: msg.cursor || 0, count: msg.count }),
     },
@@ -37,9 +37,9 @@
       timeout: (msg) => msg.timeout,
       detail: (msg) => ({ secUid: msg.secUid, cursor: msg.cursor || 0, count: msg.count }),
     },
-    CANCEL_ONE_LIKE: {
-      req: "DY_CANCEL_ONE_LIKE_REQUEST",
-      res: "DY_CANCEL_ONE_LIKE_RESULT",
+    CANCEL_ONE_FAVORITES: {
+      req: "DY_CANCEL_ONE_FAVORITES_REQUEST",
+      res: "DY_CANCEL_ONE_FAVORITES_RESULT",
       timeout: () => 30000,
       detail: (msg) => ({ awemeId: msg.awemeId }),
     },

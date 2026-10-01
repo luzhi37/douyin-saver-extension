@@ -27,7 +27,7 @@ bg 端复合索引 keyset 游标直出、每次只物化单页 + `total` 计数�
 `store.set` → render() 按 `total` **预铺至 `GRID_PREMOUNT_CAP` 上限**（未到达槽位为无键占位卡，
 超出上限的部分滚近底部时倍增扩容——滚动条物理上到不了未挂载区，远跳落进空白结构性不存在）；
 余量以 `nextCursor`（末条索引键）keyset 续页 `appendWorkLike`
-→ `work-like-appended` 事件 → 默认视图 `fillSlots(start)` 按键前缀自锚定回填（零 DOM 增删；
+→ `work-record-appended` 事件 → 默认视图 `fillSlots(start)` 按键前缀自锚定回填（零 DOM 增删；
   落点 = 传入 start 与首个无键槽取小者，删除使 #slots 相对页序收缩时自愈）、`done` 时
 `pruneEmptyTail` 摘除尾部未回填占位卡（预铺超出的兜底残余，removeItems 已同步收缩 #totalSlots）；筛选激活时静默累积到
 加载完成再整渲（逆序/作者聚类破坏页序对齐；`renderCards` 消费额度时按 `isFilterActive` 跳过预铺）；

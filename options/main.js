@@ -83,7 +83,7 @@ function flushStoreChanged() {
     if (domain !== state.domain) continue;
     // 当前域 bulk 收口：作品型三域带 id 载荷 → 补拉记录后增量应用（零整刷）；无载荷
     // （关注域等）或补拉失败 → 整域重载兜底
-    if (config.WORK_LIKE_DOMAINS.includes(domain) && bulkIdsByDomain.has(domain)) {
+    if (config.WORK_RECORD_DOMAINS.includes(domain) && bulkIdsByDomain.has(domain)) {
       applyBulkChanged(domain, bulkIdsByDomain.get(domain));
       continue;
     }
@@ -117,7 +117,7 @@ async function applyBulkChanged(domain, ids) {
 // （state 同步 splice + 网格头插，零整刷）；新增且落在当前视图外 → 只重算分组数字
 //（网格不受当前视图影响）。任一条需整刷则整域整刷——部分应用会让 state/网格口径不一
 function applyStoreUpserts(domain, entries) {
-  if (domain !== state.domain || !config.WORK_LIKE_DOMAINS.includes(domain)) return;
+  if (domain !== state.domain || !config.WORK_RECORD_DOMAINS.includes(domain)) return;
   if (search.isFilterActive() || state.batchMode || !dom.detailOverlay.classList.contains("hidden")) {
     store.refreshGroups();
     services.loadDomainData().catch(() => {});
@@ -164,7 +164,7 @@ function applyStoreUpserts(domain, entries) {
   }
   if (needCounts) store.refreshGroups();
   // state 先行、DOM 后跟（updateCardsDOM 用注入的现成记录）
-  search.activeWorkLikeGrid().updateCardsDOM(domUpdates);
+  search.activeWorkRecordGrid().updateCardsDOM(domUpdates);
 }
 
 // ---------- 头插收口：守卫 + 落点计算 ----------
@@ -194,7 +194,7 @@ function headInsertPosition(list, work) {
 // 中，state 已就位、待渲 renderCards 从 state 全量取视图随之出现）/ "fallback"
 // （守卫不过或口径意外，整刷兜底——loadDomainData 全量替换 state，口径必然归一）
 function tryHeadInsert(domain, works) {
-  const grid = search.activeWorkLikeGrid();
+  const grid = search.activeWorkRecordGrid();
   // 在途分页循环：头插与其 fillSlots 落点锚定会在 rAF 窗口内交错（start 基准过期会
   // 整页写偏）；整刷重载本就会作废在途循环，口径最稳
   if (services.isGridLoading()) return "fallback";
@@ -452,11 +452,11 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
     await services.loadFollowedUids();
     if (state.domain === "followings" || search.isOwnerFilterActive()) search.refreshGridView();
   });
-  store.on("likes", () => {
-    if (state.domain === "likes") search.refreshGridView();
-  });
   store.on("favorites", () => {
     if (state.domain === "favorites") search.refreshGridView();
+  });
+  store.on("collections", () => {
+    if (state.domain === "collections") search.refreshGridView();
   });
   store.on("groups", () => groups.renderGroupTabs());
   // 切换分组与域切换同序列：点击即清场（abortRender+wipe，只清不铺），数据到达后由
@@ -472,13 +472,13 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
   // 键前缀自锚定落点）+ 刷新计数，完成时摘除尾部未回填占位卡；筛选激活时静默累积
   // （逆序/作者聚类破坏页序对齐），加载完成一次性整渲。domain/groupId 双校验，
   // 防止切换瞬间在途旧页混入新网格
-  store.on("work-like-appended", ({ domain, groupId, items, start, done }) => {
+  store.on("work-record-appended", ({ domain, groupId, items, start, done }) => {
     if (state.domain !== domain || state.currentGroupId !== groupId) return;
     if (search.isFilterActive()) {
       if (done) search.refreshGridView();
       return;
     }
-    const grid = search.activeWorkLikeGrid();
+    const grid = search.activeWorkRecordGrid();
     grid.fillSlots(start, items);
     if (done) grid.pruneEmptyTail();
     search.syncCount();

@@ -1,6 +1,6 @@
 // ---------- AppShell（应用壳：域切换 / 全局错误态 / 弹窗关闭入口） ----------
 import { dom, state, services, store } from '../core.js';
-import { worksGrid, likesGrid, favoritesGrid } from '../grids/works-grid.js';
+import { worksGrid, favoritesGrid, collectionsGrid } from '../grids/works-grid.js';
 import { followingsGrid } from '../grids/followings-grid.js';
 import { detail } from './detail.js';
 import { sidebar } from './sidebar.js';
@@ -59,8 +59,8 @@ class AppShell {
   clearActiveGrid() {
     worksGrid.abortRender();
     followingsGrid.abortRender();
-    likesGrid.abortRender();
     favoritesGrid.abortRender();
+    collectionsGrid.abortRender();
     // 万级子树的同步 innerHTML="" 拆卸是大→小切组「慢一拍」的主源（整树脱离 +
     // LayoutObject 销毁 100-300ms，GC 再补一拍）：先 O(1) 换空壳让画面立即清空，
     // 旧子树脱离渲染树后由 #destroyDetached 分批销毁，拆卸与 GC 离开点击关键路径
@@ -71,8 +71,8 @@ class AppShell {
     dom.mainContainer = fresh;
     worksGrid.attachContainer(fresh);
     followingsGrid.attachContainer(fresh);
-    likesGrid.attachContainer(fresh);
     favoritesGrid.attachContainer(fresh);
+    collectionsGrid.attachContainer(fresh);
     this.#destroyDetached(stale);
   }
 

@@ -61,7 +61,7 @@ export async function runAuthorWorksImport(secUid, fetchPage, sendResponse) {
         hasMore,
       });
       if (hasMore && !guard.isCancelled()) {
-        await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFavorites")));
+        await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("importWorks")));
       }
     }
     guard.dispose();

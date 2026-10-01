@@ -41,6 +41,12 @@
                                                 // JSON.parse 在 SW 侧完成（主线程不再解析大文件、
                                                 // 解析结果不再全量对象 clone 过消息通道）
     → JSON.parse 失败 → { ok:false, error:"IMPORT_PARSE_FAILED" }
+    → 旧备份兼容（schemaVersion 缺失 = v1 旧格式；favorites 键 v1=收藏数据、v2=点赞数据，
+      同名不同义按版本区分）：
+        favorites 域 + 无版本 + 有 likes 键   → data.favorites = data.likes（旧点赞备份）
+        favorites 域 + 无版本 + 有 favorites 键 → { ok:false, error:"LEGACY_COLLECTION_BACKUP" }
+                                                  // 旧收藏备份误投点赞域，options 映射引导文案
+        collections 域 + 无版本 + 无 collections 键 + 有 favorites 键 → data.collections = data.favorites
     → extractImportItems(data, domain)          // 取 data[itemKey] 数组
     → 空数组 → { ok:false, error:"IMPORT_EMPTY" }  // 原 options 侧 isDomainData 前置校验职责移入
     → reconcileImportGroups(domain, data, items)  // 有 groups 时做三级对账（下节）
@@ -130,7 +136,7 @@ const lostUids = oldKeys.filter((uid) => !incomingUids.has(String(uid)));
 
 ### 扫描落库（persistScan）：stamps 一遍式
 
-点赞/收藏扫描收尾的落库走 `ScanTasks.persistScan`（persist = "likes"/"favorites"）：
+点赞/收藏扫描收尾的落库走 `ScanTasks.persistScan`（persist = "favorites"/"collections"）：
 
 ```
 oldKeys = getAllKeys()                            // 丢失检测键集（只取键，不物化记录值）

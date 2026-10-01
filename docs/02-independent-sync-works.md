@@ -288,5 +288,5 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / mergeAndSaveWorks 的合并语义（本册只讲调用时序） |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentRequest 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |
-| 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式同款链路（FETCH_SINGLE_WORK → fetchOneDetail）；extractVideo 双实现同步约束 |
+| 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式同款链路（FETCH_WORK_DETAIL → fetchOneDetail）；extractVideo 双实现同步约束 |
 | — | [TIKTOK_REFERENCE.md](./TIKTOK_REFERENCE.md) | `/aweme/detail/` 端点参数表 |

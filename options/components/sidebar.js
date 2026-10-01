@@ -268,7 +268,7 @@ class Sidebar {
 
   // 锚点兜底：取视口内最上方的卡片作锚（骨架/完整卡都参与网格流、几何位置真实，
   // 视口顶部的卡处于填充圈内、通常为完整卡）；四域共用 selector（与 AppShell.#topVisibleGridCard 同款，
-  // 覆盖 works/likes/favorites 域的 .work-card 与 followings 域的 .following-card）；无卡片（空态/错误态）时返回 null
+  // 覆盖 works/favorites/collections 域的 .work-card 与 followings 域的 .following-card）；无卡片（空态/错误态）时返回 null
   #topVisibleCard() {
     const gridTop = dom.mainGrid.getBoundingClientRect().top;
     for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {

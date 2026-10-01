@@ -70,12 +70,12 @@ XHR Hook：包装 open 记录 _dyUrl，send 后 load 事件里 /aweme/ 预检 �
    - 历史说明：detail/post/following/profile 曾用"复用捕获签名"策略（stripPageKeys 后带签名合并），在 post 与 profile/other 被风控强制 Argus webSign 校验后，捕获 query 中带入的过期 `x-secsdk-web-signature` 被原样重放、包装器不再重签，导致 `Blocked by ArgusSecurityPlugin Sign Invalid`——已全部统一切换到代签策略。
 2. **XHR 原生签名**（取消类）：a_bogus 与 XHR 原型链深度绑定，改用 fetch 即失败。
 
-### 请求—响应全链路（以 FETCH_SINGLE_WORK 为例）
+### 请求—响应全链路（以 FETCH_WORK_DETAIL 为例）
 
 ```
 background sendToTab({type, requestId, …})
-  → content.js BRIDGE.FETCH_SINGLE_WORK 命中
-      requestResponse("DY_FETCH_SINGLE_WORK_REQUEST", "DY_FETCH_SINGLE_WORK_RESULT",
+  → content.js BRIDGE.FETCH_WORK_DETAIL 命中
+      requestResponse("DY_FETCH_WORK_DETAIL_REQUEST", "DY_FETCH_WORK_DETAIL_RESULT",
                       msg.timeout, msg => ({awemeId}))
         先 addEventListener(resultEvent) 再 dispatchEvent(requestEvent)   // 同步 handler 安全
         结果事件按 requestId 过滤；超时（BRIDGE timeout 字段）移除监听并回 {ok:false,error:"TIMEOUT"}
@@ -132,13 +132,13 @@ function saveWork(fullWork)                       // apiData LRU 合并 → SAVE
 
 | chrome 消息 | REQUEST 事件 | RESULT 事件 | timeout |
 |-------------|--------------|-------------|---------|
-| FETCH_SINGLE_WORK | DY_FETCH_SINGLE_WORK_REQUEST | …_RESULT | msg.timeout |
+| FETCH_WORK_DETAIL | DY_FETCH_WORK_DETAIL_REQUEST | …_RESULT | msg.timeout |
 | FETCH_FOLLOWING_PAGE | DY_FETCH_FOLLOWING_PAGE_REQUEST | …_RESULT | msg.timeout |
-| FETCH_USER_PROFILE | DY_FETCH_PROFILE_OTHER_REQUEST | …_RESULT | msg.timeout |
-| FETCH_WORKS_PAGE | DY_FETCH_WORKS_REQUEST | …_RESULT | 固定 60000 |
+| FETCH_PROFILE_OTHER | DY_FETCH_PROFILE_OTHER_REQUEST | …_RESULT | msg.timeout |
+| FETCH_WORKS_PAGE | DY_FETCH_WORKS_PAGE_REQUEST | …_RESULT | 固定 60000 |
 | FETCH_FAVORITES_PAGE | DY_FETCH_FAVORITES_PAGE_REQUEST | …_RESULT | msg.timeout |
 | FETCH_COLLECTION_PAGE | DY_FETCH_COLLECTION_PAGE_REQUEST | …_RESULT | msg.timeout |
-| CANCEL_ONE_LIKE / CANCEL_ONE_COLLECTION | DY_CANCEL_ONE_*_REQUEST | …_RESULT | 固定 30000 |
+| CANCEL_ONE_FAVORITES / CANCEL_ONE_COLLECTION | DY_CANCEL_ONE_*_REQUEST | …_RESULT | 固定 30000 |
 | GET_SECURITY_STATUS | DY_GET_SECURITY_STATUS_REQUEST | …_RESULT | 固定 5000 |
 | REQUEST_CAPTURE_BROWSER_FEATURES | DY_REQUEST_BROWSER_FEATURES | DY_CAPTURE_BROWSER_FEATURES_REFRESH | msg.timeout‖10000 |
 
@@ -174,7 +174,7 @@ window.__dyManagerFetchHooked = true;        // 安全状态面板读取的标�
 
 ```js
 const xhr = new XMLHttpRequest();
-xhr.open("POST", CONFIG.CANCEL.LIKE_URL);           // /commit/item/digg/?aid=6383
+xhr.open("POST", CONFIG.CANCEL.favorites.url);           // /commit/item/digg/?aid=6383
 xhr.withCredentials = true;
 xhr.setRequestHeader("content-type", "application/x-www-form-urlencoded; charset=UTF-8");
 xhr.setRequestHeader("Referer", "…/user/self?showTab=like");

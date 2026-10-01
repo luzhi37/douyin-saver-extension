@@ -42,20 +42,20 @@ chrome.runtime.onMessage (background/main.js App.route switch)
   │                            GET_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / RELOAD_CONFIG
   │     （作品型三域 GET_* 分页：page:0 经复合索引 savedAt_id / groupId_savedAt_id
-  │       （DB v3，升级回填缺失 savedAt/groupId）keyset 游标直出首页 + hasMore/nextCursor；
+  │       （DB v5，无改名迁移；升级回填缺失 savedAt/groupId）keyset 游标直出首页 + hasMore/nextCursor；
   │       cursor 以上页末条索引键（含主键，全序唯一）为开区间上界续页，免疫并发增删位移；
   │       省略 page/cursor = 一次性全量。每次只物化 PAGE.GRID 条，无全量读取）
   │
   ├─ 按模式分支（读 independentClient.loadMode()）──→
   │     SYNC_WORKS          → im ? independentTasks.syncWorks         : scanTasks.syncWorks（逐条 tabBridge.sendAsync）
   │     FETCH_FOLLOWING     → im ? independentTasks.fetchFollowing   : scanTasks.fetchFollowing
-  │     FETCH_COLLECTION    → im ? independentTasks.fetchCollection  : scanTasks.fetchCollection
+  │     FETCH_COLLECTION     → im ? independentTasks.fetchCollection   : scanTasks.fetchCollection
   │     FETCH_WORKS_PAGE    → im ? independentTasks.fetchWorksPage   : tabBridge.fetchWorksPage
-  │     CANCEL_COLLECTION   → im ? independentTasks.cancel           : scanTasks.runCancelBatch(CANCEL_ONE_COLLECTION)
+  │     CANCEL_COLLECTION    → im ? independentTasks.cancel           : scanTasks.runCancelBatch(CANCEL_ONE_COLLECTION)
   │
   ├─ 仅 Tab 模式（无独立分支）──→
-  │     FETCH_FAVORITES     → scanTasks.fetchFavorites（独立模式不支持点赞扫描）
-  │     CANCEL_LIKE         → scanTasks.runCancelBatch(CANCEL_ONE_LIKE)
+  │     FETCH_FAVORITES         → scanTasks.fetchFavorites（独立模式不支持点赞扫描）
+  │     CANCEL_FAVORITES         → scanTasks.runCancelBatch(CANCEL_ONE_FAVORITES)
   │     GET_SECURITY_STATUS → tabBridge.getSecurityStatus（恒走 Tab，需检查 Hook 注入）
   │
   ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → scanTasks.calibrateOne
@@ -207,10 +207,10 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 |-------|---------|------|------|
 | `works` | `awemeId` | `groupId` | `{ [awemeId]: Work }` |
 | `works_groups` | `id` | — | `[{ id, name, fixed, order? }]` |
-| `likes` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
-| `likes_groups` | `id` | — | 同 groups 结构 |
 | `favorites` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
 | `favorites_groups` | `id` | — | 同 groups 结构 |
+| `collections` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
+| `collections_groups` | `id` | — | 同 groups 结构 |
 | `followings` | `uid`（字符串化） | `groupId` | `{ [uid]: Following }` |
 | `followings_groups` | `id` | — | 同 groups 结构 |
 
@@ -220,8 +220,8 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 DOMAIN_CONFIG = {
   works:      { storeName, groupsName, defaultGroups, itemKey: "works",      idField: "awemeId" },
   followings: { storeName, groupsName, defaultGroups, itemKey: "followings", idField: "uid", idToString: true },
-  likes:      { storeName, groupsName, defaultGroups, itemKey: "likes",      idField: "awemeId" },
-  favorites:  { storeName, groupsName, defaultGroups, itemKey: "favorites",  idField: "awemeId" },
+  favorites:      { storeName, groupsName, defaultGroups, itemKey: "favorites",      idField: "awemeId" },
+  collections:  { storeName, groupsName, defaultGroups, itemKey: "collections",  idField: "awemeId" },
 }
 ```
 
@@ -285,9 +285,9 @@ DOMAIN_CONFIG = {
 | 分组 | 键 |
 |------|----|
 | TIMEOUT | `REQUEST:30000` / `SECURITY_STATUS:5000` |
-| DELAY | 六类任务各 `{MIN:500, MAX:1000}`：syncWorks / syncFollowings / syncFavorites / syncCollection / cancelLike / cancelCollection |
+| DELAY | 七类任务各 `{MIN:500, MAX:1000}`：syncWorks / syncFollowings / syncFavorites / syncCollection / cancelFavorites / cancelCollection / importWorks |
 | SYNC | `BATCH_SIZE:40` / `BATCH_PAUSE_MIN/MAX:10000/20000` / `KEEPALIVE_INTERVAL:2000` / `RETRY_MAX:2` |
-| PAGE | 各列表端点页大小，均 20（FAVORITE/COLLECTION/AUTHOR/FOLLOWING）；`GRID: 2000`（网格渐进加载页大小，keyset 游标串行依赖上一页末键，吞吐靠加大页体摊薄每页固定开销） |
+| PAGE | 各列表端点页大小，均 20（FAVORITE/COLLECTION/POST/FOLLOWING）；`GRID: 2000`（网格渐进加载页大小，keyset 游标串行依赖上一页末键，吞吐靠加大页体摊薄每页固定开销） |
 | IMPORT_CHUNK | `2000`（导入分块落库块大小：单事务 10 万级 put 长时间独占 SW 的 IDB，按块 mergeAndSave + IMPORT_PROGRESS 逐块回报） |
 | GROUPS | `ID_PREFIX:"custom_"` / `DEFAULT_ID:"uncategorized"` |
 | STORAGE_KEYS | 四个 store 名常量（唯一来源） |
@@ -315,8 +315,8 @@ DOMAIN_CONFIG = {
 | 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'1600px'`（≈4 行，须 < OBSERVE_CHUNK_SIZE 单圈行距） / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'`（≈6 行，与填充圈保持 800px 滞回间隙） / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_PREMOUNT_CAP_FILTER` `600`（筛选态封闭视图预铺降档） / `GRID_EXTEND_THRESHOLD` `1.5` / `GRID_EXTEND_STEP` `1000`（扩容单步新增槽位上限，防深域后段单步长任务） / `DEMOTE_FRAME_BUDGET_MS` `8`（停稳降级分帧预算） / `GRID_IMG_PER_FRAME` `10`（网格媒体探针每帧派发配额，sidebar 沿用 `SIDEBAR_IMG_PER_FRAME`） |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                                                    |
-| 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_LIKE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                                                    |
-| 域元数据   | `WORK_LIKE_DOMAINS` `['works','likes','favorites']` / `DOMAINS_META`（四域 label/itemKey/idKey/isFollowings）                                                 |
+| 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_FAVORITE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                                                    |
+| 域元数据   | `WORK_RECORD_DOMAINS` `['works','favorites','collections']` / `DOMAINS_META`（四域 label/itemKey/idKey/isFollowings）                                                 |
 | 正则/图标  | `SEC_UID_REGEX` `/^\/user\/([^/?]+)/` / `icons` `{}`（init 填充）                                                                                             |
 
 ## 相关文档

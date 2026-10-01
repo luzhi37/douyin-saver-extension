@@ -223,10 +223,12 @@ class Settings {
       syncFavoritesDelayMax: "syncFavoritesDelayMax",
       syncCollectionDelayMin: "syncCollectionDelayMin",
       syncCollectionDelayMax: "syncCollectionDelayMax",
-      cancelLikeDelayMin: "cancelLikeDelayMin",
-      cancelLikeDelayMax: "cancelLikeDelayMax",
+      cancelFavoritesDelayMin: "cancelFavoritesDelayMin",
+      cancelFavoritesDelayMax: "cancelFavoritesDelayMax",
       cancelCollectionDelayMin: "cancelCollectionDelayMin",
       cancelCollectionDelayMax: "cancelCollectionDelayMax",
+      importWorksDelayMin: "importWorksDelayMin",
+      importWorksDelayMax: "importWorksDelayMax",
       syncBatchSize: "syncBatchSize",
       syncBatchPauseMin: "syncBatchPauseMin",
       syncBatchPauseMax: "syncBatchPauseMax",
@@ -501,8 +503,9 @@ class Settings {
       "syncFollowingsDelayMin", "syncFollowingsDelayMax",
       "syncFavoritesDelayMin", "syncFavoritesDelayMax",
       "syncCollectionDelayMin", "syncCollectionDelayMax",
-      "cancelLikeDelayMin", "cancelLikeDelayMax",
+      "cancelFavoritesDelayMin", "cancelFavoritesDelayMax",
       "cancelCollectionDelayMin", "cancelCollectionDelayMax",
+      "importWorksDelayMin", "importWorksDelayMax",
       "syncBatchSize", "syncBatchPauseMin", "syncBatchPauseMax",
       "syncKeepaliveInterval", "syncRetryMax",
     ];
@@ -511,8 +514,9 @@ class Settings {
       ["syncFollowingsDelayMin", "syncFollowingsDelayMax", "同步关注"],
       ["syncFavoritesDelayMin", "syncFavoritesDelayMax", "扫描点赞"],
       ["syncCollectionDelayMin", "syncCollectionDelayMax", "扫描收藏"],
-      ["cancelLikeDelayMin", "cancelLikeDelayMax", "取消点赞"],
+      ["cancelFavoritesDelayMin", "cancelFavoritesDelayMax", "取消点赞"],
       ["cancelCollectionDelayMin", "cancelCollectionDelayMax", "取消收藏"],
+      ["importWorksDelayMin", "importWorksDelayMax", "作者入库"],
     ];
     const values = {};
     for (const key of FIELDS) {

@@ -1,6 +1,6 @@
 # 06 · 独立模式（逆向）— 取消收藏
 
-> 职责边界：`CANCEL_COLLECTION` 在**独立模式**下的完整链路——background 内直接循环 `fetch()` POST `/aweme/v1/web/aweme/collect/`，不经过任何标签页。取消点赞（CANCEL_LIKE）**没有独立分支**，仅 Tab 模式 XHR 链路（见 [09](./09-inject-tab-mode.md)）；DNR 头注入依赖见 [08](./08-dnr-rules.md)。
+> 职责边界：`CANCEL_COLLECTION` 在**独立模式**下的完整链路——background 内直接循环 `fetch()` POST `/aweme/v1/web/aweme/collect/`，不经过任何标签页。取消点赞（CANCEL_FAVORITES）**没有独立分支**，仅 Tab 模式 XHR 链路（见 [09](./09-inject-tab-mode.md)）；DNR 头注入依赖见 [08](./08-dnr-rules.md)。
 
 ## 概述
 

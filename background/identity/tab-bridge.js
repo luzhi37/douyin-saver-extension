@@ -76,7 +76,7 @@ class TabBridge {
       {
         secUid: message.secUid,
         cursor: message.cursor || "",
-        count: CONFIG.PAGE.AUTHOR,
+        count: CONFIG.PAGE.POST,
         timeout: CONFIG.TIMEOUT.REQUEST,
       },
       sendResponse,

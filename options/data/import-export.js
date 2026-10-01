@@ -107,13 +107,17 @@ class ImportExport {
       dom.dialogTitle.textContent = "正在保存…";
       dom.dialogBody.innerHTML = "<p>正在保存数据…</p>";
       const res = await services.bgMsg({ type: "IMPORT_DATA", text: raw, domain });
-      // 原 options 侧前置校验职责移入 background，两个专用错误码映射回原文案
-      if (!res.ok && (res.error === "IMPORT_PARSE_FAILED" || res.error === "IMPORT_EMPTY")) {
+      // 前置校验职责移入 background，专用错误码映射回原文案
+      if (!res.ok && ["IMPORT_PARSE_FAILED", "IMPORT_EMPTY", "LEGACY_COLLECTION_BACKUP"].includes(res.error)) {
         dom.dialogTitle.textContent = "导入失败";
         const expected = config.DOMAINS_META[domain].label + "数据";
-        dom.dialogBody.innerHTML = `<p class="dy-text-danger">${
-          res.error === "IMPORT_EMPTY" ? `文件内容不是${expected}` : "文件解析错误：JSON 解析失败，请检查文件格式"
-        }</p>`;
+        const messages = {
+          IMPORT_EMPTY: `文件内容不是${expected}`,
+          IMPORT_PARSE_FAILED: "文件解析错误：JSON 解析失败，请检查文件格式",
+          // favorites 键在旧版备份里是收藏数据、新版是点赞数据，同名不同义，按版本区分
+          LEGACY_COLLECTION_BACKUP: "检测到旧版收藏备份，请改在收藏域导入（收藏域已自动兼容旧格式）",
+        };
+        dom.dialogBody.innerHTML = `<p class="dy-text-danger">${messages[res.error]}</p>`;
         dialog.showOkDialog();
         return;
       }

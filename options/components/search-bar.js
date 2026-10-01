@@ -1,7 +1,7 @@
 // ---------- SearchBar ----------
 import { config, dom, state } from '../core.js';
 import { followingsGrid } from '../grids/followings-grid.js';
-import { worksGrid, likesGrid, favoritesGrid } from '../grids/works-grid.js';
+import { worksGrid, favoritesGrid, collectionsGrid } from '../grids/works-grid.js';
 import { batch } from '../data/batch.js';
 
 // ---------- 检索：搜索/排序 ----------
@@ -63,9 +63,9 @@ class SearchBar {
     this.#bindEvents();
   }
 
-  // 作品型三域（works/likes/favorites）共用作品视图；followings 独立
-  #isWorkLikeDomain() {
-    return config.WORK_LIKE_DOMAINS.includes(state.domain);
+  // 作品型三域（works/favorites/collections）共用作品视图；followings 独立
+  #isWorkRecordDomain() {
+    return config.WORK_RECORD_DOMAINS.includes(state.domain);
   }
 
   // ---------- 数据层：过滤与排序视图 ----------
@@ -75,8 +75,8 @@ class SearchBar {
     // 否则搜索无结果的空态会误显示通用文案（P1-8）
     if (this.#searchState.keyword.trim()) return true;
     if (this.#searchState.reverse) return true;
-    if (this.#isWorkLikeDomain() && this.#searchState.workType !== "all") return true;
-    return this.#isWorkLikeDomain()
+    if (this.#isWorkRecordDomain() && this.#searchState.workType !== "all") return true;
+    return this.#isWorkRecordDomain()
       ? this.#searchState.sort !== "saved"
       : this.#searchState.followingsSort !== "followers";
   }
@@ -98,7 +98,7 @@ class SearchBar {
 
   // 归属筛选是否对当前可见网格生效（服务层刷新关注全集后按需重渲网格）
   isOwnerFilterActive() {
-    return this.#isWorkLikeDomain() && this.#ownerFilterActive();
+    return this.#isWorkRecordDomain() && this.#ownerFilterActive();
   }
 
   // 三段流水线（作品型三域）：base(关键词/类型/归属) → sorted(排序) → view(逆序)。
@@ -110,14 +110,14 @@ class SearchBar {
     const c = this.#viewCache;
     const baseKey = `${state.domain}|${state.dataVersion}|${kw}|${s.scope}|${s.workType}|${s.followed}|${s.unfollowed}`;
     if (c.baseKey !== baseKey || c.baseSource !== source) {
-      c.base = this.#filterWorkLike(source, kw);
+      c.base = this.#filterWorkRecord(source, kw);
       c.baseKey = baseKey;
       c.baseSource = source;
       c.sortKey = "";
     }
     const sortKey = `${baseKey}|${s.sort}`;
     if (c.sortKey !== sortKey) {
-      c.sorted = this.#sortWorkLike(c.base, source);
+      c.sorted = this.#sortWorkRecord(c.base, source);
       c.sortKey = sortKey;
       c.viewKey = "";
     }
@@ -132,7 +132,7 @@ class SearchBar {
 
   // base 段：关键词 + 类型 + 归属三层过滤（匹配字段走 lcFields 惰性缓存，语义与
   // 历史实现逐字段一致）
-  #filterWorkLike(source, kw) {
+  #filterWorkRecord(source, kw) {
     const s = this.#searchState;
     let list = source;
     if (kw) {
@@ -152,12 +152,12 @@ class SearchBar {
         }
       });
     }
-    if (this.#isWorkLikeDomain() && s.workType !== "all") {
+    if (this.#isWorkRecordDomain() && s.workType !== "all") {
       // 类型筛选（全部/视频/图集）：formatWork 保证 type 只有两值，等值比较即可
       const wantNote = s.workType === "note";
       list = list.filter((w) => (wantNote ? w.type === "note" : w.type === "video"));
     }
-    if (this.#isWorkLikeDomain() && this.#ownerFilterActive()) {
+    if (this.#isWorkRecordDomain() && this.#ownerFilterActive()) {
       // 已关注/未关注勾选（默认双勾=不筛）：单边勾选仅保留对应归属，两边都未勾则无结果
       // （#ownerFilterActive 保证不会同时为 true，故 followed 优先分支可安全省略双勾判断）
       list = list.filter((w) =>
@@ -170,7 +170,7 @@ class SearchBar {
 
   // sorted 段：saved 序保持 bg 端返回的 savedAt 降序（本地变更原地保序，不重复排序）；
   // authorCount 序按全库 rank 升序 + 簇内保存时间降序
-  #sortWorkLike(base, source) {
+  #sortWorkRecord(base, source) {
     if (this.#searchState.sort !== "authorCount") return base;
     // 作者作品数按全库口径统计（关键词只决定哪些条目参与展示）：
     // 作者先按作品数降序排名、同数按 key 定序，保证同一作者的作品相邻；簇内按保存时间降序
@@ -247,9 +247,9 @@ class SearchBar {
   // ---------- UI 同步 ----------
   // 域切换后搜索栏的域相关联动：排序段显隐（作品型 vs 关注域各有排序维度）/范围段文案/占位符/分段选中
   syncForDomain() {
-    const isWorkLike = this.#isWorkLikeDomain();
-    dom.sbWorkFilters.classList.toggle("hidden", !isWorkLike);
-    dom.sbFollowFilters.classList.toggle("hidden", isWorkLike);
+    const isWorkRecord = this.#isWorkRecordDomain();
+    dom.sbWorkFilters.classList.toggle("hidden", !isWorkRecord);
+    dom.sbFollowFilters.classList.toggle("hidden", isWorkRecord);
     this.syncScopeUIForDomain();
     this.#updateSearchPlaceholder();
     this.syncSegUI();
@@ -269,11 +269,11 @@ class SearchBar {
     // 视图顺序可能已变（排序/关键词/归属/域/分组/同步）：旧 shift 锚点在新顺序中的
     // 索引与点击时不一致，先清空锚点，防止区间按错误索引圈选
     batch.resetRangeAnchor();
-    const isWorkLike = this.#isWorkLikeDomain();
-    const view = isWorkLike ? this.getWorksView() : this.getFollowingsView();
+    const isWorkRecord = this.#isWorkRecordDomain();
+    const view = isWorkRecord ? this.getWorksView() : this.getFollowingsView();
     if (view !== this.#lastRenderedView) {
-      const grid = isWorkLike ? this.activeWorkLikeGrid() : followingsGrid;
-      if (isWorkLike) grid.renderCards(view);
+      const grid = isWorkRecord ? this.activeWorkRecordGrid() : followingsGrid;
+      if (isWorkRecord) grid.renderCards(view);
       else grid.renderFollowingCards(view);
       this.#lastRenderedView = view;
     }
@@ -284,17 +284,17 @@ class SearchBar {
   // count 可由调用方注入（refreshGridView 已持有视图）；缺省经视图函数取（内部有阶段缓存）
   syncCount(count) {
     if (count === undefined) {
-      count = this.#isWorkLikeDomain() ? this.getWorksView().length : this.getFollowingsView().length;
+      count = this.#isWorkRecordDomain() ? this.getWorksView().length : this.getFollowingsView().length;
     }
-    const total = this.#isWorkLikeDomain() ? state[state.domain].length : state.followings.length;
+    const total = this.#isWorkRecordDomain() ? state[state.domain].length : state.followings.length;
     dom.sbCount.textContent = `${count}/${total}`;
   }
 
   // 作品型三域 → 对应网格实例（Batch 等外部类也需要按域取网格，公开）
-  activeWorkLikeGrid() {
+  activeWorkRecordGrid() {
     if (state.domain === "works") return worksGrid;
-    if (state.domain === "likes") return likesGrid;
-    return favoritesGrid;
+    if (state.domain === "favorites") return favoritesGrid;
+    return collectionsGrid;
   }
 
   syncSegUI() {
@@ -317,14 +317,14 @@ class SearchBar {
 
   // 范围段的域差异：「标题」仅作品型三域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
   syncScopeUIForDomain() {
-    const isWorkLike = this.#isWorkLikeDomain();
-    dom.sbScopeTitle.classList.toggle("hidden", !isWorkLike);
-    dom.sbScopeAuthor.textContent = isWorkLike ? "作者" : "昵称";
-    if (!isWorkLike && this.#searchState.scope === "title") this.#searchState.scope = "all";
+    const isWorkRecord = this.#isWorkRecordDomain();
+    dom.sbScopeTitle.classList.toggle("hidden", !isWorkRecord);
+    dom.sbScopeAuthor.textContent = isWorkRecord ? "作者" : "昵称";
+    if (!isWorkRecord && this.#searchState.scope === "title") this.#searchState.scope = "all";
   }
 
   #updateSearchPlaceholder() {
-    const placeholders = this.#isWorkLikeDomain()
+    const placeholders = this.#isWorkRecordDomain()
       ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
       : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
     dom.searchInput.placeholder = placeholders[this.#searchState.scope] || placeholders.all;

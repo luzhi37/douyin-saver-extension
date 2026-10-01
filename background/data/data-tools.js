@@ -51,6 +51,20 @@ class DataTools {
         return sendResponse({ ok: false, error: "IMPORT_PARSE_FAILED" });
       }
       const cfg = DOMAIN_CONFIG[domain];
+      // 旧备份兼容（schemaVersion 缺失 = v1 旧格式；导入目标域由弹窗显式指定，不读文件内
+      // domain 字段）。favorites 键在 v1 = 收藏数据、v2 = 点赞数据，同名不同义以版本区分
+      if (cfg.itemKey === "favorites" && !data.schemaVersion) {
+        if (Array.isArray(data.likes)) {
+          data.favorites = data.likes; // 旧点赞备份（键 likes = 点赞，语义同）
+        } else if (Array.isArray(data.favorites)) {
+          // 旧收藏备份误投点赞域：旧格式的 favorites 键是收藏数据
+          return sendResponse({ ok: false, error: "LEGACY_COLLECTION_BACKUP" });
+        }
+      }
+      if (cfg.itemKey === "collections" && !data.schemaVersion
+          && !Array.isArray(data.collections) && Array.isArray(data.favorites)) {
+        data.collections = data.favorites; // 旧收藏备份导入收藏域
+      }
       const items = domainStore.extractImportItems(data, domain);
       if (items.length === 0) {
         // 原 options 侧 isDomainData 前置校验职责移入：非该域数据/空数组统一报空
@@ -114,14 +128,20 @@ class DataTools {
       const items = await storage.getAll(cfg.storeName);
       const groups = await storage.getGroups(cfg.groupsName);
       const def = domainStore.defaultGroups(domain);
-      // 序列化在 SW 侧一次完成（无缩进）：options 不再收全量对象（structured clone 大头）、
-      // 不再主线程 stringify（缩进还使体积膨胀 20-30%）——文本 clone 是 memcpy 级
-      const text = JSON.stringify({
-        domain,
-        exportedAt: new Date().toISOString(),
-        [cfg.itemKey]: Object.values(items),
-        groups: groups.length ? groups : def,
-      });
+      // 序列化在 SW 侧一次完成（2 空格缩进，导出文件是人类查看的交付物，单行 JSON 虽合法
+      // 但不可读）：options 不再收全量对象（structured clone 大头）、不再主线程 stringify
+      // ——文本 clone 是 memcpy 级；缩进的体积代价（+20-30%）由用户侧承担且可接受
+      const text = JSON.stringify(
+        {
+          schemaVersion: 2,
+          domain,
+          exportedAt: new Date().toISOString(),
+          [cfg.itemKey]: Object.values(items),
+          groups: groups.length ? groups : def,
+        },
+        null,
+        2,
+      );
       sendResponse({ ok: true, text });
     } catch (err) {
       sendResponse({ error: err.message });
@@ -145,13 +165,13 @@ class DataTools {
       // 避免大数据量下每次统计都产生整表读取 + 大对象分配
       const dsWorks = domainStore.facade(CONFIG.STORAGE_KEYS.WORKS);
       const dsFollowings = domainStore.facade(CONFIG.STORAGE_KEYS.FOLLOWINGS);
-      const dsLikes = domainStore.facade(CONFIG.STORAGE_KEYS.LIKES);
       const dsFavorites = domainStore.facade(CONFIG.STORAGE_KEYS.FAVORITES);
-      const [works_groups, followings_groups, likes_groups, favorites_groups, est] = await Promise.all([
+      const dsCollections = domainStore.facade(CONFIG.STORAGE_KEYS.COLLECTIONS);
+      const [works_groups, followings_groups, favorites_groups, collections_groups, est] = await Promise.all([
         dsWorks.getGroups(),
         dsFollowings.getGroups(),
-        dsLikes.getGroups(),
         dsFavorites.getGroups(),
+        dsCollections.getGroups(),
         storage.estimate(),
       ]);
 
@@ -169,16 +189,16 @@ class DataTools {
         return { total, groupCounts };
       }
 
-      const [works, followings, likes, favorites] = await Promise.all([
+      const [works, followings, favorites, collections] = await Promise.all([
         buildDomainStats(dsWorks, works_groups),
         buildDomainStats(dsFollowings, followings_groups),
-        buildDomainStats(dsLikes, likes_groups),
         buildDomainStats(dsFavorites, favorites_groups),
+        buildDomainStats(dsCollections, collections_groups),
       ]);
 
       sendResponse({
         ok: true,
-        stats: { works, followings, likes, favorites, bytes },
+        stats: { works, followings, favorites, collections, bytes },
       });
     } catch (err) {
       sendResponse({ error: err.message });

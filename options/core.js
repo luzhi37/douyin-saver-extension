@@ -87,17 +87,17 @@ export const config = {
   // URL
   URL_BASE: "https://www.douyin.com",
   URL_USER_SELF: "https://www.douyin.com/user/self",
-  URL_LIKE_TAB: "?showTab=like",
+  URL_FAVORITE_TAB: "?showTab=like",
   URL_COLLECTION_TAB: "?showTab=favorite_collection",
   URL_FOLLOWING_TAB: "?showTab=following",
 
-  // 域元数据：作品型三域（works/likes/favorites）同构 Work 记录，followings 独立结构
-  WORK_LIKE_DOMAINS: ["works", "likes", "favorites"],
+  // 域元数据：作品型三域（works/favorites/collections）同构 Work 记录，followings 独立结构
+  WORK_RECORD_DOMAINS: ["works", "favorites", "collections"],
   DOMAINS_META: {
     works: { label: "作品", itemKey: "works", idKey: "awemeId", isFollowings: false },
     followings: { label: "关注", itemKey: "followings", idKey: "uid", isFollowings: true },
-    likes: { label: "点赞", itemKey: "likes", idKey: "awemeId", isFollowings: false },
-    favorites: { label: "收藏", itemKey: "favorites", idKey: "awemeId", isFollowings: false },
+    favorites: { label: "点赞", itemKey: "favorites", idKey: "awemeId", isFollowings: false },
+    collections: { label: "收藏", itemKey: "collections", idKey: "awemeId", isFollowings: false },
   },
 
   // 正则
@@ -200,8 +200,8 @@ export const state = {
   domain: "works",
   works: [],
   followings: [],
-  likes: [],
   favorites: [],
+  collections: [],
   currentGroupId: "all",
   batchMode: false,
   selectedIds: new Set(),
@@ -248,7 +248,7 @@ export const store = {
     state[key] = val;
     if (old !== val) {
       // 域数据替换计入数据版本（domain/currentGroupId/batchMode 等非数据键不计）
-      if (key === "followings" || config.WORK_LIKE_DOMAINS.includes(key)) state.dataVersion++;
+      if (key === "followings" || config.WORK_RECORD_DOMAINS.includes(key)) state.dataVersion++;
       this.notify(key, val, old);
     }
   },
@@ -259,7 +259,7 @@ export const store = {
   },
 
   // 作品型三域通用的静默移除（按当前域数据源过滤）
-  removeWorkLikeSilent(domain, idSet) {
+  removeWorkRecordSilent(domain, idSet) {
     state[domain] = state[domain].filter((w) => !idSet.has(w.awemeId));
     state.dataVersion++;
   },
@@ -269,11 +269,11 @@ export const store = {
   // start = push 前的域数组长度，作回填落点的上界提示：网格侧 #applyFill 以键前缀
   // 自锚定实际落点（删除会使 #slots 相对页序收缩，固定下标会整页写偏）。
   // 消费方（main.js）按筛选态决定按槽回填或静默累积
-  appendWorkLike(domain, groupId, items, done) {
+  appendWorkRecord(domain, groupId, items, done) {
     const start = state[domain].length;
     state[domain].push(...items);
     state.dataVersion++;
-    this.notify("work-like-appended", { domain, groupId, items, start, done });
+    this.notify("work-record-appended", { domain, groupId, items, start, done });
   },
 
   removeFollowingsSilent(idSet) {
@@ -361,10 +361,12 @@ export const runtimeConfig = {
     syncFavoritesDelayMax: 1000,
     syncCollectionDelayMin: 500,
     syncCollectionDelayMax: 1000,
-    cancelLikeDelayMin: 500,
-    cancelLikeDelayMax: 1000,
+    cancelFavoritesDelayMin: 500,
+    cancelFavoritesDelayMax: 1000,
     cancelCollectionDelayMin: 500,
     cancelCollectionDelayMax: 1000,
+    importWorksDelayMin: 500,
+    importWorksDelayMax: 1000,
     syncBatchSize: 40,
     syncBatchPauseMin: 10000,
     syncBatchPauseMax: 20000,
@@ -451,14 +453,14 @@ export const services = {
     return {
       works: s.works || { total: 0, groupCounts: {} },
       followings: s.followings || { total: 0, groupCounts: {} },
-      likes: s.likes || { total: 0, groupCounts: {} },
       favorites: s.favorites || { total: 0, groupCounts: {} },
+      collections: s.collections || { total: 0, groupCounts: {} },
       bytes: s.bytes || 0,
     };
   },
 
-  // 作品型三域通用读取（works/likes/favorites 响应形状一致，仅 itemKey 不同）
-  async loadWorkLikeItems(domain, groupId) {
+  // 作品型三域通用读取（works/favorites/collections 响应形状一致，仅 itemKey 不同）
+  async loadWorkRecordItems(domain, groupId) {
     const meta = config.DOMAINS_META[domain];
     const res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId });
     return (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
@@ -466,7 +468,7 @@ export const services = {
 
   async loadWorks(groupId) {
     // IDB 主键读取天然无重复
-    return this.loadWorkLikeItems("works", groupId);
+    return this.loadWorkRecordItems("works", groupId);
   },
 
   async loadFollowings(groupId) {
@@ -495,7 +497,7 @@ export const services = {
     return this._gridLoadCount > 0;
   },
 
-  // 网格数据加载：作品型三域分页渐进（首页 store.set 即渲染，余量逐页 appendWorkLike，
+  // 网格数据加载：作品型三域分页渐进（首页 store.set 即渲染，余量逐页 appendWorkRecord，
   // 消费方决定追加渲染或静默累积）；followings 记录小，维持单发全量。
   // 翻页协议：page=0 取首页，后续以 bg 回传的 nextCursor（末条索引键）keyset 续传——
   // bg 端索引游标直出、无全量读取，首页延迟在几十毫秒量级。
@@ -533,7 +535,7 @@ export const services = {
         }
         if (stale()) return;
         pages++;
-        store.appendWorkLike(domain, groupId, (res[meta.itemKey] || []).filter((w) => w && w.awemeId), !res.hasMore);
+        store.appendWorkRecord(domain, groupId, (res[meta.itemKey] || []).filter((w) => w && w.awemeId), !res.hasMore);
       }
       console.debug(
         `[DDM] grid load ${domain}/${groupId}: ${pages} page(s) in ${Math.round(performance.now() - t0)}ms`,
@@ -551,7 +553,7 @@ export const services = {
     return this.bgMsg({ type: "MOVE_FOLLOWINGS", uids, targetGroupId });
   },
 
-  // 找/建「稍后删除」分组并把条目移入（works/followings/likes/favorites 域通用；
+  // 找/建「稍后删除」分组并把条目移入（works/followings/favorites/collections 域通用；
   // moveFn(groupId) 按域完成实际移动，随后统一刷新域数据与分组）
   async moveToTrashGroup(domain, ids, moveFn) {
     const groupsRes = await this.bgMsg({ type: "GET_GROUPS", domain });
@@ -570,11 +572,11 @@ export const services = {
   },
 
   // 作品型三域通用删除/移动（DELETE_/MOVE_ + 域名大写）
-  deleteWorkLike(domain, awemeIds) {
+  deleteWorkRecord(domain, awemeIds) {
     return this.bgMsg({ type: "DELETE_" + domain.toUpperCase(), awemeIds });
   },
 
-  moveWorkLike(domain, awemeIds, targetGroupId) {
+  moveWorkRecord(domain, awemeIds, targetGroupId) {
     return this.bgMsg({ type: "MOVE_" + domain.toUpperCase(), awemeIds, targetGroupId });
   },
 };

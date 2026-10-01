@@ -97,7 +97,7 @@ class ScanTasks {
         await credentials.buildBaseParams({
           sec_user_id: secUid,
           max_cursor: "0",
-          count: String(CONFIG.PAGE.AUTHOR),
+          count: String(CONFIG.PAGE.POST),
         }),
       );
       works = (data.aweme_list || []).map(formatters.formatWork).filter(Boolean);
@@ -105,7 +105,7 @@ class ScanTasks {
       const resp = await tabBridge.sendAsync("FETCH_WORKS_PAGE", {
         secUid,
         cursor: "",
-        count: CONFIG.PAGE.AUTHOR,
+        count: CONFIG.PAGE.POST,
         timeout: CONFIG.TIMEOUT.REQUEST,
       });
       if (resp?.ok && Array.isArray(resp.works)) works = resp.works;
@@ -118,7 +118,7 @@ class ScanTasks {
     return max ? max * 1000 : 0;
   }
 
-  // 作者档案取数（双模）：独立直连 profile/other；Tab 转发 FETCH_USER_PROFILE。
+  // 作者档案取数（双模）：独立直连 profile/other；Tab 转发 FETCH_PROFILE_OTHER。
   // 返回归一化 user 摘要（计数 + 关注域入库所需档案字段）；原始字段抽取与 inject 侧
   // FETCH_PROFILE_OTHER 结果对象的扁平化保持一致（calibrateOne / importFollowing 共用）
   async #fetchProfileUser(secUid) {
@@ -139,7 +139,7 @@ class ScanTasks {
         secUid: user.sec_uid || secUid,
       };
     }
-    const resp = await tabBridge.sendAsync("FETCH_USER_PROFILE", {
+    const resp = await tabBridge.sendAsync("FETCH_PROFILE_OTHER", {
       secUid,
       timeout: CONFIG.TIMEOUT.REQUEST,
     });
@@ -194,7 +194,7 @@ class ScanTasks {
         await this.calibrateStats(
           all,
           async (secUid) => {
-            const resp = await tabBridge.sendAsync("FETCH_USER_PROFILE", {
+            const resp = await tabBridge.sendAsync("FETCH_PROFILE_OTHER", {
               secUid,
               timeout: CONFIG.TIMEOUT.REQUEST,
             });
@@ -216,7 +216,7 @@ class ScanTasks {
     }
   }
 
-  // 扫描落库 + 丢失检测（persist = "likes" | "favorites" 时启用）。
+  // 扫描落库 + 丢失检测（persist = "favorites" | "collections" 时启用）。
   // 用户中途取消时跳过丢失检测（部分拉取会产生假丢失），已收集部分仍合并落库（幂等）。
   // 一遍式落库：getAllKeys 键集（丢失检测，不反序列化记录值）+ mergeAndSave({ stamps })
   // 单次合并写库——主页序 savedAt 戳记经 stamps 在写入前覆盖、全部 collected 记录一次
@@ -335,7 +335,7 @@ class ScanTasks {
         const resp = await tabBridge.sendAsync("FETCH_WORKS_PAGE", {
           secUid,
           cursor,
-          count: CONFIG.PAGE.AUTHOR,
+          count: CONFIG.PAGE.POST,
           timeout: CONFIG.TIMEOUT.REQUEST,
         });
         if (!resp?.ok || !Array.isArray(resp.works)) throw new Error(resp?.error || "FETCH_FAILED");
@@ -381,7 +381,7 @@ class ScanTasks {
       });
 
       if (!guard.isCancelled() && i < awemeIds.length - 1) {
-        const delayKind = tabType === "CANCEL_ONE_COLLECTION" ? "cancelCollection" : "cancelLike";
+        const delayKind = tabType === "CANCEL_ONE_COLLECTION" ? "cancelCollection" : "cancelFavorites";
         await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
       }
     }
@@ -440,7 +440,7 @@ class ScanTasks {
     const errors = [];
 
     for (let i = 0; i < awemeIds.length && !cancelled; i++) {
-      const resp = await tabBridge.sendAsync("FETCH_SINGLE_WORK", {
+      const resp = await tabBridge.sendAsync("FETCH_WORK_DETAIL", {
         awemeId: awemeIds[i],
         timeout: CONFIG.TIMEOUT.REQUEST,
       });

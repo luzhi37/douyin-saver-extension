@@ -151,7 +151,7 @@ class IndependentTasks {
           await credentials.buildBaseParams({
             sec_user_id: secUid,
             max_cursor: String(cursor || 0),
-            count: String(CONFIG.PAGE.AUTHOR),
+            count: String(CONFIG.PAGE.POST),
           }),
         );
         const works = (data.aweme_list || []).map(formatters.formatWork).filter(Boolean);
@@ -253,7 +253,7 @@ class IndependentTasks {
         await credentials.buildBaseParams({
           sec_user_id: secUid,
           max_cursor: String(cursor || 0),
-          count: String(CONFIG.PAGE.AUTHOR),
+          count: String(CONFIG.PAGE.POST),
         }),
       );
       const works = (data.aweme_list || []).map(formatters.formatWork).filter(Boolean);
@@ -308,7 +308,7 @@ class IndependentTasks {
           awemeId: awemeIds[i],
         });
         if (!guard.isCancelled() && i < awemeIds.length - 1) {
-          const delayKind = kind === "collection" ? "cancelCollection" : "cancelLike";
+          const delayKind = kind === "collection" ? "cancelCollection" : "cancelFavorites";
           await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
         }
       }

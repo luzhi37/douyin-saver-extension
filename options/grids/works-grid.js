@@ -468,11 +468,11 @@ export const worksGrid = new WorksGrid({
   emptyMsg: "还没有保存的作品",
   emptyHint: "浏览抖音时，作品会自动被捕获",
 });
-export const likesGrid = new WorksGrid({
+export const favoritesGrid = new WorksGrid({
   emptyMsg: "还没有同步的点赞作品",
   emptyHint: "点击菜单「同步」拉取本账户的点赞列表",
 });
-export const favoritesGrid = new WorksGrid({
+export const collectionsGrid = new WorksGrid({
   emptyMsg: "还没有同步的收藏作品",
   emptyHint: "点击菜单「同步」拉取本账户的收藏列表",
 });

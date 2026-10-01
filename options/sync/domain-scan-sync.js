@@ -21,10 +21,10 @@ class DomainScanSync {
 
   async syncDomain(domain) {
     if (this.#running || sync.isRunning() || authorImport.isRunning()) return;
-    if (!config.WORK_LIKE_DOMAINS.includes(domain) || domain === "works") return;
+    if (!config.WORK_RECORD_DOMAINS.includes(domain) || domain === "works") return;
 
     // 独立模式不支持点赞列表拉取（favorite 端点 Turing 风控），收藏不受限
-    if (domain === "likes") {
+    if (domain === "favorites") {
       const { independentMode } = await chrome.storage.local.get("independentMode");
       if (independentMode) {
         dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
@@ -40,11 +40,11 @@ class DomainScanSync {
 
     try {
       // 点赞列表仅 Tab 模式；收藏双模均通。persist 让 background 直接落库并做丢失检测
-      const fetchType = domain === "likes" ? "FETCH_FAVORITES" : "FETCH_COLLECTION";
+      const fetchType = domain === "favorites" ? "FETCH_FAVORITES" : "FETCH_COLLECTION";
       const res = await services.bgMsg({
         type: fetchType,
         persist: domain,
-        ...(domain === "likes" ? { secUid: await services.findSecUid() } : {}),
+        ...(domain === "favorites" ? { secUid: await services.findSecUid() } : {}),
       });
       if (!this.#running) return; // 弹窗已关闭（取消）
       if (!res || !res.ok) throw new Error(res?.error || "FETCH_FAILED");
@@ -72,7 +72,7 @@ class DomainScanSync {
       const msg = err.message || String(err);
       if (msg.includes("NO_SIGNATURE")) {
         this.closeDialog();
-        const url = config.URL_USER_SELF + (domain === "likes" ? config.URL_LIKE_TAB : config.URL_COLLECTION_TAB);
+        const url = config.URL_USER_SELF + (domain === "favorites" ? config.URL_FAVORITE_TAB : config.URL_COLLECTION_TAB);
         dialog.showNoSignatureDialog(url, config.DOMAINS_META[domain].label, `同步${config.DOMAINS_META[domain].label}列表`);
         return;
       }
@@ -119,7 +119,7 @@ class DomainScanSync {
 
   // 丢失条目移入本域「稍后删除」分组（分组按需创建，与关注域 moveLostFollowings 同款）
   async moveLostToTrash(domain, lostIds) {
-    return services.moveToTrashGroup(domain, lostIds, (gid) => services.moveWorkLike(domain, lostIds, gid));
+    return services.moveToTrashGroup(domain, lostIds, (gid) => services.moveWorkRecord(domain, lostIds, gid));
   }
 }
 

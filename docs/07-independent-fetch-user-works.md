@@ -16,16 +16,16 @@ options Sidebar 滚动近底
         ├─ true：handleIndependentFetchWorksPage(secUid, cursor, sendResponse)
         │    ├─ ensureABogus()
         │    └─ data = independentRequest(API.POST, buildBaseParams({
-        │           sec_user_id, max_cursor: String(cursor||0), count: String(PAGE.AUTHOR=20) }))
+        │           sec_user_id, max_cursor: String(cursor||0), count: String(PAGE.POST=20) }))
         │         // GET /aweme/v1/web/aweme/post/，webSign 由 request 默认叠加
         │       works = (data.aweme_list||[]).map(formatWork).filter(Boolean)
         │       sendResponse({ ok:true, works,
         │                     hasMore: has_more===true|1, maxCursor: data.max_cursor || "" })
         │       异常 → sendResponse({ ok:false, error: e.message })
         │
-        └─ false：sendToTab("FETCH_WORKS_PAGE", { secUid, cursor, count:PAGE.AUTHOR,
+        └─ false：sendToTab("FETCH_WORKS_PAGE", { secUid, cursor, count:PAGE.POST,
                     timeout: CONFIG.TIMEOUT.REQUEST }, sendResponse)
-             → content BRIDGE（固定 60s 兜底超时）→ DY_FETCH_WORKS_REQUEST
+             → content BRIDGE（固定 60s 兜底超时）→ DY_FETCH_WORKS_PAGE_REQUEST
              → inject fetchAuthorWorks(secUid, maxCursor, count)
                   url = buildUrl(API.POST, DEVICE_PARAMS + { sec_user_id, max_cursor, count })
                   merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)))   // 剥签名键+分页键，包装器代签
@@ -72,7 +72,7 @@ async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
       await buildBaseParams({
         sec_user_id: secUid,
         max_cursor: String(cursor || 0),
-        count: String(CONFIG.PAGE.AUTHOR),               // 20
+        count: String(CONFIG.PAGE.POST),               // 20
       }),
     );
     const works = (data.aweme_list || []).map(formatWork).filter(Boolean);
@@ -124,7 +124,7 @@ GET https://www.douyin.com/aweme/v1/web/aweme/post/
 |---|---|---|
 | `sec_user_id` | `MS4wLjABAAAA1Y94…` | 目标作者——拉**谁的**作品列表 |
 | `max_cursor` | `0 → 服务端回传值 → …` | 不透明续页游标（见下） |
-| `count` | `20` | 每页条数 = `PAGE.AUTHOR` |
+| `count` | `20` | 每页条数 = `PAGE.POST` |
 
 ### max_cursor 与 offset 的语义差异（与关注列表的关键不同）
 
@@ -156,7 +156,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 
 | 配置 | 默认 | 作用 |
 |------|------|------|
-| `CONFIG.PAGE.AUTHOR` | 20 | 每页条数 |
+| `CONFIG.PAGE.POST` | 20 | 每页条数 |
 | `config.SIDEBAR_SCROLL_THRESHOLD`（options/core.js） | 100px | 触发加载的距底阈值 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 独立模式单请求超时；Tab模式 msg.timeout 同源 |
 | `inject CONFIG.TIMEOUT.FETCH_PAGE` | 15000ms | Tab模式 inject 侧 fetch 超时 |
@@ -174,7 +174,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | **无丢失检测**（不走 `persistScan`） | 导入的是他人作品列表，不是本域全集；丢失检测会把存量全部误判 lost |
 | **每页即落库**（每页一次 `mergeAndSave(WORKS, page)`） | 取消/异常保留已扫部分；进度弹窗可实时显示「已入库 N」 |
 | 重叠页去重（`seen` Set，空页即终止） | 服务端偶发返回重叠页；cursor 不前进时防死循环 |
-| 延迟档复用 `syncFavorites` | 不新增运行参数档 |
+| 延迟档独立 `importWorks`（曾错用 `syncCollection`，域词对齐后独立成键） | 运行参数面板「作者入库 延迟」可调 |
 
 ### 分组语义（与「添加作品」同一条函数保证）
 
