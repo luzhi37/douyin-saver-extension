@@ -22,7 +22,9 @@ manifest content_scripts（document_start, 匹配 *.douyin.com/*，排除 creato
   → content.js（隔离世界）创建 <script src=chrome.runtime.getURL("content/inject.js")>
       → inject.js 在主世界执行：
           ├─ DOMContentLoaded（或立即）：dispatch DY_CAPTURE_BROWSER_FEATURES（采集一次特征）
-          └─ startObserver()：注入样式 + 首轮按钮注入 + MutationObserver(100ms 防抖)
+          └─ startObserver()：注入样式 + 首轮按钮注入 + MutationObserver(100ms 无条件防抖——
+             扫描移入定时器回调，#injectButtons 的 :not(:has(...)) 幂等；逐批做
+             addedNodes×子树的相关性扫描是常驻主线程税，2026-09 定案移除)
 content.js 同时常驻监听：
   DY_CAPTURE_WORKS            → capturedWorksMap LRU（上限 200，裁到 150）
   DY_CAPTURE_BROWSER_FEATURES → chrome.runtime.sendMessage(CAPTURE_BROWSER_FEATURES)
@@ -34,7 +36,10 @@ content.js 同时常驻监听：
 ```
 Fetch Hook（window.fetch 替换，origFetch 防递归）：
   入参 URL 命中 CONFIG.API_PATTERNS 且非 _dyInternal
-    → captureFromUrl(url)：query 全参数存入对应端点的 Map 缓存（含 __dyCaptureTime 实例属性）
+    → captureFromUrl(url)：query 全参数存入对应端点的 Map 缓存（含 __dyCaptureTime 实例属性）。
+      双重粗筛前置（2026-09 定案）：①字符串 indexOf("/aweme/v1/web/")——13 个 API_PATTERNS
+      均以它开头，shouldCapture 与 captureFromUrl 都在 new URL / 建 Map 之前短路，99% 页面
+      流量（埋点/风控/分片）零解析成本；②六端点 pathname.includes 命中判断先于参数 Map 构建
     → response.ok 时 response.clone().json() 分离 Promise 链提取作品数据 → dispatchWorks
   其他 http(s) 请求且非 _dyInternal → 仅 captureFromUrl（XHR 流量经 fetch polyfill 场景兜底）
   _dyInternal:true → 完全跳过捕获与提取（防自污染）

@@ -28,7 +28,7 @@ background/ (ES 模块化)        — Service Worker：main.js 组合根 + 入�
 options/ (main.js 组合根)      — 管理 UI（ES 模块化）：core.js 共享基础（config/dom/state/store/utils/runtimeConfig/services）+ grids/components/data/sync 类模块 + main.js 事件绑定/订阅/init
 ```
 
-manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douyin.com/*` 且排除 `creator.douyin.com`，`run_at: document_start`；`inject.js` 经 `web_accessible_resources` 以 `<script src>` 注入主世界；权限含 `storage / declarativeNetRequest / tabs / scripting / unlimitedStorage / cookies`。
+manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douyin.com/*` 且排除 `creator.douyin.com`，`run_at: document_start`；`inject.js` 经 `web_accessible_resources` 以 `<script src>` 注入主世界（不走 `chrome.scripting` API，manifest 无 scripting 权限）；权限含 `storage / declarativeNetRequest / tabs / unlimitedStorage / cookies`。
 
 ## 核心流程图（文字描述）
 
@@ -37,7 +37,7 @@ manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douy
 ```
 chrome.runtime.onMessage (background/main.js App.route switch)
   │
-  ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORK / GET_WORKS_BY_IDS
+  ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORKS_BY_IDS
   │                            SAVE_FOLLOWINGS / GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS
   │                            GET_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / RELOAD_CONFIG
@@ -148,6 +148,7 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 | `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` | `{ collected, unfollowedCount, hasMore, total, requestId }` |
 | `CANCEL_PROGRESS` | `{ requestId, index, total, status, awemeId }` |
 | `CANCEL_DONE` | `{ requestId, ok, cancelled, refreshed, failed, failedAwemeIds }` |
+| `IMPORT_PROGRESS` | `{ domain, processed, total }`（IMPORT_DATA 作品域分块落库逐块回报） |
 
 ## 关键代码片段
 
@@ -224,7 +225,7 @@ DOMAIN_CONFIG = {
 }
 ```
 
-`domainStore.facade(domain)` 返回域封装（getAll/get/putBatch/deleteBatch/count/countByIndex/clear/getGroups/putGroups）。分组写入采用 `clear()` + 逐条 `put()` 实现"覆盖数组"语义；`countByIndex` 只做索引计数不反序列化整表。
+`domainStore.facade(domain)` 返回域封装（get/getBatch/getAllKeys/putBatch/deleteBatch/count/countByGroup/getGroups + idField，条目收敛为调用方实际消费集合，无消费的包装不设）；分组写入由 `storage.putGroups` 采用"clear() + 逐条 put()"实现"覆盖数组"语义；`countByIndex` 只做索引计数不反序列化整表。
 
 ### Work 记录字段（formatWork / normalizeWork 共同产出）
 
@@ -286,7 +287,8 @@ DOMAIN_CONFIG = {
 | TIMEOUT | `REQUEST:30000` / `SECURITY_STATUS:5000` |
 | DELAY | 六类任务各 `{MIN:500, MAX:1000}`：syncWorks / syncFollowings / syncFavorites / syncCollection / cancelLike / cancelCollection |
 | SYNC | `BATCH_SIZE:40` / `BATCH_PAUSE_MIN/MAX:10000/20000` / `KEEPALIVE_INTERVAL:2000` / `RETRY_MAX:2` |
-| PAGE | 各列表端点页大小，均 20（FAVORITE/COLLECTION/AUTHOR/FOLLOWING） |
+| PAGE | 各列表端点页大小，均 20（FAVORITE/COLLECTION/AUTHOR/FOLLOWING）；`GRID: 2000`（网格渐进加载页大小，keyset 游标串行依赖上一页末键，吞吐靠加大页体摊薄每页固定开销） |
+| IMPORT_CHUNK | `2000`（导入分块落库块大小：单事务 10 万级 put 长时间独占 SW 的 IDB，按块 mergeAndSave + IMPORT_PROGRESS 逐块回报） |
 | GROUPS | `ID_PREFIX:"custom_"` / `DEFAULT_ID:"uncategorized"` |
 | STORAGE_KEYS | 四个 store 名常量（唯一来源） |
 | FATAL_ERRORS | 致命错误集合（见上表） |
@@ -299,7 +301,7 @@ DOMAIN_CONFIG = {
 
 键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数（含校准开关）随存随恢复，重开扩展（非重载）不回退编译期默认值；`IndependentClient.isCalibrateEnabled` 另有 storage 惰性加载兜底（首次调用才读，跨 SW 重建仍生效）。
 
-### options/core.js 顶层 `config`（UI 侧，48 键，权威键表）
+### options/core.js 顶层 `config`（UI 侧，50 键，权威键表）
 
 | 分组       | 键（默认值）                                                                                                                                                  |
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -310,7 +312,7 @@ DOMAIN_CONFIG = {
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000` / `SEARCH_DEBOUNCE` `200`                                        |
 | 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
 | 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `11` / `CARD_HEIGHT_OFFSET` `44`                                                                                      |
-| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'600px'` / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'` / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_PREMOUNT_CAP_FILTER` `600`（筛选态封闭视图预铺降档） / `GRID_EXTEND_THRESHOLD` `1.5` |
+| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'1600px'`（≈4 行，须 < OBSERVE_CHUNK_SIZE 单圈行距） / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'`（≈6 行，与填充圈保持 800px 滞回间隙） / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_PREMOUNT_CAP_FILTER` `600`（筛选态封闭视图预铺降档） / `GRID_EXTEND_THRESHOLD` `1.5` / `GRID_EXTEND_STEP` `1000`（扩容单步新增槽位上限，防深域后段单步长任务） / `DEMOTE_FRAME_BUDGET_MS` `8`（停稳降级分帧预算） / `GRID_IMG_PER_FRAME` `10`（网格媒体探针每帧派发配额，sidebar 沿用 `SIDEBAR_IMG_PER_FRAME`） |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                                                    |
 | 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_LIKE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                                                    |

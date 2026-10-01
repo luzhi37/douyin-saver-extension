@@ -110,27 +110,40 @@
 
     captureFromUrl(url, parsedUrl) {
       try {
-        if (typeof url !== "string" || !url.startsWith("http")) return;
+        // 双重粗筛前置：①全部捕获端点均以 /aweme/v1/web/ 开头（覆盖 fetch 兜底分支与
+        // XHR 的 /aweme/ 粗筛更窄一层）；②pathname 命中判断移到参数 Map 构建之前——
+        // 未命中捕获端点的请求（埋点/风控/分片占绝大多数）不再付出 new URL 全参数
+        // 遍历建 Map 的成本
+        if (typeof url !== "string" || url.indexOf("/aweme/v1/web/") === -1) return;
         const u = parsedUrl || new URL(url);
+        const path = u.pathname;
+        const hit =
+          path.includes(CONFIG.API.FOLLOWING) ||
+          path.includes(CONFIG.API.PROFILE_OTHER) ||
+          path.includes(CONFIG.API.POST) ||
+          path.includes(CONFIG.API.COLLECTION) ||
+          path.includes(CONFIG.API.FAVORITE) ||
+          path.includes(CONFIG.API.DETAIL);
+        if (!hit) return;
         const params = new Map();
         for (const entry of u.searchParams.entries()) params.set(entry[0], entry[1]);
         params.__dyCaptureTime = Date.now();
-        if (u.pathname.includes(CONFIG.API.FOLLOWING)) {
+        if (path.includes(CONFIG.API.FOLLOWING)) {
           this.#followingQuery = params;
         }
-        if (u.pathname.includes(CONFIG.API.PROFILE_OTHER)) {
+        if (path.includes(CONFIG.API.PROFILE_OTHER)) {
           this.#profileQuery = params;
         }
-        if (u.pathname.includes(CONFIG.API.POST)) {
+        if (path.includes(CONFIG.API.POST)) {
           this.#postQuery = params;
         }
-        if (u.pathname.includes(CONFIG.API.COLLECTION)) {
+        if (path.includes(CONFIG.API.COLLECTION)) {
           this.#collectionQuery = params;
         }
-        if (u.pathname.includes(CONFIG.API.FAVORITE)) {
+        if (path.includes(CONFIG.API.FAVORITE)) {
           this.#favoriteQuery = params;
         }
-        if (u.pathname.includes(CONFIG.API.DETAIL)) {
+        if (path.includes(CONFIG.API.DETAIL)) {
           this.#detailQuery = params;
         }
       } catch (_e) {}
@@ -475,6 +488,9 @@
     }
 
     shouldCapture(url) {
+      // 粗筛前置：全部 API_PATTERNS 均以 /aweme/v1/web/ 开头——一个 indexOf 短路掉 99%
+      // 页面流量（埋点/风控/分片）的 URL 对象构造，这是每请求一次的最热路径
+      if (typeof url !== "string" || url.indexOf("/aweme/v1/web/") === -1) return null;
       try {
         const u = new URL(url);
         if (CONFIG.API_PATTERNS.some((p) => u.pathname.startsWith(p))) return u;
@@ -1092,14 +1108,13 @@
       this.#injectStyles();
       this.#injectButtons();
 
-      const observer = new MutationObserver((mutations) => {
+      const observer = new MutationObserver(() => {
+        // 无条件防抖 + 扫描移入定时器：抖音是重 SPA，childList 批次高频到达，绝大多数
+        // 批次与注入无关，旧实现逐批做 addedNodes×子树的 querySelector 相关性扫描是
+        // 常驻主线程税。#injectButtons 的 :not(:has(...)) 幂等（已注入 grid 不再命中），
+        // 风暴期 100ms 一次 :has() 查询远低于逐批扫描。注入时机不变：真正携带 grid 的
+        // 批次必然命中防抖，按钮仍在其后 OBSERVER_DEBOUNCE 出现
         if (this.#observerTimer) return;
-        const hasRelevant = mutations.some((m) =>
-          [...m.addedNodes].some(
-            (n) => n.nodeType === 1 && (n.matches?.(CONFIG.BUTTON.GRID) || n.querySelector?.(CONFIG.BUTTON.GRID)),
-          ),
-        );
-        if (!hasRelevant) return;
         this.#observerTimer = setTimeout(() => {
           this.#observerTimer = null;
           this.#injectButtons();

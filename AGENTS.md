@@ -54,7 +54,7 @@ DOMAIN_CONFIG = {
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORK` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_LIKES` / `DELETE_LIKES` / `MOVE_LIKES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES`（likes/favorites 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见 docs/01） |
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_LIKES` / `DELETE_LIKES` / `MOVE_LIKES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES`（likes/favorites 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见 docs/01） |
 | 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
 | 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准，见 docs/04） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
 | 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options 触发 background 循环扫描、逐页透传进度；`FETCH_FOLLOWING` 收集完成后自动校准（门控与细节见 docs/04）                              |
@@ -80,13 +80,12 @@ DOMAIN_CONFIG = {
 | `'groups'`         | `groups.renderGroupTabs()`                                                                               |
 | `'currentGroupId'` | `groups.renderGroupTabs()` + 加载域数据                                                                  |
 | `'batchMode'`      | toggle body `.batch-mode` class + `Batch.syncSelectionUI`（批量栏显隐由 CSS `body.batch-mode` 驱动，无独立 #batchBar）        |
-| `'work-updated'`   | `worksGrid.updateCardDOM(awemeId)` + 若详情打开则重渲染                                                  |
 
 ## Class 职责概览
 
 | Class            | 职责                                                              |
 |------------------|-------------------------------------------------------------------|
-| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView + 检索状态 `#searchState`；三段视图缓存 `#viewCache` + `state.dataVersion` 失效判据 + 恒等快速路径 + 筛选切换滚动锚点，见 docs/11「视图阶段缓存与筛选切换性能」；归属判定与收起即重置见 docs/11「SearchBar」） |
+| `SearchBar`      | 搜索/筛选子系统（数据层视图 getWorksView/getFollowingsView + 检索状态 `#searchState`；三段视图缓存 `#viewCache` + `state.dataVersion` 失效判据 + 恒等快速路径，见 docs/11「视图阶段缓存与筛选切换性能」；归属判定与收起即重置见 docs/11「SearchBar」） |
 | `VirtualGrid`    | 网格渲染基类（双向虚拟化：填充/卸载双 observer + 时间预算填充 + 事件委托 + `insertItems`/`removeItems` 位插对偶；机制与红线见 docs/11） |
 | `Dialog`         | 多层弹窗管理（基层 #dialogOverlay + pushDialog 动态实例叠层，关闭顶层自动回父层；`dom.dialogTitle/dialogBody/dialogFooter/dialogClose` 由其动态指向顶层实例元素，仅该类可写） |
 | `FollowingsGrid` | 关注卡片网格                                                      |
@@ -99,7 +98,7 @@ DOMAIN_CONFIG = {
 | `AuthorImport`   | 入库（菜单「入库」弹窗：作品域=分页循环长任务+进度弹窗复用 syncDialogBodyTemplate，关注域=单请求收录作者档案；输入仅支持作者主页链接，sec_uid 从链接直提、`/user/self` 经 RESOLVE_SEC_UID 兑换；与 Sync/DomainScanSync 三链路互斥） |
 | `Settings`       | 设置面板（安全状态/ Cookie/浏览器特征/运行参数面板；开关仅切视觉态，校验与持久化统一走 `saveBeforeClose`；私有成员全部 `#` 前缀） |
 | `WorksGrid`      | 作品卡片网格                                                      |
-| `Detail`         | 详情播放器（对齐抖音播放界面：全宽播放器、.media-view 宽度随媒体宽高比自适应、双形态进度条、⌃⌄ 作品切换胶囊；定案见 docs/11） |
+| `Detail`         | 详情播放器（对齐抖音播放界面：全宽播放器、.media-view 宽度随媒体宽高比自适应、双形态进度条、⌃⌄ 作品切换胶囊、计数 K 可编辑跳转；定案见 docs/11） |
 | `AppShell`       | 应用壳（域切换滑块 switchDomain/updateDomainSlider、全局错误态 renderErrorState、弹窗关闭统一入口 requestDialogClose；事件构造器内自绑定） |
 
 ### background/ 类单例（按职责分模块，与 options 侧类模块同构）
@@ -115,7 +114,7 @@ DOMAIN_CONFIG = {
 | `IndependentClient`    | `identity/independent-client.js` | 独立模式开关/校准开关 + 签名直连 `request` + `resolveSelfSecUid`（内含 `resolveSecUidById` 兑换）；`request` 经 `credentials` 跨类取签名/时钟/msToken |
 | `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`，DB v3：作品型三域 `savedAt_id`/`groupId_savedAt_id` 复合索引 + 升级回填缺失 savedAt/groupId）；`readIndexPage` keyset 翻页（prev 取 limit+1 探测），API 全集见文件 |
 | `DomainStore`          | `data/domain-store.js`       | 域存储封装：`storeName`/`groupsName`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护）——两者均做**真实变更检测**：内容全等的重复入库不写库、不计入 `changed`（写入路径语义见 docs/10） |
-| `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 仅 `changed>0` 广播 `STORE_CHANGED`（`changed ≤ BROADCAST.UPSERTS_MAX` 附 point 载荷，`#saveFollowings` 恒 bulk——followings 无单卡更新原语）、响应剔除 `written`/`addedIds` 防大批量保存响应膨胀；`get`（keyset 游标翻页，无参一次性全量）/`delete`/`move`/`getOne`/`getByIds`（bulk 收口补拉通道）；写入语义见 docs/10 |
+| `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/likes/favorites）；`save` 仅 `changed>0` 广播 `STORE_CHANGED`（`changed ≤ BROADCAST.UPSERTS_MAX` 附 point 载荷，`#saveFollowings` 恒 bulk——followings 无单卡更新原语）、响应剔除 `written`/`addedIds` 防大批量保存响应膨胀；`get`（keyset 游标翻页，无参一次性全量）/`delete`/`move`/`getByIds`（bulk 收口补拉通道）；写入语义见 docs/10 |
 | `TabBridge`            | `identity/tab-bridge.js`     | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                    |
 | `Groups`               | `data/groups.js`             | 分组 tab + 管理（域感知）                                                                                                                            |
 | `DataTools`            | `data/data-tools.js`         | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                 |
@@ -154,6 +153,7 @@ DOMAIN_CONFIG = {
 - **批量勾选必须用 `Batch.updateCheckboxDOM`** — 只设 `innerHTML` 不加/移除 `checked` 类则图标透明不可见；`handleBatchSelectAll` 按域选择 checkbox（作品域 `.work-checkbox`，关注域 `.following-checkbox`）。勾选框**显隐由 `body.batch-mode` 纯 CSS 驱动**，JS 禁止逐元素写 inline display；勾选框随填充创建、降级（clearCard）即移除，退出批量只清 `.checked` 的。**批量禁选文本走 `#mainGrid` mousedown preventDefault，禁止用 CSS user-select**（全网格级联重算是进入批量模式卡顿主因，见 docs/11）。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
 - **`state.activeDialog` 在弹窗挂载时由 `Dialog.#mountLayer` 写入（恒等于顶层 onClose）** — 只在 `closeDialog` 出栈时补写会使「本次打开后的首次关闭」静默失效（机制与回归教训见 docs/11）。无 onClose 的弹窗该值为 null，走兜底关闭。
+- **Esc 关闭优先级在 main.js 单点收口（红线）** — 弹窗 → 详情 → 退出批量 → 收起搜索，一次按键只关一层；**detail 监听不得自管 Esc**——同事件多 document 监听串行执行，main.js 先关掉弹窗后 detail 查到的 dialogOverlay 已是关闭态，detail 若自管 Esc 会连详情一并关掉。计数输入框内 Esc 走其自身监听（stopPropagation 还原编辑、不关详情）。
 - **详情层双形态进度条**（视频连续轨道/图集分段音乐驱动，seek 统一 `#applySeek`）、`.media-view` 宽度随媒体宽高比自适应（`--media-aspect` 由 `Detail.#setMediaAspect` 写入，切作品复位 9:16）与模糊背景 `brightness(0.8)` 为既定视觉，定案细节见 docs/11（2026-09-29 修订：废弃横版 39.3vw 封顶）。
 - **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — `row.querySelector('.sec-truncate, .sec-expanded')`（见 docs/09）。
 - **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被后部组件规则覆盖，hidden 静默失效。
@@ -163,11 +163,11 @@ DOMAIN_CONFIG = {
 
 > 管线全景、机制细节与历史踩坑见 [docs/11](./docs/11-options-ui.md)；本节只保留规则红线。
 
-- **快滚门控** — 快滚判定在 scroll 事件时刻做（scrollTop 帧间差超 `FAST_SCROLL_THRESHOLD`），rAF 侧（catchUp/drain 轮询两个读取者）不推进判定基准、drain 轮询经 epoch 计数检测停稳：快滚态挂起填充 drain、跳过 `#demote`；停稳后 `#refillBand` 丢弃沿路积压（**丢弃前必须全量重新 observe**）只补落点带区。容器级事件委托（click/pointerover/out/input）一律绑 `#mainGrid` 而非容器——清场换壳后零重绑。
+- **快滚门控** — 快滚判定在 scroll 事件时刻做（scrollTop 帧间差超 `FAST_SCROLL_THRESHOLD`），rAF 侧（catchUp/drain 轮询两个读取者）不推进判定基准、drain 轮询经 epoch 计数检测停稳：快滚态挂起填充 drain、跳过 `#demote`；停稳后 `#refillBand` 丢弃沿路积压（**丢弃前必须全量重新 observe**）只补落点带区；滚轮级滚动帧间位移低于阈值、scrollFast 恒 false，由 `#scheduleSettleCheck` 在滚动静止一帧后补同款收口（幂等），勿让滚轮路径失去停稳收口。容器级事件委托（click/pointerover/out/input）一律绑 `#mainGrid` 而非容器——清场换壳后零重绑。
 - **网格卡片层禁用 `content-visibility: auto`** — `.work-card`/`.work-skeleton`/`.following-card` 一律不加（屏外跳过渲染会让远跳落点骨架延迟出现）；sidebar 的 CV 禁令是另一条理由，互不影响。
 - **侧边栏虚拟化** — 条目只挂 meta、进视口限量发探针、整页 fragment 追加（禁止创建即全量急切加载）；observer root 必须显式传 `dom.sidebarBody`；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；不用 `content-visibility:auto`。
-- **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换）** — 分圈观察哨兵链推进填充（哨兵被删须立刻续接）；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`：原位整刷前后内容等高时无 scroll 事件，哨兵链够不着视口，视口骨架将永久滞留灰卡）；填充/卸载 IO 的 root 必须显式传 `#mainGrid`（同 sidebar 的 `dom.sidebarBody` 规则）；两段式铺设（首段同步 + 余量游离态拼装一次挂载，禁止逐帧向容器追加）；预铺有上限（`GRID_PREMOUNT_CAP`）+ 滚近底部倍增扩容（`#extendIfNeeded`）；`fillSlots` 落点按键前缀自锚定回填，占位卡在 fill IO 回调中**不得 unobserve**；`removeItems` 必须同步收缩 `#slots` 与 `#totalSlots`；`insertItems` 位插与 `removeItems` 对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`。
-- **STORE_CHANGED 收口优先增量、整刷仅作兜底** — 新增落当前视图走 `tryHeadInsert` 头插，禁止改回「视图内新增→`loadDomainData` 整刷」；头插与在途分页的交错窗口守卫（`services.isGridLoading()`/`grid.isScrollFrozen()`/`state.gridSlots` 等）不过必须整刷兜底、不得绕过；落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引 prev 遍历同序；bulk 载荷只带 id 集、记录经 `GET_WORKS_BY_IDS` 补拉（管线全景与红线见 docs/11「STORE_CHANGED 增量收口」）。
+- **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换）** — 分圈观察哨兵链推进填充（哨兵被删须立刻续接）；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`：原位整刷前后内容等高时无 scroll 事件，哨兵链够不着视口，视口骨架将永久滞留灰卡）；填充/卸载 IO 的 root 必须显式传 `#mainGrid`（同 sidebar 的 `dom.sidebarBody` 规则）；两段式铺设（首段同步 + 余量游离态拼装一次挂载，禁止逐帧向容器追加）；预铺有上限（`GRID_PREMOUNT_CAP`）+ 滚近底部扩容（`#extendIfNeeded`，倍增 + 单步上限 `GRID_EXTEND_STEP`）；`fillSlots` 落点按键前缀自锚定回填，占位卡在 fill IO 回调中**不得 unobserve**；`removeItems` 必须同步收缩 `#slots` 与 `#totalSlots`；`insertItems` 位插与 `removeItems` 对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载降级经 `#pendingDemotes` 队列按 `DEMOTE_FRAME_BUDGET_MS` 预算分帧（快滚期保持冻结、让位于填充队列），勿改回 IO 回调内同步成批降级；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`。
+- **STORE_CHANGED 收口优先增量、整刷仅作兜底** — 新增落当前视图走 `tryHeadInsert` 头插，禁止改回「视图内新增→`loadDomainData` 整刷」；头插与在途分页的交错窗口守卫（`services.isGridLoading()`/`grid.isScrollFrozen()`/`state.gridSlots` 等）不过必须整刷兜底、不得绕过；增量路径的规模守卫在 `applyBulkChanged` 入口（bulk 补拉 id 数 > `GRID_PREMOUNT_CAP` 直接整刷兜底；点载荷 ≤ UPSERTS_MAX、头插输入随之有界，`tryHeadInsert` 不重复设防）；落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引 prev 遍历同序；bulk 载荷只带 id 集、记录经 `GET_WORKS_BY_IDS` 补拉（管线全景与红线见 docs/11「STORE_CHANGED 增量收口」）。
 - **分组与域切换同序列清场（点击即清空）** — 切换瞬间 `appShell.clearActiveGrid()`：abortRender×4 + 样式塌缩（height:0/overflow:hidden/visibility:hidden）+ 旧子树空闲期一次性销毁；「冻结-定格」与「不清场保无闪烁」均已定案否决/禁止。数据侧配套 `loadDomainData` 分页渐进（followings 单发全量）。
 - **`state.dataVersion` 是视图缓存的失效判据（红线）** — store 域数据变更方法与 `loadFollowedUids` 自动自增；绕过 store 封装的原地写入（main.js `tryHeadInsert`/`applyStoreUpserts`、detail.js `removeWork`）必须手动自增。`getWorksView`/`getFollowingsView` 返回共享缓存数组，调用方一律只读。筛选态（封闭视图）预铺恒为 `GRID_PREMOUNT_CAP_FILTER`、扩容必须带真实键（封闭态无 fillSlots 回填方，无键占位卡永久灰卡）；机制与红线见 docs/11「视图阶段缓存与筛选切换性能」。
 - **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断。
@@ -181,7 +181,7 @@ DOMAIN_CONFIG = {
 
 ## config 分组速查
 
-- **options/core.js 顶层 `config`（48 键）** — 权威键表与默认值见 [docs/01](./docs/01-project-architecture.md)「配置项说明 · options/core.js 顶层 `config`」。
+- **options/core.js 顶层 `config`（50 键）** — 权威键表与默认值见 [docs/01](./docs/01-project-architecture.md)「配置项说明 · options/core.js 顶层 `config`」。
 - **background/core.js `CONFIG`**（`TIMEOUT`/`DELAY`/`SYNC`/`STORAGE_KEYS`/`DNR_RULES`/`GROUPS`/`PAGE`/`BROADCAST`/`CANCEL`/`FATAL_ERRORS`/`WEBID_API`/`WEB_SIGN_SALT` 等）与 `runtimeConfig` 对象（从 `chrome.storage.local` 读入叠加进 `CONFIG`，SW 冷启动补 reload；键表同见 docs/01「配置项说明」）——运行时状态已塌缩为类私有字段，类职责见「background/ 类单例」表。
 
 ## 文档索引

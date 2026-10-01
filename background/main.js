@@ -104,9 +104,6 @@ class App {
           () => worksHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
           sendResponse,
         );
-      case "GET_WORK":
-        return utils.asyncHandler(() => worksHandlers.getOne(message.awemeId, sendResponse), sendResponse);
-
       // 点赞域
       case "GET_LIKES":
         return utils.asyncHandler(
@@ -181,7 +178,7 @@ class App {
       // 数据工具 (域感知)
       case "IMPORT_DATA":
         return utils.asyncHandler(
-          () => dataTools.import(message.data, message.domain || CONFIG.STORAGE_KEYS.WORKS, sendResponse),
+          () => dataTools.import(message.text, message.domain || CONFIG.STORAGE_KEYS.WORKS, sendResponse),
           sendResponse,
         );
       case "EXPORT_DATA":

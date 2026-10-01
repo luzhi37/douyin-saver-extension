@@ -18,8 +18,6 @@ class WorksGrid extends VirtualGrid {
   #currentMediaCard = null;
   // 预览音量全局联动标志：切换任意卡片的静音作用于三域全部卡片预览；详情覆盖层播放器独立不共享
   #previewMuted = false;
-  #emptyMsg;
-  #emptyHint;
   constructor({ emptyMsg, emptyHint } = {}) {
     super({
       container: dom.mainContainer,
@@ -29,9 +27,7 @@ class WorksGrid extends VirtualGrid {
       emptyMsg,
       emptyHint,
     });
-    // 空态文案按实例区分（作品/点赞/收藏域文案不同）
-    this.#emptyMsg = emptyMsg || "还没有保存的作品";
-    this.#emptyHint = emptyHint || "浏览抖音时，作品会自动被捕获";
+    // 空态文案按实例区分（作品/点赞/收藏域文案不同），默认文案由基类单份持有（emptyText）
     this.#bindMediaEvents();
   }
 
@@ -58,7 +54,7 @@ class WorksGrid extends VirtualGrid {
     if (filtered) {
       this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试", totalSlots, premountCap);
     } else {
-      this.render(view, this.#emptyMsg, this.#emptyHint, totalSlots, premountCap);
+      this.render(view, this.emptyText, this.emptyHintText, totalSlots, premountCap);
     }
   }
 
@@ -216,12 +212,24 @@ class WorksGrid extends VirtualGrid {
     card.querySelector(".work-checkbox")?.remove();
   }
 
-  updateCardDOM(awemeId) {
-    const card = dom.mainContainer.querySelector(`[data-aweme-id="${awemeId}"]`);
-    if (!card) return;
-    // 域泛化：作品型三域共用本类，读当前域数据源（对 works 调用方行为不变）
-    const work = state[state.domain].find((w) => w.awemeId === awemeId);
-    if (!work) return;
+  // 批量卡更新（STORE_CHANGED 收口管线 applyStoreUpserts 专用）：updates = [{ awemeId, work }]，
+  // work 为调用方持有的合并后记录（免逐条 state.find）。一次 querySelectorAll 建 id→卡映射
+  //（O(挂载数)），替代逐条 querySelector + 逐条 state.find 的 O(M×(N+挂载数))——万级 bulk
+  // 广播收口的主线程成本集中于此
+  updateCardsDOM(updates) {
+    if (!updates || updates.length === 0) return;
+    const cardById = new Map();
+    for (const card of dom.mainContainer.querySelectorAll("[data-aweme-id]")) {
+      cardById.set(card.dataset.awemeId, card);
+    }
+    for (const { awemeId, work } of updates) {
+      const card = cardById.get(awemeId);
+      if (card) this.#applyCardUpdate(card, work);
+    }
+  }
+
+  // updateCardsDOM 专用：骨架卡走完整填充管线，完整卡原地部分更新
+  #applyCardUpdate(card, work) {
     if (card.classList.contains("work-skeleton")) {
       this.populateItem(card, work);
       return;
@@ -406,7 +414,7 @@ class WorksGrid extends VirtualGrid {
     });
   }
 
-  // 封面代际自增：updateCardDOM 会复用同一节点再次入队，作废在途探针的乱序回填
+  // 封面代际自增：updateCardsDOM 会复用同一节点再次入队，作废在途探针的乱序回填
   #enqueueCover(img, url) {
     const gen = String((Number(img.dataset.coverGen) || 0) + 1);
     img.dataset.coverGen = gen;
@@ -420,7 +428,7 @@ class WorksGrid extends VirtualGrid {
     this.#coverDrainRafId = requestAnimationFrame(() => {
       this.#coverDrainRafId = 0;
       let n = 0;
-      while (this.#coverQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
+      while (this.#coverQueue.length && n < config.GRID_IMG_PER_FRAME) {
         const { img, url, gen } = this.#coverQueue.shift();
         const alive = () => img.isConnected && img.dataset.coverGen === gen;
         const commit = () => {

@@ -113,6 +113,38 @@ class Storage {
     });
   }
 
+  // 批量主键读取：单事务内发全部 get，结果与入参 keys 严格按下标对位（缺失为 null）。
+  // 消灭「Promise.all 逐条 get」每条一事务的模式——万级批量读的事务开销 O(N)→O(1)。
+  // 空键集直接返回空数组不开事务
+  async getBatch(storeName, keys) {
+    if (!keys || keys.length === 0) return [];
+    const db = await this.#openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const store = tx.objectStore(storeName);
+      const results = new Array(keys.length);
+      keys.forEach((key, i) => {
+        const req = store.get(key);
+        req.onsuccess = () => {
+          results[i] = req.result || null;
+        };
+      });
+      tx.oncomplete = () => resolve(results);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // 仅取全部主键（丢失检测等键集差场景）：不反序列化记录值，替代 getAll 后只取 keys 的用法
+  async getAllKeys(storeName) {
+    const db = await this.#openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, "readonly");
+      const req = tx.objectStore(storeName).getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   async putBatch(storeName, items) {
     const db = await this.#openDB();
     return new Promise((resolve, reject) => {

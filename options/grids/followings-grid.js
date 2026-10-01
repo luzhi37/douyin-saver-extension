@@ -119,7 +119,7 @@ class FollowingsGrid extends VirtualGrid {
     this.#avatarDrainRafId = requestAnimationFrame(() => {
       this.#avatarDrainRafId = 0;
       let n = 0;
-      while (this.#avatarQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
+      while (this.#avatarQueue.length && n < config.GRID_IMG_PER_FRAME) {
         const { img, url, nickname, gen } = this.#avatarQueue.shift();
         if (!this.#avatarTargetAlive(img, gen)) continue;
         const probe = new Image();

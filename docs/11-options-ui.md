@@ -46,7 +46,9 @@ render(items, emptyMsg, emptyHint, totalSlots, premountCap = GRID_PREMOUNT_CAP)
       渐进视图（totalSlots > 已知条目数，fillSlots 按槽回填的前提是槽位对号存在）：
         slotCount = min(#totalSlots, max(premountCap, items.length))——已知条目始终全量铺，
         未到达槽位为无键占位卡
-    首段同步挂载前 RENDER_CHUNK_SIZE 个（真数据骨架优先，缺口为无键占位卡）并交接分圈观察
+    首段同步挂载前 RENDER_CHUNK_SIZE 个（真数据骨架优先，缺口为无键占位卡）；首段节点打
+    data-fade（入场动画仅限定首屏，CSS `.work-card[data-fade]`——筛选切换/扩容的数百张卡
+    不再同帧起 350ms 动画，滚入/回填直接呈现），挂载后交接分圈观察
   → 余量按 RENDER_BUILD_BUDGET_MS 时间预算分帧拼装（保持游离态，脱 DOM 不触发布局），
     拼完挂载前对账（拼装窗口内被 removeItems 删除的条目不挂载不占槽），再向容器一次挂载并
     交接观察——容器全程只经历 2 次插入，布局只剩收尾 1 次 O(N)
@@ -72,19 +74,28 @@ fillSlots(startIndex, items)（渐进分页按槽回填）
   → 槽位越界/已占键 → 逐条回退 appendItems 追加
   → done：pruneEmptyTail 摘除尾部未回填占位卡（兜底）
 
-带键骨架进入滚动口+600px 预填带（OBSERVER_ROOT_MARGIN，≈1.5 行）→ #enqueueFill 入队
+带键骨架进入滚动口+1600px 预填带（OBSERVER_ROOT_MARGIN，≈4 行）→ #enqueueFill 入队
+  （1600 定案：600px 只给 0.4-0.7s 领先量，会被结构填充后的封面探针网络延迟吃光，正常
+    滚速下骨架可见；4 行给探针完整网络提前量。须 < OBSERVE_CHUNK_SIZE 单圈行距 2400px
+    ——哨兵链观察前沿要永远盖得住填充带）
   → rAF 分帧填充：每帧最多花 FILL_FRAME_BUDGET_MS(8ms) 即让出主线程
   → populateItem 原地构建完整卡 → fill observer 转 observe 完整卡
 
 完整卡滚出滚动口+2400px 卸载带（UNLOAD_ROOT_MARGIN，≈6 行）→ #demote 原地降级回骨架
-  （卸载圈远大于填充圈形成滞回，勿把两者调近；#demote 重 observe 走直连路径不经队列）
+  （与填充圈保持 800px 滞回间隙：振幅超过间隙的往返滚动才会反复填/降级，发生在屏外、
+    探针走缓存，勿调到重合；#demote 重 observe 走直连路径不经队列。闲置预热范围 ⊆ 卸载圈）
   两 IO 的 root 必须显式传 #mainGrid：隐式根=文档视口时 rootMargin 会被 #mainGrid
   作为祖先滚动容器的裁剪盒抵消，两圈塌缩到滚动口边缘——卡刚出可视区即降级、滚回
   即重填（小幅滚动往返重载的根因，2026-09 定案修复；sidebar 的 dom.sidebarBody 同款规则）
+  降级经 #pendingDemotes 队列按 DEMOTE_FRAME_BUDGET_MS 预算分帧执行（2026-09 定案）：
+  快滚期沿途积压的降级一次性同步执行是数百毫秒长任务，会把停稳后的视窗填充顶到后面——
+  drain 快滚期保持冻结（旧门控语义不变）、让位于填充队列（#fillQueue 非空即延后），
+  勿改回 IO 回调内同步成批降级
 
 接近底部扩容（#extendIfNeeded，随滚动 rAF 检测）
   → 内容底距视口底不足 GRID_EXTEND_THRESHOLD(1.5) 屏且 #slots.length < #totalSlots
-  → 槽位数倍增，槽位来源按视图形态分流：
+  → 步长 = min(倍增, 单步上限 GRID_EXTEND_STEP)（深域后段一次倍增会是数千上万张占位卡
+    克隆 + 整容器布局的长任务，超出部分由后续滚动 rAF 继续扩），槽位来源按视图形态分流：
       封闭视图（#totalSlots ≤ #viewItems.length）：扩容卡带真实键——从 #viewItems 快照
         锚接续取条目（锚 = 槽尾最后一张带键卡的键在快照中的下标，DOM 实况推导，
         免维护游标不变量；锚失配不扩容留待整刷自愈）。封闭态没有 fillSlots 回填方，
@@ -103,6 +114,12 @@ fillSlots(startIndex, items)（渐进分页按槽回填）
     已 unobserve，直接清空会让被扫过区段滚回也永不填充）、对落点带区无视 observed
     标记强制补填
       （万级网格每次填充/降级变更都打脏布局（尾部帧 30-50ms），把瓦片光栅化挤到主线程后面）
+  → 滚轮级停稳收口（#scheduleSettleCheck，2026-09 定案）：FAST_SCROLL_THRESHOLD 是
+    帧间位移阈值，只有拖拽滚动条达得到——滚轮平滑滚动全程 scrollFast 恒 false，上面
+    的 settle→#refillBand 链路永不执行、停稳没有收口。scroll 事件无条件调度 settle-
+    checker：滚动静止一帧后、若 scrollFast 仍为 false（快滚路径未收口）则补一次
+    #refillBand（幂等：已填卡被 #doFill 的骨架类检查无害跳过）。勿让滚轮路径失去停稳收口
+      （实测不对称：拖拽快滚停稳即填，滚轮快滚停稳要等 IO 逐卡管线——根因即此）
 ```
 
 ### Sidebar 条目升降级生命周期
@@ -122,12 +139,11 @@ fillSlots(startIndex, items)（渐进分页按槽回填）
 ```js
 // VirtualGrid（基类）
 render(items, emptyMsg, emptyHint, totalSlots, premountCap) // premountCap 按态传（渐进 GRID_PREMOUNT_CAP / 筛选 GRID_PREMOUNT_CAP_FILTER）；封闭视图（totalSlots ≤ 已知条目数）只铺上限张；#viewItems 视图快照同步建立；abortRender 同时清空 observer 与分圈/#slots/#viewItems 状态
-captureViewportAnchor() / restoreViewportAnchor(anchor, view) // 筛选切换锚点三段式的两端：键+视口偏移捕获 → 重渲 → 同卡同位恢复（锚卡被筛掉则保持置顶；测量优先、未挂载走数学估算）
 fillSlots(startIndex, items)                  // 渐进分页按槽回填（零 DOM 增删；预铺拼装未完成时排队；落点按键前缀自锚定；错位逐条回退追加）
 pruneEmptyTail()                              // 加载收尾：摘除尾部未回填占位卡
 appendItems(items)                            // 追加兜底（槽位越界/已占键时由 fillSlots 回退调用）；#viewItems 快照同步 push
 insertItems(index, items)                     // 位插原语（STORE_CHANGED 增量收口）：state 与 #slots 对位 splice + 骨架卡挂载 + #viewItems 对位 splice，removeItems 的对偶；落点越界/重复键返回 false 交整刷自愈；头插卡插队到待观察队列最前（分圈哨兵停在旧网格尾部，向下链推进够不到文档更靠前的头插卡）+ 落点在视口上方时按锚点卡实测位移补偿 scrollTop
-removeItems(idSet)                            // #slots 与 #totalSlots 必须同步收缩，#viewItems 同步 filter；删除哨兵会断链，调用方必须立刻续接
+removeItems(idSet)                            // 单遍批量删除：摘 itemMap 记 known 集 → 单遍 #slots 收集命中卡 → 槽位表一次 filter 重建（禁改回 per-id querySelector + indexOf 的 O(N×M)）；#slots/#totalSlots/#viewItems 同步收缩；哨兵命中整批清理后统一续接一次
 #extendObservation()                          // 哨兵触发时放下一批 OBSERVE_CHUNK_SIZE 个
 #enqueueFill(card) → #scheduleDrain → #doFill // 时间预算制填充分帧
 populateItem(skeleton, item)                  // 原地填充入口；负责 observe 完整卡（交接点）
@@ -136,7 +152,6 @@ fillCard(card, item) / clearCard(card)        // 子类钩子：只允许改类�
 
 // WorksGrid / FollowingsGrid
 renderCards(view?) / renderFollowingCards(view?) // view 缺省经视图函数取（内部阶段缓存）；refreshGridView 是唯一调用方并注入现成视图；筛选态预铺降档至 GRID_PREMOUNT_CAP_FILTER
-updateCardDOM(awemeId)                        // 兼容骨架态：骨架只更新数据，完整卡原地重填
 #bindMediaEvents()                            // pointerover/out 容器级委托（见下文）
 
 // Sidebar
@@ -282,7 +297,7 @@ probe.onerror = () => {
 | 槽位 | 代际机制 | 场景 |
 |------|----------|------|
 | 关注头像 | `dataset.fillGen` + `#avatarTargetAlive` | 骨架原地重填复用根节点 |
-| 作品缩略图 | `dataset.coverGen` | `updateCardDOM` 复用同一节点再次入队 |
+| 作品缩略图 | `dataset.coverGen` | `updateCardsDOM` 复用同一节点再次入队 |
 | Detail 大图 | `#imgProbeToken` | 快速切换作品作废在途探针 |
 | 侧边栏封面 | `cover.dataset.gen` | `#demoteItem` 自增作废，重升级入新代 |
 
@@ -329,9 +344,14 @@ probe.onerror = () => {
 - **手动切图语义（方案A·音乐不跳段）**：箭头/键盘走 `#noteManualSwitch`——重定基周期偏移量 `#noteSegOffset`（周期时间 = `audio.currentTime - offset`）对齐目标段起点，指示器/`#noteVirtualElapsed` 同步，**音乐本身不 seek**；驱动按重定基后的周期时间继续推进，手动位置不被弹回。进度条 seek 同样只重定基偏移量。周期提前耗尽（前跳）或音乐先结束（后跳）均按 `nextOnEnd()` 收尾；'off' 播完后音频停在末尾，再点播放先清零 `currentTime/offset`（否则 play 后立即又触发 ended，播放键失灵）。
 - 键盘可达：容器 `role="slider"` + `tabindex="0"`，左右键 ±5%、Home/End 到两端；`seek` 统一走 `#applySeek`（视频=currentTime，图集=音乐进度且段落随位置切换）。
 - 悬浮特效：整段加高 6px + 指针段 `scaleY(1.8)` 提亮（`transform-origin: top` 向下伸展不遮画面）。
-- 图集切图时模糊背景跟随当前图（`#noteShowImage` 提交前景背景时同帧调 `#applyDetailBg([当前图])`，底图与前景同帧变化），视频模式模糊背景=封面。
+- **模糊背景仅随作品切换（2026-09 性能定案，反转旧「逐图跟随」）**：视频=封面、图集=首图，在 renderDetail 时更新一次；图内翻页不再调 `#applyDetailBg`——全屏 `blur(70px)` 层随背景源变化整体重光栅化（1080p 每次 10-50ms 级 paint），图集自动播放逐图跟随等于每 3s 一次全屏重绘，得不偿失。
 - **详情大图 div+background-image 载体（红线）**：`#detailImage` 曾是 `<img>`——其失败态由浏览器原生渲染裂图图标+空框，JS 的 error 处理赢不了"请求失败→绘制"竞态（短暂裂图），2026-09 换为 div 载体（`role="img"`+`aria-label` 无障碍标注，`background-size: contain` 完整显示、列宽随媒体比例收窄见下方「几何」）。背景失败在结构上不可见（旧背景保持、新背景只在探针成功后提交），禁止改回 `<img src>`。
-- **图集零空档切图（红线）**：顺序固定为 `#prefetchNoteImage(idx+1)` 预取下一张（纯预热缓存，无回调不进熔断计数、冷却期跳过）→ 旧背景保持 → 探针成功 `markMediaOk` → `probe.decode()` 就绪 → 提交背景 + 模糊背景同帧。探针失败 `markMediaFail` 时旧图本就未离开，无需恢复；任何成功展示前先 `#hideImageFailed()` 清失效态。禁止改回"先淡出让位再加载"（黑屏空窗）。
+- **图集零空档切图（红线）**：顺序固定为 `#prefetchNoteImage(idx+1)` 预取下一张（纯预热缓存，无回调不进熔断计数、冷却期跳过）→ 旧背景保持 → 探针成功 `markMediaOk` → `probe.decode()` 就绪 → 提交背景（模糊背景不再随图切换，见上条）。探针失败 `markMediaFail` 时旧图本就未离开，无需恢复；任何成功展示前先 `#hideImageFailed()` 清失效态。禁止改回"先淡出让位再加载"（黑屏空窗）。
+- **分段填充跃迁双写 + wheel 冷却（2026-09 性能定案）**：`#buildNoteSegs` 建表时缓存各段 fill 引用，`#renderNoteSegs` 每 tick 只写当前段、段界跃迁（seek 跳段/续播重置）一次性收敛区间段——替代逐 tick 全段展开 + `querySelector` + 全段写 width（50 图图集 ≈ 每秒 200 次无效布局失效写入）；详情 overlay 的 wheel 切作品有 300ms 冷却（`#wheelAt` 时间戳），触控板惯性不再每秒连发数十次全量 `renderDetail`。
+
+### 详情计数 K 可编辑跳转
+
+播放条最右端作品序号「K / N」中 K 为真实输入框（`#detailCounterInput`，外观与静态文本一致，悬停/聚焦下划线提示）：聚焦全选、输入仅留数字、宽度随总位数/输入位数自适应（ch）。**Enter 提交跳转**（非数字/越界钳制到 [1, N]；相邻序号复用 ↑/↓ 方向感过渡、远跳走普通淡入）、**Esc 还原退出**（stopPropagation 拦在 document 层「Esc 关详情」之前）、**失焦还原**——展示值与当前作品恒一致。详情 document keydown 在 Tab 圈定后对该输入框整体让位（数字/方向键不得切作品、删键不得触发移除），Tab 焦点圈定照常覆盖该输入框。跳转只改 `#index` + `renderDetail`；关闭详情时网格滚动恢复走既有 `restoreGridScroll`，跳转结果自然落位。
 
 ### 详情层闲置隐藏与几何（对齐抖音播放界面）
 
@@ -359,8 +379,8 @@ probe.onerror = () => {
   **视图函数返回共享缓存数组，调用方一律只读**（网格/Detail/Batch 现有调用均为只读遍历）；
   需要变更序（reverse 等）自行拷贝。逆序段必须拷贝后翻转，原地 reverse 会串段污染缓存。
 - **`state.dataVersion` 写入版本号（红线）**：视图缓存的唯一数据侧失效判据。store 的域数据
-  变更方法（set/appendWorkLike/spliceWork/removeWorkLikeSilent/removeFollowingsSilent/
-  updateWork）与 `services.loadFollowedUids`（归属判定输入）自动自增；**绕过 store 封装的
+  变更方法（set/appendWorkLike/spliceWork/removeWorkLikeSilent/removeFollowingsSilent）
+  与 `services.loadFollowedUids`（归属判定输入）自动自增；**绕过 store 封装的
   原地写入必须手动自增**——现存三处：`main.js` `tryHeadInsert`（头插 splice）、
   `applyStoreUpserts`（原地替换 `list[idx] = work`）、`detail.js` `removeWork`（静默移除
   filter）。新增绕行写入点若漏增，视图缓存将读到脏数据（漏增不炸、错显，最难排查）。
@@ -380,10 +400,11 @@ probe.onerror = () => {
   降档至 `GRID_PREMOUNT_CAP_FILTER`(600)，滚近底部 `#extendIfNeeded` 键控分支从 `#viewItems`
   快照锚接续铺真实键卡（锚 = 槽尾带键卡在快照中的下标，DOM 实况推导；渐进态维持无键占位卡
   + fillSlots 回填不变）。**封闭态扩容禁止退回无键占位卡**——没有回填方，永久灰卡。
-- **筛选切换滚动锚点**：`refreshGridView` 渲染前 `captureViewportAnchor()`（视口顶卡的键 +
-  视口内偏移），渲染后 `restoreViewportAnchor()` 同卡同位恢复；锚卡被筛掉则保持置顶（结果集
-  已质变，强行就近锚定反而错位）。与 sidebar `#preserveAnchor` 同思想，但 DOM 重建必须走
-  键捕获 → 重渲 → 定位恢复三段式。
+- **筛选切换不保滚动位置（2026-09 定案，反转旧「筛选切换锚点」）**：切筛选/排序/逆序即新
+  结果集，重渲后 wipe 天然回顶、从头浏览——撤销了 captureViewportAnchor/restoreViewportAnchor
+  三段式（其恢复时机早于两段式铺设的拼装完成，深锚会被 clamp 到错误位置，且与「新结果集
+  从头看」的预期语义相悖）。锚点仅保留两处：详情退回网格（`restoreGridScroll`，网格 DOM
+  不重建、直接实测）与侧边栏开合/拖宽（`Sidebar.#preserveAnchor`，几何变化后同卡同位）。
 
 ### CSS 协同约定（.hidden 成对声明）
 
@@ -399,7 +420,7 @@ probe.onerror = () => {
                                           + .following-nickname) + .following-stats
 ```
 
-媒体子树等可从完整模板取新节点移入；unloadObserver 因此持续观察同一根节点无需重挂，fill observer 在 `#demote` 时重新 observe。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardDOM` 已兼容骨架态。
+媒体子树等可从完整模板取新节点移入；unloadObserver 因此持续观察同一根节点无需重挂，fill observer 在 `#demote` 时重新 observe。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardsDOM` 已兼容骨架态。
 
 ### STORE_CHANGED 增量收口管线（options 侧合并处理）
 
@@ -407,10 +428,11 @@ probe.onerror = () => {
 
 - **合并处理节奏**：隐藏期只标脏（rAF 冻结期拉数据/排队渲染皆白做）、回前台 `visibilitychange` flush 一次、可见期 300ms 去抖——逐件保存连发只触发一次收口（排队 N 次全网格重载会让回扩展页首帧卡死，2026-09 定案）。
 - **flush 时统一走局部应用管线，逐条分流**：
-  - state 内已存在 → 原地替换 + `updateCardDOM`（零 background 往返）；
-  - 新增落在当前视图内 → **头插收口** `tryHeadInsert`：state 按视图序二分落点 splice + 网格 `insertItems` 原地挂载（含视口锚定补偿），零整刷；bulk 载荷先经 `GET_WORKS_BY_IDS`（`DomainHandlers.getByIds` 主键直取）补拉合并后记录再走同管线；
+  - state 内已存在 → 原地替换 + `updateCardsDOM` 批量更新（入口一次建 id→下标 Map 替代逐条 findIndex 的 O(N×M)；网格侧一次 `querySelectorAll` 建 id→卡映射，逐卡注入调用方持有的合并记录，免逐条 state.find + querySelector）；
+  - 新增落在当前视图内 → **头插收口** `tryHeadInsert`：state 按视图序二分落点 + 网格 `insertItems` 原地挂载（含视口锚定补偿），零整刷。落点计算与落库分离——全部在原始 list 上二分（sorted 与 list 同为视图序，落点单调不减），runs 按「同原始落点」分组后**逆序** splice / insertItems（O(条数×N) 搬移收敛为 O(runs×N)；网格侧 #slots 尚无前序 run 的插入，原始落点即对位下标，逆序插入不改变已插区段相对位置）；bulk 载荷先经 `GET_WORKS_BY_IDS`（`DomainHandlers.getByIds` 主键直取）补拉合并后记录再走同管线；
   - 新增落在当前视图外 → 仅 `refreshGroups`（分组计数重算）；
-  - 守卫不过（在途分页加载 `services.isGridLoading()` / 快滚冻结 `grid.isScrollFrozen()` / 预铺待消费 `state.gridSlots` / 筛选 / 批量 / 详情 / 口径意外）→ 整域重载兜底，正确性优先，不得绕过守卫强行走增量。
+  - 守卫不过（在途分页加载 `services.isGridLoading()` / 快滚冻结 `grid.isScrollFrozen()` / 预铺待消费 `state.gridSlots` / 筛选 / 批量 / 详情 / 口径意外 / **规模超限**）→ 整域重载兜底，正确性优先，不得绕过守卫强行走增量。
+- **增量路径的规模守卫（2026-09 定案）**：bulk 补拉 id 数超过 `GRID_PREMOUNT_CAP`(1500) 在 `applyBulkChanged` 入口直接整刷兜底——`insertItems` 为每条挂一张骨架卡，超预铺容量即突破活 DOM 规模封顶；补拉响应是全记录过消息通道（千条 ≈ MB 级 structured clone），入口拦截省一次巨型往返。`tryHeadInsert` 不重复设防：其输入经调用方有界（点载荷 ≤ `UPSERTS_MAX`=8、bulk 路径 ≤ 上述上限），超大新增的兜底统一发生在补拉入口。
 - **落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引的 prev 遍历同序**（savedAt 降序、平级 id 降序）——错序会在平级记录间插错位（下次整刷自愈但不该发生）。
 - **域不匹配（跨域回声，如批量入库的 works 广播绕回点赞/收藏域）接收时直接丢弃**，连分组重算都省；flush 时刻须再校验域一致（接收后用户可能已切域，过期载荷不能信）。
 - **红线**：新增落当前视图禁止改回「视图内新增 → `loadDomainData` 整刷」（wipe→灰骨架→封面重探即用户感知的「页面闪烁」）；bulk 广播载荷只带 id 集，禁止改回广播全量记录（万级消息膨胀）。
@@ -422,6 +444,7 @@ probe.onerror = () => {
 | 绕过 store 的域数据原地写入未自增 `state.dataVersion` | 视图阶段缓存读到脏数据（新条目不出现、删除条目残留、归属判定过期），不炸只错显 | 现存三处手动自增点（main.js 头插/局部应用、detail.removeWork）；新增写入点必须同步自增（见「视图阶段缓存」节） |
 | 调用方原地变更 `getWorksView`/`getFollowingsView` 返回数组 | 污染共享缓存，后续视图/计数/Detail 导航全部串位 | 视图函数返回共享缓存数组，调用方只读；需要变更序自行拷贝 |
 | 封闭视图（筛选态）扩容克隆无键占位卡 | 没有 fillSlots 回填方，第 601 张起永久灰卡 | `#extendIfNeeded` 键控分支从 `#viewItems` 快照取真实条目；锚失配不扩容留待整刷自愈 |
+| 键控扩容的在册判定写反（`!#itemMap.has` 才克隆） | render 已把视图全集登记进 itemMap，条件恒假 → 扩容全落无键占位卡，封闭视图 600 以远永久灰区（2026-09 修复） | 在册（`itemMap.has` 命中）才克隆带键卡；快照含已移除条目（removeItems 已从 itemMap 摘除）时落占位兜底 |
 | `removeItems`/`insertItems`/`appendItems` 不同步维护 `#viewItems` | 键控扩容的锚接续取数错位（复活已删条目/漏掉新插条目） | 三个变更原语与快照同步维护（filter/splice/push） |
 | 筛选态改回全量预铺（预铺数 = 结果数） | 每次筛选切换付出 O(结果数) 的骨架克隆 + 整容器布局（十万级 = 秒级卡顿） | 封闭视图预铺恒为 `GRID_PREMOUNT_CAP_FILTER`，余量键控扩容 |
 | 视图计算在渲染与计数间各跑一遍（改回 `syncCount()` 内重算、renderCards 内重取） | 大库下重复整段过滤+排序（每遍 30–100ms 起） | `refreshGridView` 单次计算贯穿渲染与计数；`syncCount` 接受注入 count |
@@ -436,7 +459,7 @@ probe.onerror = () => {
 | 渐进分页经 `'works'` 事件逐页 `store.set` 消费 | 每页触发全量重渲：骨架闪烁、已填卡封面重探 | 回填必须走 `appendWorkLike` → `fillSlots`；筛选激活时静默累积、加载完整渲 |
 | `render()`/`abortRender()` 未清队列状态 | 旧骨架引用残留、重复填充 | 重置时同步清 `#pendingSkeletons`/`#sentinelCard`/observers |
 | 用 `replaceChild`/`replaceWith` 换卡片根节点 | Blink 全量重排，3000 卡单次 >10ms | 只允许原地切换（改类名 + 增删后代） |
-| 把填充/卸载两圈 rootMargin 调近 | 边界抖动、反复填/降级 | 保持滞回（600px vs 2400px） |
+| 把填充/卸载两圈 rootMargin 调近 | 边界抖动、反复填/降级 | 保持滞回间隙（1600px vs 2400px，800px） |
 | 媒体重试自行计数 | 与熔断窗口叠加放大请求量 | 一律接 `Detail.markMediaFail/mediaRetryBlocked` |
 | 在途探针回调不校验代际 | 旧 URL 提交到已换人槽位（错图） | 先验 fillGen/coverGen/gen/imgProbeToken 再提交 |
 | hover 预览改用 pointerenter/leave | 功能静默失效 | 只用冒泡的 pointerover/out 委托 |

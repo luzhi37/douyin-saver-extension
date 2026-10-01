@@ -218,27 +218,34 @@ class ScanTasks {
 
   // 扫描落库 + 丢失检测（persist = "likes" | "favorites" 时启用）。
   // 用户中途取消时跳过丢失检测（部分拉取会产生假丢失），已收集部分仍合并落库（幂等）。
+  // 一遍式落库：getAllKeys 键集（丢失检测，不反序列化记录值）+ mergeAndSave({ stamps })
+  // 单次合并写库——主页序 savedAt 戳记经 stamps 在写入前覆盖、全部 collected 记录一次
+  // putBatch 写出。旧实现「mergeAndSave 后逐条读回再整批重写一遍」的三遍读写已由 stamps
+  // 消解（戳覆盖发生在 mergeWork 合并之后、写入之前，无需读回）；added/updated/changed
+  // 计数仍按覆盖前 isSameRecord 口径，汇总汇报语义不变
   async persistScan(persistDomain, all, cancelled) {
     if (!persistDomain || cancelled || all.length === 0) return { saved: null, lostUids: [] };
+    const t0 = performance.now();
     const ds = domainStore.facade(persistDomain);
     const idField = ds.idField;
-    const oldKeys = Object.keys(await ds.getAll());
-    const saved = await domainStore.mergeAndSave(persistDomain, all);
+    const oldKeys = await ds.getAllKeys();
 
     // 按远端列表顺序（即主页点赞/收藏顺序，最新在前）写 savedAt，使列表顺序与主页一致。
-    // 必须在落库后读回完整记录再合并写回，避免 putBatch 整条替换导致视频/封面等字段丢失；
-    // 也不能用「落库后再 ds.get 判定是否新条目」——mergeAndSave 已先把新条目写入，
-    // 会导致 newOnes 永远为空、savedAt 全退化为 Date.now()（即当前「保存时间都一样」的 bug）。
+    // 下标按有效条目序计（与旧 stampIds 口径一致）；重复 id 末次出现生效（Map 后写覆盖前写，
+    // 与旧实现 putBatch 后写覆盖的最终态一致）；键用记录原值作主键（三作品型域 awemeId 恒为
+    // 字符串，formatWork 保证），与 getBatch/put 同键空间
     const baseTime = Date.now();
-    const stampIds = all.filter((w) => w && w[idField]).map((w) => String(w[idField]));
-    const records = await Promise.all(stampIds.map((id) => ds.get(id)));
-    const toWrite = records
-      .map((rec, i) => (rec ? { ...rec, savedAt: baseTime - i } : null))
-      .filter(Boolean);
-    if (toWrite.length > 0) await ds.putBatch(toWrite);
+    const stamps = new Map();
+    let i = 0;
+    for (const w of all) {
+      if (w && w[idField]) stamps.set(w[idField], baseTime - i++);
+    }
+    const saved = await domainStore.mergeAndSave(persistDomain, all, { stamps });
 
-    const incomingIds = new Set(stampIds);
-    const lostUids = oldKeys.filter((k) => !incomingIds.has(String(k)));
+    const lostUids = oldKeys.filter((k) => !stamps.has(String(k)));
+    console.debug(
+      `[DDM] persistScan ${persistDomain}: ${all.length} items in ${Math.round(performance.now() - t0)}ms`,
+    );
     return { saved, lostUids };
   }
 

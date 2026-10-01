@@ -26,6 +26,9 @@ class Detail {
   #noteIsPlaying = false;
   #noteMode = "virtual";        // 图集进度驱动：music=音频 timeupdate / virtual=定时器兜底
   #noteVirtualElapsed = 0;      // virtual 模式当前轮播周期已播毫秒数
+  #noteSegFills = [];           // 图集分段填充引用缓存（#buildNoteSegs 构建）：渲染 tick 免逐段 querySelector
+  #noteSegLastIdx = -1;         // 上次推进到的段下标：#renderNoteSegs 跃迁双写的基准
+  #wheelAt = 0;                 // wheel 切作品冷却时间戳（触控板惯性每秒数十次事件防连切）
   #noteSegOffset = 0;           // music 模式轮播周期偏移（ms）：周期时间 = audio.currentTime - offset。
                                 // 手动切图/进度条 seek 只重定基偏移量，音乐本身不跳
   #trackPlayed = null;
@@ -64,8 +67,9 @@ class Detail {
         if (token !== this.#imgProbeToken) return;
         dom.detailImage.style.backgroundImage = utils.cssUrl(url);
         dom.detailImage.setAttribute("aria-label", this.#noteWork.desc || "");
-        // 模糊背景跟随当前图（对齐抖音：同画面放大模糊），与前景同帧提交
-        this.#applyDetailBg([this.#noteWork.images[idx]]);
+        // 模糊背景不再逐图跟随（2026-09 性能定案）：全屏 blur(70px) 层随每次背景源
+        // 变化整体重光栅化，图集自动播放每 3s 一次 10-50ms 级 paint——背景仅在切作品
+        // 时更新一次（首图，见 renderDetail），图内翻页保持
       };
       // decode 保证首帧完整可绘后再提交；decode 失败（罕见）也照常提交——背景失败不可见
       if (typeof probe.decode === "function") probe.decode().then(doCommit, doCommit);
@@ -93,6 +97,8 @@ class Detail {
     if (!work?.images?.length) return;
     if (dom.noteSegs.children.length === work.images.length) return;
     dom.noteSegs.innerHTML = "";
+    this.#noteSegFills = [];
+    this.#noteSegLastIdx = -1;
     for (let i = 0; i < work.images.length; i++) {
       const seg = document.createElement("div");
       seg.className = "seg";
@@ -100,20 +106,32 @@ class Detail {
       fill.className = "seg-fill";
       seg.appendChild(fill);
       dom.noteSegs.appendChild(seg);
+      this.#noteSegFills.push(fill);
     }
   }
 
-  // 渐进填充：前段播满、当前段按 cur/total 推进、后段未播
+  // 渐进填充：前段播满、当前段按 cur/total 推进、后段未播。
+  // 跃迁双写：段引用建表时缓存，平时每 tick 只写当前段，段界跃迁（含 seek 跳段/续播
+  // 恢复重置）一次性收敛区间段——替代逐 tick 全段展开 + querySelector + 全段写 width
+  //（50 图图集 ≈ 每秒 200 次无效布局失效写入）
   #renderNoteSegs(cur, total) {
     const work = this.#noteWork;
     if (!work?.images?.length || !total) return;
     const segDur = total / work.images.length;
-    [...dom.noteSegs.children].forEach((seg, k) => {
-      const fill = seg.querySelector(".seg-fill");
-      if (!fill) return;
-      const frac = Math.min(Math.max((cur - k * segDur) / segDur, 0), 1);
-      fill.style.width = frac * 100 + "%";
-    });
+    const idx = Math.min(Math.max(Math.floor(cur / segDur), 0), work.images.length - 1);
+    const fills = this.#noteSegFills;
+    if (idx !== this.#noteSegLastIdx) {
+      // 前向（含 fresh/续播）：旧当前段与跳过的中间段补满；后向（回退 seek）：越过段清零
+      for (let k = Math.max(this.#noteSegLastIdx, 0); k < idx; k++) {
+        if (fills[k]) fills[k].style.width = "100%";
+      }
+      for (let k = idx + 1; k <= this.#noteSegLastIdx; k++) {
+        if (fills[k]) fills[k].style.width = "0%";
+      }
+      this.#noteSegLastIdx = idx;
+    }
+    const fill = fills[idx];
+    if (fill) fill.style.width = Math.min(Math.max((cur - idx * segDur) / segDur, 0), 1) * 100 + "%";
   }
 
   // 图集自动轮播驱动：有音乐=音频 timeupdate 驱动（总时长=音乐真实时长），
@@ -383,8 +401,43 @@ class Detail {
     store.spliceWork(idx);
   }
 
-  async syncWork(awemeId) {
-    return services.refreshSingleWork(awemeId);
+  // 详情移除确认流程：底栏「移除」按钮与 Delete/Backspace 快捷键共用入口（确认弹窗，不直接删）
+  #confirmRemoveCurrent() {
+    const work = this.getCurrentWork();
+    if (!work) return;
+    // 点赞/收藏域的详情「移除」仅删本地记录（远端取消走批量入口），文案区分
+    const localOnly = config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works";
+    const removeBody = document.createElement("p");
+    removeBody.className = "confirm-delete-msg";
+    removeBody.textContent = localOnly
+      ? `确定要从${config.DOMAINS_META[state.domain].label}域移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？远端点赞/收藏不受影响。`
+      : `确定要移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？`;
+    dialog.showDialog("移除作品", removeBody, [
+      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
+      {
+        text: "移除",
+        danger: true,
+        callback: async () => {
+          dialog.updateDialog("正在移除…", "");
+          state.preventDialogClose = true;
+          try {
+            await this.removeWork(work.awemeId);
+            if (search.getWorksView().length === 0) {
+              this.closeDetail();
+            } else {
+              if (this.getDetailIndex() >= search.getWorksView().length) this.#index = search.getWorksView().length - 1;
+              this.renderDetail();
+            }
+            store.refreshGroups();
+            // 成功终态不再要求"好的"确认（建议2）
+            dialog.closeDialog();
+            dialog.showToast("已移除该作品", "success");
+          } finally {
+            state.preventDialogClose = false;
+          }
+        },
+      },
+    ]);
   }
 
   updateLoopBtn(isVideo) {
@@ -411,13 +464,41 @@ class Detail {
     if (work.type === "note" && work.images?.length) {
       dom.detailOrder.textContent = `${this.#noteImgIndex + 1}/${work.images.length}`;
     }
-    // 播放条最右端：作品序号
+    // 播放条最右端：作品序号（K 为输入框，Enter 提交跳转 / Esc 还原，见 #commitCounterJump）
     if (total > 1) {
-      dom.detailCounter.textContent = `${this.getDetailIndex() + 1} / ${total}`;
+      dom.detailCounterInput.value = String(this.getDetailIndex() + 1);
+      dom.detailCounterTotal.textContent = ` / ${total}`;
+      this.#resizeCounterInput();
       dom.detailCounter.classList.remove("hidden");
+      // 焦点在输入框内时（渲染中切作品/跳转后）重选全文，下一次键入直接替换
+      if (document.activeElement === dom.detailCounterInput) dom.detailCounterInput.select();
     } else {
       dom.detailCounter.classList.add("hidden");
     }
+  }
+
+  // K 输入框宽度自适应（ch = 本字体数字宽）：取总位数与当前输入位数的较大者，防位数增长截断
+  #resizeCounterInput() {
+    const input = dom.detailCounterInput;
+    input.style.width = `${Math.max(String(search.getWorksView().length).length, input.value.length)}ch`;
+  }
+
+  #revertCounterInput() {
+    dom.detailCounterInput.value = String(this.getDetailIndex() + 1);
+    this.#resizeCounterInput();
+  }
+
+  // K 提交跳转：非数字/越界钳制到 [1, N]；相邻序号保留方向感过渡（与 ↑/↓ 同语义），远跳走普通淡入。
+  // 关详情后网格滚动恢复走既有 restoreGridScroll，跳转结果自然落位
+  #commitCounterJump() {
+    const total = search.getWorksView().length;
+    const k = parseInt(dom.detailCounterInput.value, 10);
+    if (total === 0 || !Number.isFinite(k)) return this.#revertCounterInput();
+    const target = Math.min(Math.max(k, 1), total) - 1;
+    if (target === this.#index) return this.#revertCounterInput();
+    const dir = Math.abs(target - this.#index) === 1 ? (target > this.#index ? 1 : -1) : 0;
+    this.#index = target;
+    this.renderDetail(dir);
   }
 
   // 加载指示复位（建议17）
@@ -512,10 +593,6 @@ class Detail {
   async openDetail(awemeId) {
     const work = this.openDetailIndex(awemeId);
     if (!work) return;
-    // 单条同步仅作品域有意义（SYNC_WORKS 写 works store）；点赞/收藏域隐藏该按钮
-    const isWorkLikeNonWorks =
-      config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works";
-    dom.detailSyncBtn.classList.toggle("hidden", isWorkLikeNonWorks);
     dom.detailOverlay.classList.remove("hidden");
     document.body.style.overflow = "hidden";
     this.renderDetail();
@@ -569,7 +646,8 @@ class Detail {
       dom.detailProgress.classList.toggle("note-mode", isNote);
       dom.noteSegs.classList.toggle("hidden", !isNote);
 
-      // 模糊背景（对齐抖音：同画面放大模糊）——视频=封面；图集=首图（#noteShowImage 切图跟随）
+      // 模糊背景（对齐抖音：同画面放大模糊）——视频=封面；图集=首图。仅在切作品时
+      // 更新一次：图内翻页不再逐图重光栅化全屏 blur 层（2026-09 性能定案）
       // 候选链探针与代际机制见 #applyDetailBg，全部失效时降级为统一深色底
       if (isVideo) {
         this.#applyDetailBg([work.cover]);
@@ -601,7 +679,7 @@ class Detail {
       const typePath = work.type === "note" ? "note" : "video";
       dom.detailTitle.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
       // 描述全文进入播放条（CSS 单行省略 + hover title 提示），不再 JS 截断
-      dom.detailTitle.textContent = work.desc || "无作品描述";
+      dom.detailTitleText.textContent = work.desc || "无作品描述";
       dom.detailTitle.title = "在抖音打开作品页";
       dom.detailCreateTime.textContent = utils.formatPublishDate(work.createTime);
       dom.detailCreateTime.classList.toggle("hidden", !dom.detailCreateTime.textContent);
@@ -683,18 +761,23 @@ class Detail {
       readyFired = true;
       readyFn();
     };
+    // 本轮渲染的加载监听统一挂 signal：切走时 runCleanups → abort 移除未触发的 once
+    // 监听——resetVideo 的 load() 不触发 canplay/loadedmetadata，旧闭包滞留会在下一个
+    // 视频 canplay 时连环引爆（幽灵 loader / 陈旧 markMediaOk / 窜位 aspect）
+    const loadSignals = new AbortController();
+    this.addCleanup(() => loadSignals.abort());
     // 仅在真实加载成功时复位熔断；error 路径也会调 fireReady，不能顺带 markMediaOk
     const fireLoaded = () => {
       this.markMediaOk();
       dom.detailLoader.classList.add("hidden");
       fireReady();
     };
-    video.addEventListener("canplay", fireLoaded, { once: true });
-    video.addEventListener("loadedmetadata", fireLoaded, { once: true });
+    video.addEventListener("canplay", fireLoaded, { once: true, signal: loadSignals.signal });
+    video.addEventListener("loadedmetadata", fireLoaded, { once: true, signal: loadSignals.signal });
     // 列宽收窄依据：元数据就绪即按真实宽高比自适应（与 fireLoaded 的 once 监听互不干扰）
     video.addEventListener("loadedmetadata", () => {
       this.#setMediaAspect(video.videoWidth, video.videoHeight);
-    }, { once: true });
+    }, { once: true, signal: loadSignals.signal });
 
     video.play().catch((err) => {
       if (err.name === "NotAllowedError") {
@@ -825,6 +908,11 @@ class Detail {
     dom.detailOverlay.addEventListener(
       "wheel",
       (e) => {
+        // 300ms 冷却：触控板惯性每秒可发数十次 wheel，每次都走完整 renderDetail 流水线
+        //（双 rAF + 探针链 + 兜底 timer）且一次手势会跳过大量作品；鼠标滚轮一格一滚无感
+        const now = performance.now();
+        if (now - this.#wheelAt < 300) return;
+        this.#wheelAt = now;
         if (e.deltaY > 0) this.nextDetail();
         else this.prevDetail();
       },
@@ -833,15 +921,16 @@ class Detail {
 
     document.addEventListener("keydown", (e) => {
       if (dom.detailOverlay.classList.contains("hidden")) return;
+      // 弹窗叠于详情层之上时全部让位（Space/M/L/F/方向键/删除键不穿透）；Esc 不经本监听，
+      // 由 main.js 的 Esc 收口统一裁决（一次按键只关一层）
+      if (!dom.dialogOverlay.classList.contains("hidden")) return;
       // Tab 焦点圈定（建议21）
       if (e.key === "Tab") {
         this.#trapFocus(e);
         return;
       }
-      if (e.key === "Escape") {
-        this.closeDetail();
-        return;
-      }
+      // 计数输入框聚焦时全部让位：数字/方向键留在输入框，Enter/Esc 由其自身监听收口
+      if (e.target === dom.detailCounterInput) return;
       const work = this.getCurrentWork();
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -888,6 +977,17 @@ class Detail {
           this.#noteManualSwitch(this.#noteImgIndex + 1);
         }
       }
+      // Delete/Backspace 移除当前作品：不进上方交互守卫（与聚焦按钮无原生冲突，焦点在任意
+      // 按钮上也要可用），仅排除输入位；走 #confirmRemoveCurrent 与按钮同款确认弹窗
+      if (
+        work &&
+        (e.key === "Delete" || e.key === "Backspace") &&
+        !(e.target instanceof Element && e.target.closest("input, textarea"))
+      ) {
+        e.preventDefault();
+        this.#confirmRemoveCurrent();
+        return;
+      }
     });
 
     dom.detailClose.addEventListener("click", () => this.closeDetail());
@@ -896,41 +996,7 @@ class Detail {
 
     dom.detailRemoveBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const work = this.getCurrentWork();
-      if (!work) return;
-      // 点赞/收藏域的详情「移除」仅删本地记录（远端取消走批量入口），文案区分
-      const localOnly = config.WORK_LIKE_DOMAINS.includes(state.domain) && state.domain !== "works";
-      const removeBody = document.createElement("p");
-      removeBody.className = "confirm-delete-msg";
-      removeBody.textContent = localOnly
-        ? `确定要从${config.DOMAINS_META[state.domain].label}域移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？远端点赞/收藏不受影响。`
-        : `确定要移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？`;
-      dialog.showDialog("移除作品", removeBody, [
-        { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
-        {
-          text: "移除",
-          danger: true,
-          callback: async () => {
-            dialog.updateDialog("正在移除…", "");
-            state.preventDialogClose = true;
-            try {
-              await this.removeWork(work.awemeId);
-              if (search.getWorksView().length === 0) {
-                this.closeDetail();
-              } else {
-                if (this.getDetailIndex() >= search.getWorksView().length) this.#index = search.getWorksView().length - 1;
-                this.renderDetail();
-              }
-              store.refreshGroups();
-              // 成功终态不再要求"好的"确认（建议2）
-              dialog.closeDialog();
-              dialog.showToast("已移除该作品", "success");
-            } finally {
-              state.preventDialogClose = false;
-            }
-          },
-        },
-      ]);
+      this.#confirmRemoveCurrent();
     });
 
     dom.detailLoopBtn.addEventListener("click", (e) => {
@@ -940,30 +1006,31 @@ class Detail {
       this.updateLoopBtn(work?.type === "video" && utils.getVideoUrl(work));
     });
 
-    // 单条同步仅作品域有意义（SYNC_WORKS 写 works store）；点赞/收藏域隐藏该按钮。
-    // initDetailEvents 仅执行一次，不能在此读 state.domain，改为每次打开详情时同步显隐
-    dom.detailSyncBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const work = this.getCurrentWork();
-      if (!work) return;
-      dom.detailSyncBtn.disabled = true;
-      dom.detailSyncBtn.classList.add("work-syncing");
-      try {
-        const newWork = await this.syncWork(work.awemeId);
-        if (newWork) {
-          store.updateWork(work.awemeId, newWork);
-        }
-      } catch {}
-      // 旋转态（建议20）：复用网格卡 .work-syncing 的图标自转样式
-      dom.detailSyncBtn.classList.remove("work-syncing");
-      dom.detailSyncBtn.disabled = false;
-    });
-
     dom.detailDownloadBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const work = this.getCurrentWork();
       if (work) this.downloadWork(work);
     });
+
+    // 计数 K 编辑：聚焦全选、输入仅留数字并自适应宽度；Enter 提交跳转、Esc 还原并退出
+    //（stopPropagation 拦在 document 层「Esc 关详情」之前）、失焦还原——展示值与当前作品恒一致
+    dom.detailCounterInput.addEventListener("focus", () => dom.detailCounterInput.select());
+    dom.detailCounterInput.addEventListener("input", () => {
+      const input = dom.detailCounterInput;
+      if (/\D/.test(input.value)) input.value = input.value.replace(/\D/g, "");
+      this.#resizeCounterInput();
+    });
+    dom.detailCounterInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.#commitCounterJump();
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        this.#revertCounterInput();
+        dom.detailCounterInput.blur();
+      }
+    });
+    dom.detailCounterInput.addEventListener("blur", () => this.#revertCounterInput());
 
     dom.detailPlayBtn.addEventListener("click", (e) => {
       e.stopPropagation();

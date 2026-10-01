@@ -1,6 +1,6 @@
 // background/data/data-tools.js — 导入导出 / 重置 / 统计（reconcileImportGroups）
 
-import { CONFIG, DOMAIN_CONFIG } from "../core.js";
+import { CONFIG, DOMAIN_CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
 
@@ -40,10 +40,22 @@ class DataTools {
     }
   }
 
-  async import(data, domain, sendResponse) {
+  async import(text, domain, sendResponse) {
     try {
+      // 解析在 SW 侧完成：options 只传文件全文（字符串过消息通道是 memcpy 级 clone），
+      // 主线程不再 JSON.parse 大文件、解析结果不再全量对象 clone
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (_err) {
+        return sendResponse({ ok: false, error: "IMPORT_PARSE_FAILED" });
+      }
       const cfg = DOMAIN_CONFIG[domain];
       const items = domainStore.extractImportItems(data, domain);
+      if (items.length === 0) {
+        // 原 options 侧 isDomainData 前置校验职责移入：非该域数据/空数组统一报空
+        return sendResponse({ ok: false, error: "IMPORT_EMPTY" });
+      }
       if (Array.isArray(data.groups)) {
         await this.reconcileImportGroups(domain, data, items);
       }
@@ -61,9 +73,34 @@ class DataTools {
         const result = await domainStore.mergeAndSaveFollowings(domain, items, true);
         sendResponse({ ok: true, ...result });
       } else {
-        await domainStore.mergeAndSave(domain, items).then((result) => {
-          const invalid = items.filter((w) => !w || !w[DOMAIN_CONFIG[domain].idField]).length;
-          sendResponse({ ok: true, ...result, invalid });
+        // 分块落库：单事务 10 万级 put 会长时间独占 SW 的 IndexedDB——按块 mergeAndSave
+        //（旧记录单事务 getBatch 批量读，块内成本 O(块大小)），逐块回报 IMPORT_PROGRESS；
+        // 计数跨块累计，响应只带计数（不再 spread 单次 mergeAndSave 的 written/addedIds
+        // 全记录——旧实现万级导入的响应体因此膨胀至 MB 级，消费方只读 added/updated/total）
+        const invalid = items.filter((w) => !w || !w[DOMAIN_CONFIG[domain].idField]).length;
+        let added = 0;
+        let updated = 0;
+        let changed = 0;
+        let last = null;
+        for (let i = 0; i < items.length; i += CONFIG.IMPORT_CHUNK) {
+          last = await domainStore.mergeAndSave(domain, items.slice(i, i + CONFIG.IMPORT_CHUNK));
+          added += last.added;
+          updated += last.updated;
+          changed += last.changed;
+          utils.sendMessageSafe({
+            type: "IMPORT_PROGRESS",
+            domain,
+            processed: Math.min(i + CONFIG.IMPORT_CHUNK, items.length),
+            total: items.length,
+          });
+        }
+        sendResponse({
+          ok: true,
+          added,
+          updated,
+          changed,
+          total: last ? last.total : await domainStore.facade(domain).count(),
+          invalid,
         });
       }
     } catch (err) {
@@ -77,15 +114,15 @@ class DataTools {
       const items = await storage.getAll(cfg.storeName);
       const groups = await storage.getGroups(cfg.groupsName);
       const def = domainStore.defaultGroups(domain);
-      sendResponse({
-        ok: true,
-        data: {
-          domain,
-          exportedAt: new Date().toISOString(),
-          [cfg.itemKey]: Object.values(items),
-          groups: groups.length ? groups : def,
-        },
+      // 序列化在 SW 侧一次完成（无缩进）：options 不再收全量对象（structured clone 大头）、
+      // 不再主线程 stringify（缩进还使体积膨胀 20-30%）——文本 clone 是 memcpy 级
+      const text = JSON.stringify({
+        domain,
+        exportedAt: new Date().toISOString(),
+        [cfg.itemKey]: Object.values(items),
+        groups: groups.length ? groups : def,
       });
+      sendResponse({ ok: true, text });
     } catch (err) {
       sendResponse({ error: err.message });
     }

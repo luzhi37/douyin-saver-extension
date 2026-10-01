@@ -215,8 +215,13 @@ const CONFIG = {
     COLLECTION: 20,
     AUTHOR: 20,
     FOLLOWING: 20,
-    GRID: 500,
+    // 网格渐进加载页大小：keyset 游标串行依赖上一页末键，页间无法并行——吞吐提升
+    // 靠加大页体摊薄每页固定开销（事务建立 + 消息往返）。2000 条 ≈ 2-4MB/页
+    GRID: 2000,
   },
+  // 导入分块落库块大小：单事务 10 万级 put 会长时间独占 SW 的 IndexedDB——按块
+  // mergeAndSave + IMPORT_PROGRESS 逐块回报（followings 域不分块，记录小单遍即可）
+  IMPORT_CHUNK: 2000,
   // STORE_CHANGED 广播的点变化阈值：changed ≤ UPSERTS_MAX 时携带合并后记录（upserts），
   // options 局部应用；超过则发无载荷广播走整刷收口（批量变化逐条局部更新反而 thrash）
   BROADCAST: {
@@ -240,14 +245,9 @@ const CONFIG = {
   // 更新策略版本导致换盐，独立模式收藏扫描将重新出现 Signature Not Found）
   WEB_SIGN_SALT: "A96D855A08C0A9707F8BEF0D9A527E4E",
   CANCEL: {
-    // Tab 模式取消点赞走 inject XHR（CONFIG.CANCEL.LIKE_URL），此处 like 四要素仅供
-    // independentTasks.cancel 的 kind 配置位；独立模式点赞取消在路由层显式拒绝（Turing/XHR 签名限制）
-    like: {
-      url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
-      body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
-      type: "application/x-www-form-urlencoded",
-      referrer: "https://www.douyin.com/user/self?showTab=like",
-    },
+    // 独立模式仅取消收藏：点赞取消结构性不可行（Turing/XHR 签名限制——路由层显式拒绝
+    // UNSUPPORTED_INDEPENDENT，Tab 模式走 inject 侧 XHR 的 LIKE_URL，见 docs/06），
+    // 不设 like 配置位
     collection: {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
       body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",

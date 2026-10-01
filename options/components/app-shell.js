@@ -161,13 +161,8 @@ class AppShell {
     document.querySelectorAll(".ds-btn").forEach((tab) => {
       tab.addEventListener("click", () => this.switchDomain(tab.dataset.domain));
     });
-    window.addEventListener(
-      "resize",
-      () => {
-        this.updateDomainSlider(state.domain);
-      },
-      { passive: true },
-    );
+    // resize 的全局布线在 main.js 组合根（rAF 节流单入口，同时重算域滑块与分组 tab）：
+    // 本类只提供 updateDomainSlider，不再自挂第二个 window 监听
     dom.btnRetry.addEventListener("click", async () => {
       dom.errorState.classList.add("hidden");
       try {

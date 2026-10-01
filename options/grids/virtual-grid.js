@@ -7,6 +7,9 @@ export class VirtualGrid {
   #unloadObserver = null;
   #fillQueue = [];
   #drainRafId = 0;
+  // 停稳降级分帧：unload IO 成批积压的待降级卡（快滚期冻结），按帧预算 drain
+  #pendingDemotes = [];
+  #demoteDrainRaf = 0;
   #pendingSkeletons = [];
   #pendingAppends = [];
   #pendingFills = [];
@@ -31,6 +34,11 @@ export class VirtualGrid {
   #scrollFast = false;
   #scrollEpoch = 0;
   #fastEpoch = 0;
+  // 滚轮级停稳收口：FAST_SCROLL_THRESHOLD 是帧间位移阈值，只有拖拽滚动条达得到——
+  // 滚轮平滑滚动全程 scrollFast 恒 false、refillBand 永不执行，停稳没有「丢积压 +
+  // 视口带区直填」兜底。settle-checker 在滚动静止一帧后补同款收口
+  #settleRaf = 0;
+  #settleLastEpoch = 0;
   #skeletonClass = "";
   #itemClass = "";
   #itemKey = "";
@@ -54,6 +62,16 @@ export class VirtualGrid {
 
   get skeletonClass() {
     return this.#skeletonClass;
+  }
+
+  // 空态文案只读暴露：基类单份持有（#showEmpty / pruneEmptyTail / removeItems 复用），
+  // 子类组合默认文案经此取，不再自存第二份
+  get emptyText() {
+    return this.#emptyMsg;
+  }
+
+  get emptyHintText() {
+    return this.#emptyHint;
   }
 
   // 清场换壳后重指向新容器（容器级事件监听在 #mainGrid 上，不受换壳影响）
@@ -107,6 +125,9 @@ export class VirtualGrid {
     for (let i = 0; i < firstCount; i++) {
       const card =
         i < items.length ? this.#cloneSkeleton(skelTmpl, items[i]) : this.#clonePlaceholder(skelTmpl);
+      // 入场动画只限定首段卡：筛选切换/扩容时数百张卡不再同帧起 350ms opacity 动画
+      //（屏外卡同样参与动画 tick），滚入/回填的卡直接呈现
+      card.dataset.fade = "1";
       firstNodes.push(card);
       firstFragment.appendChild(card);
     }
@@ -227,7 +248,7 @@ export class VirtualGrid {
   #applyFill(startIndex, items) {
     // 落点自锚定：以首个无键占位卡为基准、与传入 start 取小者。删除会使 #slots 相对
     // 页序收缩（拼装窗口内的在途删除、push→回填 rAF 间隙的删除），传入 start 按删除
-    // 前 state 长度计算，直接对号会整页写偏、留下永久无键灰卡；网格的键前缀是唯一
+    // 前状态长度计算，直接对号会整页写偏、留下永久无键灰卡；网格的键前缀是唯一
     // 可信对齐基准。无删除时两者相等，行为不变
     let start = this.#slots.length;
     for (let i = 0; i < this.#slots.length; i++) {
@@ -241,6 +262,18 @@ export class VirtualGrid {
     const margin = parseFloat(config.OBSERVER_ROOT_MARGIN) || 0;
     const bandTop = gridRect.top - margin;
     const bandBottom = gridRect.bottom + margin;
+    // 带内外粗判走行几何估算（卡等高成行、纵向单调，与 #refillBand 二分同一假设）：
+    // 页大小提到 2000 后逐卡 gBCR 的固定成本不可忽视——估算落在带界 ±1 行外的卡免
+    // 实测（误判最多晚一个 IO 周期填充：带外卡保持观察，滚近由 IO 正常触发），边界
+    // 卡与估算退化（CSS 变量缺失/首槽不存在）时回退逐卡实测
+    const root = getComputedStyle(document.documentElement);
+    const cardW = parseInt(root.getPropertyValue("--dy-card-size")) || config.CARD_SIZE_FALLBACK;
+    const gap = config.CARD_GAP;
+    const cols = Math.max(1, Math.floor((this.#container.clientWidth + gap) / (cardW + gap)));
+    const rowH = (cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET + gap;
+    const firstCard = this.#slots[start];
+    const firstTop = firstCard ? firstCard.getBoundingClientRect().top : null;
+    const baseRow = Math.floor(start / cols);
     const misses = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -248,8 +281,16 @@ export class VirtualGrid {
       if (card && card.isConnected && !card.dataset[this.#itemKey]) {
         card.dataset[this.#itemKey] = item[this.#itemKey];
         this.#itemMap.set(item[this.#itemKey], item);
-        const rect = card.getBoundingClientRect();
-        if (rect.bottom >= bandTop && rect.top <= bandBottom) {
+        let inBand = null;
+        if (firstTop !== null) {
+          const estTop = firstTop + (Math.floor((start + i) / cols) - baseRow) * rowH;
+          if (estTop > bandBottom + rowH || estTop + rowH < bandTop - rowH) inBand = false;
+        }
+        if (inBand === null) {
+          const rect = card.getBoundingClientRect();
+          inBand = rect.bottom >= bandTop && rect.top <= bandBottom;
+        }
+        if (inBand) {
           // 带内：主动入队并摘除填充观察（填充后由卸载圈接管生命周期）
           if (this.#observer) this.#observer.unobserve(card);
           this.#enqueueFill(card);
@@ -391,28 +432,44 @@ export class VirtualGrid {
     if (this.#viewItems && idSet.size) {
       this.#viewItems = this.#viewItems.filter((w) => !idSet.has(w[this.#itemKey]));
     }
-    for (const id of idSet) {
-      const known = this.#itemMap.delete(id);
-      const card = this.#container.querySelector(`[data-${this.#dataAttr}="${id}"]`);
-      if (card) {
+    if (idSet.size) {
+      // 单遍化批量删除：先摘 itemMap 记 known 集，再单遍 #slots 收集命中卡——替代
+      // per-id querySelector + slots.indexOf 的 O(id数×(挂载数+槽位数)) 双重扫描
+      //（万级批量删除的主线程成本集中于此）。#slots 与容器子节点同构（各挂载路径
+      // 均同步 push），单遍扫描即可覆盖全部已挂卡
+      const knownIds = new Set();
+      for (const id of idSet) {
+        if (this.#itemMap.delete(id)) knownIds.add(id);
+      }
+      const hitCards = [];
+      for (const card of this.#slots) {
+        if (idSet.has(card.dataset[this.#itemKey])) hitCards.push(card);
+      }
+      // 槽位表一次性重建（替代逐卡 indexOf+splice）：与域数组同步收缩，预铺回填的
+      // 对齐关系依赖两侧同构
+      if (hitCards.length) {
+        this.#slots = this.#slots.filter((card) => !idSet.has(card.dataset[this.#itemKey]));
+      }
+      let sentinelHit = false;
+      for (const card of hitCards) {
         if (this.#observer) this.#observer.unobserve(card);
         if (this.#unloadObserver) this.#unloadObserver.unobserve(card);
-        if (card === this.#sentinelCard) {
-          // 哨兵被删除会导致观察圈断链、后续骨架永不填充，立刻续接
-          this.#sentinelCard = null;
-          this.#extendObservation();
-        }
-        // 槽位表与域数组同步收缩：预铺回填的对齐关系依赖两侧同构
-        const slotIdx = this.#slots.indexOf(card);
-        if (slotIdx !== -1) this.#slots.splice(slotIdx, 1);
+        if (card === this.#sentinelCard) sentinelHit = true;
         this.clearCard(card);
         card.remove();
         removed++;
-      } else if (known) {
-        // 网格确认持有但无连接卡：条目已克隆进拼装窗口的游离节点，挂载时被对账丢弃、
-        // 永不占槽。#totalSlots 必须随真实条目数一起收缩，否则差额会被 #extendIfNeeded
-        // 当作未铺配额，在滚近底部时原样补回无键占位卡（永久灰卡）
-        removed++;
+      }
+      if (sentinelHit) {
+        // 哨兵被删除会导致观察圈断链、后续骨架永不填充：整批清理后统一续接一次
+        this.#sentinelCard = null;
+        this.#extendObservation();
+      }
+      // known 但无连接卡的 id（拼装窗口内被对账丢弃、永不占槽）同样计入：
+      // #totalSlots 必须随真实条目数一起收缩，否则差额会被 #extendIfNeeded 当作
+      // 未铺配额，滚近底部时原样补回无键占位卡（永久灰卡）
+      const hitIds = new Set(hitCards.map((card) => card.dataset[this.#itemKey]));
+      for (const id of knownIds) {
+        if (!hitIds.has(id)) removed++;
       }
     }
     // 预铺目标与 #slots 同步收缩；clamp 防御异常态下减穿下界
@@ -420,53 +477,6 @@ export class VirtualGrid {
     if (this.#container.children.length === 0) {
       this.#showEmpty(this.#emptyMsg, this.#emptyHint);
     }
-  }
-
-  // ---------- 筛选切换锚点（SearchBar.refreshGridView 专用） ----------
-  // 捕获视口内最上方可见卡的键与视口内偏移：筛选切换整体重建 DOM 后按「同卡同位」
-  // 恢复，消除每次切换跳回顶部的连续性断裂。与 sidebar.#preserveAnchor 同一思想，
-  // 但 DOM 会重建，必须走 键捕获 → 重渲 → 定位恢复 三段式
-  captureViewportAnchor() {
-    const gridTop = dom.mainGrid.getBoundingClientRect().top;
-    // 卡片等高成行、纵向位置单调：二分定位首个底边越过视口顶的卡（同 #refillBand 带区定位）
-    const children = this.#container.children;
-    let lo = 0;
-    let hi = children.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (children[mid].getBoundingClientRect().bottom < gridTop) lo = mid + 1;
-      else hi = mid;
-    }
-    const card = children[lo];
-    const key = card?.dataset[this.#itemKey];
-    if (!key || !this.#itemMap.has(key)) return null; // 无键占位/未知键无法锚定
-    return { key, offset: card.getBoundingClientRect().top - gridTop };
-  }
-
-  // 恢复锚点：新视图仍含锚卡 → 定位到原视口偏移；锚卡已被筛掉 → 保持置顶（结果集
-  // 已质变，强行就近锚定反而错位）。测量优先（DOM 实测），锚卡超出预铺未挂载时走
-  // restoreGridScroll 同款数学估算（row × 行高）
-  restoreViewportAnchor(anchor, view) {
-    if (!anchor) return;
-    const idx = view.findIndex((w) => String(w[this.#itemKey]) === anchor.key);
-    if (idx === -1) return;
-    requestAnimationFrame(() => {
-      const grid = dom.mainGrid;
-      if (!grid) return;
-      let cardTopInScroll = -1;
-      const card = this.#container.querySelector(`[data-${this.#dataAttr}="${anchor.key}"]`);
-      if (card) {
-        cardTopInScroll = card.getBoundingClientRect().top - grid.getBoundingClientRect().top + grid.scrollTop;
-      } else if (idx >= 0) {
-        const root = getComputedStyle(document.documentElement);
-        const cardW = parseInt(root.getPropertyValue("--dy-card-size")) || config.CARD_SIZE_FALLBACK;
-        const gap = config.CARD_GAP;
-        const cols = Math.max(1, Math.floor((this.#container.clientWidth + gap) / (cardW + gap)));
-        cardTopInScroll = Math.floor(idx / cols) * ((cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET + gap);
-      }
-      if (cardTopInScroll < 0) return;
-      grid.scrollTo({ top: Math.max(0, cardTopInScroll - anchor.offset) });
-    });
   }
 
   // 中止未完成的分块渲染（域切换时调用，防止旧域骨架卡/observer 残留到共享容器）
@@ -491,6 +501,12 @@ export class VirtualGrid {
     this.#pendingAppends = [];
     this.#pendingFills = [];
     this.#pendingInserts = [];
+    this.#pendingDemotes = [];
+    cancelAnimationFrame(this.#demoteDrainRaf);
+    this.#demoteDrainRaf = 0;
+    cancelAnimationFrame(this.#settleRaf);
+    this.#settleRaf = 0;
+    this.#settleLastEpoch = 0;
     this.#slots = [];
     this.#totalSlots = 0;
     this.#viewItems = null;
@@ -530,9 +546,12 @@ export class VirtualGrid {
     if (this.#unloadObserver) return;
     this.#unloadObserver = new IntersectionObserver(
       (entries) => {
+        // 降级只入队不执行：成批积压（快滚期沿途数千张）一次性执行是数百毫秒长任务，
+        // 会把停稳后的视窗填充顶到后面——经预算 drain 分帧消化
         for (const entry of entries) {
-          if (!entry.isIntersecting) this.#demote(entry.target);
+          if (!entry.isIntersecting) this.#pendingDemotes.push(entry.target);
         }
+        this.#scheduleDemoteDrain();
       },
       // root 必须显式传 #mainGrid（滚动容器）：隐式根=文档视口时，rootMargin 会被
       // #mainGrid 自身作为祖先滚动容器的裁剪盒抵消，卸载圈塌缩到滚动口边缘——卡刚
@@ -541,6 +560,24 @@ export class VirtualGrid {
       // 无需随换壳重挂
       { root: dom.mainGrid, rootMargin: config.UNLOAD_ROOT_MARGIN },
     );
+  }
+
+  // 降级分帧 drain：快滚期保持冻结（旧门控语义不变）；停稳后让位于填充队列（视口
+  // 填充优先），按 DEMOTE_FRAME_BUDGET_MS 时间预算每帧消化一批
+  #scheduleDemoteDrain() {
+    if (this.#demoteDrainRaf) return;
+    this.#demoteDrainRaf = requestAnimationFrame(() => {
+      this.#demoteDrainRaf = 0;
+      if (this.#scrollFast || this.#fillQueue.length) {
+        this.#scheduleDemoteDrain();
+        return;
+      }
+      const deadline = performance.now() + config.DEMOTE_FRAME_BUDGET_MS;
+      while (this.#pendingDemotes.length && performance.now() < deadline) {
+        this.#demote(this.#pendingDemotes.shift());
+      }
+      if (this.#pendingDemotes.length) this.#scheduleDemoteDrain();
+    });
   }
 
   // 原地降级：只清内容、切回骨架类，不换根节点。grid 容器任一直接子节点被替换
@@ -627,7 +664,26 @@ export class VirtualGrid {
     // 快滚轮询自持：停稳检测不依赖队列非空（空队列也须转出冻结态、释放 #demote 门控）。
     // 仅活跃网格需要轮询（abortRender 后 observer 为 null，无卡可冻结）
     if (this.#scrollFast && this.#observer) this.#scheduleDrain();
+    this.#scheduleSettleCheck();
     this.#scheduleCatchUp();
+  }
+
+  // 任意滚动的停稳收口：快滚路径由 drain 的 epoch settle 触发 #refillBand；滚轮级滚动
+  // scrollFast 恒 false、那条路径永不执行。滚动静止一帧后在此补收口（refillBand 幂等：
+  // 已填卡被 #doFill 的骨架类检查无害跳过）；快滚未 settle 时仍由 drain 负责，此处跳过
+  #scheduleSettleCheck() {
+    if (!this.#observer) return; // 非活跃网格（abortRender 后）无需收口
+    if (this.#settleRaf) return;
+    this.#settleRaf = requestAnimationFrame(() => {
+      this.#settleRaf = 0;
+      if (this.#settleLastEpoch !== this.#scrollEpoch) {
+        // 本帧仍有新滚动事件：推进静默基准续等
+        this.#settleLastEpoch = this.#scrollEpoch;
+        this.#scheduleSettleCheck();
+        return;
+      }
+      if (!this.#scrollFast) this.#refillBand();
+    });
   }
 
   // 远跳兜底：快速滚动/拖动滚动条落点可能越过观察圈前沿，哨兵留在视口上方
@@ -643,8 +699,10 @@ export class VirtualGrid {
     });
   }
 
-  // 接近底部扩容：内容底距视口底不足 GRID_EXTEND_THRESHOLD 屏时，预铺槽位数倍增至
-  // totalSlots 上限（尾批对齐剩余量）。槽位来源按视图形态分流：
+  // 接近底部扩容：内容底距视口底不足 GRID_EXTEND_THRESHOLD 屏时，预铺槽位增长至
+  // totalSlots 上限（尾批对齐剩余量）。步长 = min(倍增, 单步上限 GRID_EXTEND_STEP)——
+  // 深域后段一次倍增会是数千上万张占位卡克隆 + 整容器布局的长任务，超出部分由后续
+  // 滚动 rAF 继续扩。槽位来源按视图形态分流：
   // 封闭视图（totalSlots ≤ 视图快照长度 = 筛选态等无「未来分页」场景）扩容卡带真实键，
   // 直接从快照锚接续取条目——本态没有 fillSlots 回填方，无键占位卡会永久灰卡；锚取
   // 槽尾最后一张带键卡（DOM 实况推导，免维护游标不变量），在快照中定位后顺次取后继。
@@ -655,7 +713,7 @@ export class VirtualGrid {
     const rect = this.#container.getBoundingClientRect();
     const gridRect = dom.mainGrid.getBoundingClientRect();
     if (rect.bottom - gridRect.bottom > dom.mainGrid.clientHeight * config.GRID_EXTEND_THRESHOLD) return;
-    const next = Math.min(this.#totalSlots, this.#slots.length * 2);
+    const next = Math.min(this.#totalSlots, this.#slots.length * 2, this.#slots.length + config.GRID_EXTEND_STEP);
     if (next <= this.#slots.length) return;
     const skelTmpl = this.#getSkeletonTemplate();
     const snapshot = this.#viewItems;
@@ -680,8 +738,11 @@ export class VirtualGrid {
       let card = null;
       if (keyed) {
         const item = snapshot[++cursor];
-        // itemMap 防御：快照含已移除条目时落占位兜底（正常口径不会命中）
-        if (item && !this.#itemMap.has(item[this.#itemKey])) card = this.#cloneSkeleton(skelTmpl, item);
+        // 在册判定：render 已把视图全集登记进 itemMap——命中才克隆带键卡。旧实现条件
+        // 写反（!has 才克隆），条件恒假、扩容全落无键占位卡，封闭视图预铺以远成永久
+        // 骨架区（2026-09 修复）；快照含已移除条目（removeItems 已从 itemMap 摘除）时
+        // 落占位兜底
+        if (item && this.#itemMap.has(item[this.#itemKey])) card = this.#cloneSkeleton(skelTmpl, item);
       }
       if (!card) card = this.#clonePlaceholder(skelTmpl);
       this.#slots.push(card);

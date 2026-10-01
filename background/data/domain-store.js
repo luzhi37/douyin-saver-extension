@@ -35,24 +35,23 @@ class DomainStore {
     return cfg.idToString ? String(id) : id;
   }
 
-  // domainStorage: 封装 DOMAIN_CONFIG，让调用者只需传 domain 名称，避免硬编码 store 名
+  // domainStorage: 封装 DOMAIN_CONFIG，让调用者只需传 domain 名称，避免硬编码 store 名。
+  // 条目收敛为调用方实际消费的集合（getAll/getByGroup/clear/putGroups/getDefaultGroups/
+  // itemKey 已删：等价能力各有直连承担方——storage.getAll/clear/putGroups/countByIndex、
+  // domainStore.defaultGroups()、DOMAIN_CONFIG.itemKey）
   facade(domain) {
     const cfg = DOMAIN_CONFIG[domain];
     if (!cfg) throw new Error("Unknown domain: " + domain);
     return {
-      getAll: () => storage.getAll(cfg.storeName),
       get: (key) => storage.get(cfg.storeName, key),
+      getBatch: (keys) => storage.getBatch(cfg.storeName, keys),
+      getAllKeys: () => storage.getAllKeys(cfg.storeName),
       putBatch: (items) => storage.putBatch(cfg.storeName, items),
       deleteBatch: (keys) => storage.deleteBatch(cfg.storeName, keys),
       count: () => storage.count(cfg.storeName),
       countByGroup: (groupId) => storage.countByIndex(cfg.storeName, "groupId", groupId),
-      getByGroup: (groupId) => storage.getByIndex(cfg.storeName, "groupId", groupId),
-      clear: () => storage.clear(cfg.storeName),
       getGroups: () => storage.getGroups(cfg.groupsName),
-      putGroups: (groups) => storage.putGroups(cfg.groupsName, groups),
-      getDefaultGroups: () => cfg.defaultGroups,
       idField: cfg.idField,
-      itemKey: cfg.itemKey,
     };
   }
 
@@ -83,34 +82,43 @@ class DomainStore {
   // changed = 真实变更计数（新增 + 内容有变化的更新）：内容全等的重复入库（重添已有作品）
   // 不写库、不计入 changed——广播方据它决定是否发 STORE_CHANGED，options 不该为 no-op 重载。
   // written = 本次实际写入的合并后记录（点变化广播的 upserts 载荷），addedIds = 其中属于
-  // 新增的记录 id（options 区分「原地更新」与「新增插入」）
-  async mergeAndSave(domain, works) {
+  // 新增的记录 id（options 区分「原地更新」与「新增插入」）。
+  // stamps（persistScan 扫描落库专用）：Map<主键, savedAt> 覆盖戳——主页序 savedAt 重排要求
+  // 全部 valid 记录都写（含内容无变化者），写入集扩为全集；但 added/updated/changed 计数仍按
+  // 覆盖前的 isSameRecord 口径（isSameRecord 在戳覆盖前判定），汇报语义与常规路径一致。
+  // 缺省 null = 常规路径，仅写 changed 集
+  async mergeAndSave(domain, works, { stamps = null } = {}) {
     const ds = this.facade(domain);
     const valid = (works || []).filter((w) => w && w[ds.idField]);
     if (valid.length === 0) {
       return { added: 0, updated: 0, changed: 0, total: await ds.count(), written: [], addedIds: [] };
     }
 
-    const oldItems = await Promise.all(
-      valid.map((w) => ds.get(w[ds.idField]).then((old) => ({ w, old }))),
-    );
+    // 旧记录批量读取：单事务 getBatch 按入参序对位（缺失为 null），语义与逐条 ds.get 一致
+    //（三作品型域主键经 formatWork 恒为字符串，无键类型转换问题）
+    const olds = await ds.getBatch(valid.map((w) => w[ds.idField]));
 
     let added = 0,
       updated = 0,
       changed = 0;
     const toWrite = [];
     const addedIds = [];
-    for (const { w, old } of oldItems) {
+    for (let i = 0; i < valid.length; i++) {
+      const w = valid[i];
+      const old = olds[i];
       const merged = this.mergeWork(w, old);
+      // isSameRecord 必须在 stamps 覆盖 savedAt 之前判定：戳重排是每条都写的机械结果，不计入 changed
+      const unchanged = Boolean(old) && isSameRecord(merged, old);
+      if (stamps) merged.savedAt = stamps.get(w[ds.idField]) ?? merged.savedAt;
       if (old) {
         updated++;
-        if (isSameRecord(merged, old)) continue;
       } else {
         added++;
         addedIds.push(w[ds.idField]);
       }
-      changed++;
-      toWrite.push(merged);
+      // changed 只按 pre-stamp 口径计；stamps 路径内容无变化的记录也要写（savedAt 重排），但不计入 changed
+      if (!unchanged) changed++;
+      if (stamps || !unchanged) toWrite.push(merged);
     }
     if (toWrite.length > 0) await ds.putBatch(toWrite);
 
@@ -119,23 +127,37 @@ class DomainStore {
   }
 
   // 关注域专用合并落库：计数仅由校准更新，常规列表同步携带的 0 不覆盖已校准旧值。
-  // changed 同 mergeAndSave：内容全等的重复收录不写库、不计入 changed
+  // changed 同 mergeAndSave：内容全等的重复收录不写库、不计入 changed。
+  // 旧记录经 getBatch 单事务按需读取（替代 getAll 全表物化——单条收录路径不再按全表付费），
+  // 丢失检测经 getAllKeys 键集差（不反序列化记录值），total = 存量键数 + 新增
   async mergeAndSaveFollowings(domain, items, isImport = false) {
     const ds = this.facade(domain);
-    const stored = await ds.getAll();
+    // 同批重复 uid 取首次出现（列表接口不应产生重复，防御性收敛；与旧实现「putBatch 后写覆盖」
+    // 相比仅重复条的 savedAt 毫秒差之别）
+    const incoming = [];
     const incomingUids = new Set();
+    for (const f of items || []) {
+      if (!f || !f.uid) continue;
+      const uid = String(f.uid);
+      if (incomingUids.has(uid)) continue;
+      incomingUids.add(uid);
+      incoming.push({ f, uid });
+    }
+    // 丢失检测与旧记录读取并行；getAllKeys 须在 putBatch 前取（键集反映写前状态）
+    const [olds, oldKeys] = await Promise.all([
+      ds.getBatch(incoming.map((x) => x.uid)),
+      ds.getAllKeys(),
+    ]);
+
     let added = 0,
       updated = 0,
       changed = 0;
     const toWrite = [];
 
     const baseTime = Date.now();
-    for (let i = 0; i < items.length; i++) {
-      const f = items[i];
-      if (!f || !f.uid) continue;
-      const uid = String(f.uid);
-      incomingUids.add(uid);
-      const old = stored[uid];
+    for (let i = 0; i < incoming.length; i++) {
+      const { f, uid } = incoming[i];
+      const old = olds[i];
       const merged = {
         ...f,
         // 计数仅由校准更新：常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
@@ -148,7 +170,6 @@ class DomainStore {
           : old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,
         savedAt: old?.savedAt ?? baseTime - i,
       };
-      stored[uid] = merged;
       if (!old) {
         added++;
         changed++;
@@ -163,12 +184,7 @@ class DomainStore {
     }
 
     // Mark users not in new list as 'lost'
-    const lostUids = [];
-    for (const uid of Object.keys(stored)) {
-      if (!incomingUids.has(uid)) {
-        lostUids.push(uid);
-      }
-    }
+    const lostUids = oldKeys.filter((uid) => !incomingUids.has(String(uid)));
 
     if (toWrite.length > 0) await ds.putBatch(toWrite);
     return {
@@ -177,7 +193,7 @@ class DomainStore {
       changed,
       lost: lostUids.length,
       lostUids,
-      total: Object.keys(stored).length,
+      total: oldKeys.length + added,
     };
   }
 }

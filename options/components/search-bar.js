@@ -14,7 +14,7 @@ import { batch } from '../data/batch.js';
 // 记录对象 → 小写匹配字段惰性缓存：关键词过滤每遍对每条记录做 toLowerCase 的成本
 // （10 万条 × 3 字段 ≈ 30 万次字符串分配/遍）收敛为每条一次。用 WeakMap 而非往记录
 // 上挂字段：记录会经 EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容
-// 更新一律整对象替换（updateWork/applyStoreUpserts），旧对象连同缓存一并失效，无脏读
+// 更新一律整对象替换（applyStoreUpserts），旧对象连同缓存一并失效，无脏读
 const lcMemo = new WeakMap();
 function lcFields(w) {
   let m = lcMemo.get(w);
@@ -273,10 +273,8 @@ class SearchBar {
     const view = isWorkLike ? this.getWorksView() : this.getFollowingsView();
     if (view !== this.#lastRenderedView) {
       const grid = isWorkLike ? this.activeWorkLikeGrid() : followingsGrid;
-      const anchor = grid.captureViewportAnchor();
       if (isWorkLike) grid.renderCards(view);
       else grid.renderFollowingCards(view);
-      grid.restoreViewportAnchor(anchor, view);
       this.#lastRenderedView = view;
     }
     this.syncCount(view.length);
@@ -338,7 +336,12 @@ class SearchBar {
 
   // ---------- 展开 / 收起 ----------
   openSearchBar() {
-    if (this.#isSearchBarOpen()) return;
+    // 已展开时仅重新聚焦（Ctrl+K 二次按下）：不重置输入框，避免打断未应用的输入
+    if (this.#isSearchBarOpen()) {
+      dom.searchInput.focus();
+      dom.searchInput.select();
+      return;
+    }
     dom.searchBar.classList.remove("hidden");
     // 排序段随域显隐；逆序复选框两域共用
     this.syncForDomain();

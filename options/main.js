@@ -27,6 +27,7 @@ const SHORTCUT_ROWS = [
   ["详情 · L", "循环模式（单作品 / 分组 / 关闭）"],
   ["详情 · F", "全屏播放"],
   ["详情 · ←/→", "图集翻页（多图作品）"],
+  ["详情 · Delete / Backspace", "移除当前作品（弹确认）"],
   ["批量 · Ctrl+A", "全选当前结果"],
   ["批量 · Shift+点击", "范围选择"],
 ];
@@ -97,6 +98,12 @@ function flushStoreChanged() {
 // 点载荷的局部应用管线；补拉失败/记录全缺（落库后又被删除等）→ 整域重载兜底。
 // 拉取间隙用户切域由 applyStoreUpserts 的域校验兜底（过期载荷作废，切回自然整刷）
 async function applyBulkChanged(domain, ids) {
+  // 补拉规模守卫：响应是全记录过消息通道（千条 ≈ MB 级 structured clone），且超大新增
+  // 本就会撞 tryHeadInsert 的预铺容量守卫打回整刷——超限直接整刷兜底，省一次巨型往返
+  if (ids.changedIds.size > config.GRID_PREMOUNT_CAP) {
+    services.loadDomainData().catch(() => {});
+    return;
+  }
   const res = await services.bgMsg({ type: "GET_WORKS_BY_IDS", domain, ids: [...ids.changedIds] }).catch(() => null);
   if (!res || res.error || !Array.isArray(res.items) || res.items.length === 0) {
     services.loadDomainData().catch(() => {});
@@ -106,7 +113,7 @@ async function applyBulkChanged(domain, ids) {
 }
 
 // 点/bulk 变化局部应用：逐条按「state 内已存在 / 新增落点」分流。已存在 → 原地替换 +
-// updateCardDOM（无计数变化，零 background 往返）；新增且落在当前视图 → tryHeadInsert
+// updateCardsDOM（无计数变化，零 background 往返）；新增且落在当前视图 → tryHeadInsert
 // （state 同步 splice + 网格头插，零整刷）；新增且落在当前视图外 → 只重算分组数字
 //（网格不受当前视图影响）。任一条需整刷则整域整刷——部分应用会让 state/网格口径不一
 function applyStoreUpserts(domain, entries) {
@@ -118,20 +125,27 @@ function applyStoreUpserts(domain, entries) {
   }
   let needCounts = false; // 当前视图外的新增：分组数字变了
   let needReload = false; // 头插守卫不过：整刷兜底
-  const domUpdates = [];
+  const domUpdates = []; // { awemeId, work }：批量卡更新的现成记录（免逐条 state.find）
   const viewAdds = []; // 落当前视图的新增（头插候选）
+  // id→下标索引一次构建（O(N) 一遍）：替代逐条 findIndex 的 O(N×M)——万级 bulk 收口的
+  // 主线程成本集中于此。原地替换不改其他元素下标，索引全程有效；新增走 viewAdds
+  //（循环后由 tryHeadInsert 处理），不触碰本表
+  const list = state[domain];
+  const indexById = new Map();
+  for (let i = 0; i < list.length; i++) indexById.set(list[i].awemeId, i);
   for (const { work, added } of entries) {
-    const list = state[domain];
-    const idx = list.findIndex((w) => w.awemeId === work.awemeId);
-    if (idx >= 0) {
+    const idx = indexById.get(work.awemeId);
+    if (idx !== undefined) {
       list[idx] = work;
-      state.dataVersion++; // 原地替换绕过 store 封装，须手动计入数据版本（视图缓存失效判据）
-      domUpdates.push(work.awemeId);
+      domUpdates.push({ awemeId: work.awemeId, work });
     } else if (added) {
       if (state.currentGroupId === "all" || work.groupId === state.currentGroupId) viewAdds.push(work);
       else needCounts = true;
     }
     // 未新增且不在 state（视图外已有记录的内容更新）：计数与网格均不受影响，跳过
+  }
+  if (domUpdates.length > 0) {
+    state.dataVersion++; // 原地替换绕过 store 封装，整批计入一次数据版本（视图缓存失效判据）
   }
   if (viewAdds.length > 0) {
     if (tryHeadInsert(domain, viewAdds) === "fallback") {
@@ -149,9 +163,8 @@ function applyStoreUpserts(domain, entries) {
     return;
   }
   if (needCounts) store.refreshGroups();
-  // state 先行、DOM 后跟（updateCardDOM 读 state[domain]），与 work-updated 同序
-  const grid = search.activeWorkLikeGrid();
-  for (const awemeId of domUpdates) grid.updateCardDOM(awemeId);
+  // state 先行、DOM 后跟（updateCardsDOM 用注入的现成记录）
+  search.activeWorkLikeGrid().updateCardsDOM(domUpdates);
 }
 
 // ---------- 头插收口：守卫 + 落点计算 ----------
@@ -187,22 +200,37 @@ function tryHeadInsert(domain, works) {
   if (services.isGridLoading()) return "fallback";
   // 快滚冻结期禁止一切 DOM 变更（与填充/降级同一纪律）
   if (grid.isScrollFrozen()) return "fallback";
+  // 输入规模由调用方有界（applyStoreUpserts 的两条来源：点载荷 ≤ UPSERTS_MAX=8；
+  // bulk 补拉在 applyBulkChanged 入口经 GRID_PREMOUNT_CAP 上限拦截后 ≤ 1500）——本函数
+  // 不重复设防，超大新增的整刷兜底在补拉入口发生（省一次无谓的补拉往返）
   const list = state[domain];
   const sorted = [...works].sort((a, b) => (viewOrderBefore(a, b) ? -1 : 1));
+  // 落点计算与落库分离：全部在原始 list 上二分。sorted 与 list 同为视图序，落点单调
+  // 不减；runs 按「同原始落点」分组，与旧实现「当前列表中紧接上一条才并 run」等价
+  //（前序已插 k 条时当前列表落点 = p + k，连续条件两边同加 k）。逐条边插边 splice 的
+  // O(条数×N) 搬移收敛为按 run 逆序 splice 的 O(runs×N)
   const runs = [];
   for (const work of sorted) {
     const p = headInsertPosition(list, work);
-    list.splice(p, 0, work);
     const last = runs[runs.length - 1];
-    if (last && last.start + last.items.length === p) last.items.push(work);
+    if (last && last.start === p) last.items.push(work);
     else runs.push({ start: p, items: [work] });
+  }
+  // 按 run 逆序落库：先插靠后的 run 不影响靠前 run 的原始落点（最终相对序不变）；
+  // run 内逐条前插，大数组禁 spread（同 #mountInsert 约定）
+  for (let ri = runs.length - 1; ri >= 0; ri--) {
+    const run = runs[ri];
+    for (let i = run.items.length - 1; i >= 0; i--) list.splice(run.start, 0, run.items[i]);
   }
   state.dataVersion++; // 原地 splice 绕过 store 封装，须手动计入数据版本（视图缓存失效判据）
   // 预铺额度待消费 = 首页渲染排队中（rAF）：state 已就位即够——借道待渲渲染，
   // 无需头插也无需整刷
   if (state.gridSlots) return "deferred";
-  for (const run of runs) {
-    if (!grid.insertItems(run.start, run.items)) return "fallback";
+  // 网格按 run 逆序位插：#slots 尚无前序 run 的插入，原始落点即对位下标（靠后 run 先插、
+  // 靠前 run 后插不改变已插区段的相对位置）；待观察队列经 #mountInsert 的 unshift 逆序
+  // 累积后恰为文档序，与旧实现的升序插入结果一致
+  for (let ri = runs.length - 1; ri >= 0; ri--) {
+    if (!grid.insertItems(runs[ri].start, runs[ri].items)) return "fallback";
   }
   return "applied";
 }
@@ -226,6 +254,9 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
     case "IMPORT_WORKS_PROGRESS":
       authorImport.onProgress(message);
+      break;
+    case "IMPORT_PROGRESS":
+      importExport.onProgress(message);
       break;
     case "STORE_CHANGED":
       // 抖音标签页等外部上下文落库后的广播（options 不在其请求链路上）。
@@ -267,14 +298,20 @@ document.addEventListener("click", (e) => {
   if (e.target.closest?.(".dy-dialog-close")) appShell.requestDialogClose();
 });
 
-// Esc：弹窗优先走统一关闭入口；详情层的 Esc 由 Detail 自己的监听处理；其余先退出批量、再收起搜索栏
+// Esc 关闭优先级单点收口（本监听是全页唯一 Esc 裁决者）：弹窗 → 详情 → 退出批量 → 收起
+// 搜索栏，一次按键只关一层。详情不能自管 Esc——弹窗叠在详情层之上时，本监听先关掉弹窗，
+// detail 的 document 监听在同一事件内随后执行，此时它查 dialogOverlay 已是关闭态，若由
+// detail 自管 Esc 会把详情一并关掉（同事件多监听串行，后者看到的是前者处理后的状态）
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!dom.dialogOverlay.classList.contains("hidden")) {
     appShell.requestDialogClose();
     return;
   }
-  if (!dom.detailOverlay.classList.contains("hidden")) return;
+  if (!dom.detailOverlay.classList.contains("hidden")) {
+    detail.closeDetail();
+    return;
+  }
   if (state.batchMode) {
     batch.handleBatchToggle();
     return;
@@ -350,7 +387,6 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
 (async function init() {
   // 构建标记：用于确认页面运行的是最新构建（头像探针预载版）
   console.info("[DDM] options build 2026-08-26 four-domain");
-  document.body.classList.remove("batch-mode");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
   // 预加载运行时配置
@@ -378,12 +414,20 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
     },
     { passive: true },
   );
-  // resize 滑块必须 no-anim 瞬移回 active tab（直接传函数引用会把 Event 对象当 animated 实参）
+  // resize 滑块必须 no-anim 瞬移回 active tab（直接传函数引用会把 Event 对象当 animated 实参）。
+  // 全局 resize 只保留这一个 rAF 节流入口（组合根统一布线，app-shell 不再自挂监听）：
+  // 窗口拖拽期每帧最多一次域滑块 + 分组 tab 掩码重算
+  let resizeRaf = 0;
   window.addEventListener(
     "resize",
     () => {
-      groups.updateTabMask();
-      groups.updateGroupSlider(false);
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        appShell.updateDomainSlider(state.domain);
+        groups.updateTabMask();
+        groups.updateGroupSlider(false);
+      });
     },
     { passive: true },
   );
@@ -443,23 +487,18 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
     document.body.classList.toggle("batch-mode", v);
     batch.syncSelectionUI();
   });
-  store.on("work-updated", (awemeId) => {
-    worksGrid.updateCardDOM(awemeId);
-    if (detail.getDetailIndex() !== -1 && detail.getCurrentWork()?.awemeId === awemeId) {
-      detail.renderDetail();
-    }
-  });
 
   document.body.dataset.domain = "works";
   appShell.updateDomainSlider("works");
   await groups.renderGroupTabs();
+  // 方案A预载关注全集与首屏数据并行：归属判定懒消费（未加载成功时不归判本就是设计
+  // 行为），串行等待让启动首屏多付一次全量关注域往返；它自增 dataVersion 但无
+  // refreshGridView 触发方，不会引发首渲后重渲
+  const followedUidsLoading = services
+    .loadFollowedUids()
+    .catch((err) => console.error("[DY] load followed uids failed:", err));
   await appShell.loadDomainDataSafe();
-  // 方案A：启动即预载关注全集，供作品/点赞/收藏域的「已关注/未关注」归属判定
-  try {
-    await services.loadFollowedUids();
-  } catch (err) {
-    console.error("[DY] load followed uids failed:", err);
-  }
+  await followedUidsLoading;
   // 清理历史版本搜索态 hash 残留：P1-8 的 URL 持久化已移除（读取方已删，URL 不再承载
   // 任何状态），旧标签页 URL 上残留的 #search?... 会随刷新永久保留，一次性剥掉即可。
   // 放在 init 尾部不影响首屏；此后全仓无任何 hash 读写方

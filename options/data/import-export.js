@@ -101,20 +101,22 @@ class ImportExport {
     dialog.pushDialog("正在导入…", "<p>正在读取文件…</p>");
     state.preventDialogClose = true;
     try {
+      // 全文直发 background：主线程不再 JSON.parse 大文件、解析结果不再全量对象
+      // clone 过消息通道（字符串 clone 是 memcpy 级）；解析与校验在 SW 侧完成
       const raw = await file.text();
-      const data = JSON.parse(raw);
-
-      if (!services.isDomainData(data, domain)) {
-        const expected = config.DOMAINS_META[domain].label + "数据";
+      dom.dialogTitle.textContent = "正在保存…";
+      dom.dialogBody.innerHTML = "<p>正在保存数据…</p>";
+      const res = await services.bgMsg({ type: "IMPORT_DATA", text: raw, domain });
+      // 原 options 侧前置校验职责移入 background，两个专用错误码映射回原文案
+      if (!res.ok && (res.error === "IMPORT_PARSE_FAILED" || res.error === "IMPORT_EMPTY")) {
         dom.dialogTitle.textContent = "导入失败";
-        dom.dialogBody.innerHTML = `<p class="dy-text-danger">文件内容不是${expected}</p>`;
+        const expected = config.DOMAINS_META[domain].label + "数据";
+        dom.dialogBody.innerHTML = `<p class="dy-text-danger">${
+          res.error === "IMPORT_EMPTY" ? `文件内容不是${expected}` : "文件解析错误：JSON 解析失败，请检查文件格式"
+        }</p>`;
         dialog.showOkDialog();
         return;
       }
-
-      dom.dialogTitle.textContent = "正在保存…";
-      dom.dialogBody.innerHTML = "<p>正在保存数据…</p>";
-      const res = await services.bgMsg({ type: "IMPORT_DATA", data, domain });
 
       // 仅导入目标域为当前域时刷新视图；其余域在下次域切换时自然加载
       if (domain === state.domain) {
@@ -148,12 +150,20 @@ class ImportExport {
     }
   }
 
+  // 分块落库进度（background IMPORT_PROGRESS）：刷新保存弹窗文案。
+  // 与最终 sendResponse 同通道有序，不会覆盖结果弹窗
+  onProgress(msg) {
+    if (!msg || !msg.total) return;
+    dom.dialogTitle.textContent = "正在保存…";
+    dom.dialogBody.innerHTML = `<p>正在保存数据 ${msg.processed} / ${msg.total}…</p>`;
+  }
+
   async handleExport(domain) {
     dialog.pushDialog("正在导出…", "<p>正在打包数据…</p>");
     state.preventDialogClose = true;
     try {
       const res = await services.bgMsg({ type: "EXPORT_DATA", domain });
-      if (!res.ok || !res.data) {
+      if (!res.ok || !res.text) {
         dom.dialogTitle.textContent = "导出失败";
         dom.dialogBody.innerHTML = `<p class="dy-text-danger">${res?.error || "未知错误"}</p>`;
         dialog.showOkDialog();
@@ -161,13 +171,15 @@ class ImportExport {
       }
       const dateStr = new Date().toLocaleDateString("zh-CN").replace(/\//g, "-");
       const filename = `${domain}-${dateStr}.json`;
-      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
+      const blob = new Blob([res.text], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
       a.click();
-      URL.revokeObjectURL(url);
+      // 延迟 revoke（对齐 detail.triggerDownload）：同步 revoke 在大文件下载启动前
+      // 撤源可能截断下载
+      setTimeout(() => URL.revokeObjectURL(url), config.BLOB_REVOKE_DELAY);
       dom.dialogTitle.textContent = "导出完成";
       dom.dialogBody.innerHTML = `<p>文件已下载：${filename}</p>`;
       dialog.showOkDialog();

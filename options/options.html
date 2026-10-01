@@ -6,6 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>抖音数据管理</title>
   <link rel="stylesheet" href="options.css" />
+  <!-- 封面/头像 CDN 预连接：网格探针首次拉图省 DNS+TLS。host 簇定案见 docs/02
+       「图床家族直链解剖」：封面在 p3/p9-pc-sign 两簇（需签名校验），头像在 p3-pc 无签名簇 -->
+  <link rel="preconnect" href="https://p3-pc-sign.douyinpic.com" />
+  <link rel="preconnect" href="https://p9-pc-sign.douyinpic.com" />
+  <link rel="preconnect" href="https://p3-pc.douyinpic.com" />
 </head>
 
 <body>
@@ -207,7 +212,7 @@
       <span class="bar-divider"></span>
       <div class="bar-group bar-meta flex-row">
         <a id="detailAuthor" class="detail-bar-text detail-bar-author hidden" target="_blank" rel="noopener"></a>
-        <a id="detailTitle" class="detail-bar-title text-ellipsis" target="_blank" rel="noopener"></a>
+        <a id="detailTitle" class="detail-bar-title text-ellipsis" target="_blank" rel="noopener"><span id="detailTitleText" class="detail-title-text"></span></a>
         <span id="detailCreateTime" class="detail-bar-text detail-bar-date hidden"></span>
       </div>
       <span class="bar-divider"></span>
@@ -219,17 +224,12 @@
           </svg>
         </button>
         <button id="detailLoopBtn" class="detail-bar-btn icon-btn flex-center" title="循环模式" aria-label="循环模式"></button>
-        <button id="detailSyncBtn" class="detail-bar-btn icon-btn flex-center" title="同步" aria-label="同步">
-          <svg width="24" height="24">
-            <use href="#icon-sync" />
-          </svg>
-        </button>
         <button id="detailDownloadBtn" class="detail-bar-btn icon-btn flex-center" title="下载" aria-label="下载">
           <svg width="24" height="24">
             <use href="#icon-download" />
           </svg>
         </button>
-        <span id="detailCounter" class="detail-bar-text detail-bar-counter hidden"></span>
+        <span id="detailCounter" class="detail-bar-text detail-bar-counter hidden"><input id="detailCounterInput" class="detail-counter-input" type="text" inputmode="numeric" maxlength="6" aria-label="当前序号，输入后回车跳转" /><span id="detailCounterTotal"> / 0</span></span>
       </div>
     </div>
   </div>
@@ -618,10 +618,6 @@
       </symbol>
       <symbol id="icon-bookmark" viewBox="0 0 24 24">
         <path fill="currentColor" d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z" />
-      </symbol>
-      <symbol id="icon-sync" viewBox="0 0 24 24">
-        <path fill="currentColor"
-          d="M17.65 6.35A7.96 7.96 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
       </symbol>
       <symbol id="icon-delete" viewBox="0 0 24 24">
         <path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />

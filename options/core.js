@@ -46,9 +46,16 @@ export const config = {
   // 分块渲染
   RENDER_CHUNK_SIZE: 50,
   RENDER_BUILD_BUDGET_MS: 8,
-  OBSERVER_ROOT_MARGIN: "600px",
+  // 填充带（预填圈）：带键骨架进入滚动口+N 即触发填充。1600px ≈ 4 行——给结构填充
+  // 后的封面探针留网络提前量（正常滚速下封面在入画前已提交）。取值须 < OBSERVE_CHUNK_SIZE
+  // 的单圈行距（48 张 ≈ 6 行 ≈ 2400px）——哨兵链的观察前沿要永远盖得住填充带
+  OBSERVER_ROOT_MARGIN: "1600px",
   OBSERVE_CHUNK_SIZE: 48,
   FILL_FRAME_BUDGET_MS: 8,
+  // 卸载带：完整卡滚出滚动口+N 降级回骨架。与填充圈（1600px）保持 800px 滞回间隙——
+  // 振幅超过间隙的往返滚动才会触发同一批卡反复填/降级（发生在屏外、探针走 HTTP 缓存，
+  // 单次成本毫秒级），勿把两圈调到重合；任何闲置预热范围必须 ⊆ 卸载圈（圈外卡填完
+  // 会被 unload IO 立即降级，fill→demote 对冲空转）
   UNLOAD_ROOT_MARGIN: "2400px",
   FAST_SCROLL_THRESHOLD: 300,
   // 预铺槽位上限 + 接近底部扩容阈值（剩余空间 < N 屏时倍增扩容）：
@@ -59,6 +66,17 @@ export const config = {
   // （#extendIfNeeded 键控分支）倍增补齐真实键卡
   GRID_PREMOUNT_CAP_FILTER: 600,
   GRID_EXTEND_THRESHOLD: 1.5,
+  // 扩容单步新增槽位上限：深域（十万级 totalSlots）倍增到后段时单步会是数千上万张
+  // 占位卡克隆 + 整容器布局的长任务——超出部分留待后续滚动 rAF 继续扩，小槽位段
+  // 倍增语义不变（2S < S+步长时仍按倍增）
+  GRID_EXTEND_STEP: 1000,
+  // 停稳降级分帧预算：快滚期冻结的降级在停稳后成批积压（沿途数千张），一次性执行
+  // 是数百毫秒单任务——按帧预算分帧执行且让位于填充队列
+  DEMOTE_FRAME_BUDGET_MS: 8,
+  // 网格媒体探针每帧派发配额（works 封面 + followings 头像；sidebar 窄列沿用
+  // SIDEBAR_IMG_PER_FRAME）。滚入新带时数十张探针按 6/帧要摊十几帧——提到 10
+  // 缩短起跑排队；派发只是 new Image()，实际网络并发由浏览器按 host 连接数自限
+  GRID_IMG_PER_FRAME: 10,
 
   // 分组/存储
   TAB_SCROLL_THRESHOLD: 2,
@@ -119,13 +137,15 @@ export const dom = {
   detailTime: document.querySelector("#detailTime"),
   detailAuthor: document.querySelector("#detailAuthor"),
   detailTitle: document.querySelector("#detailTitle"),
+  detailTitleText: document.querySelector("#detailTitleText"),
   detailCreateTime: document.querySelector("#detailCreateTime"),
   detailMuteBtn: document.querySelector("#detailMuteBtn"),
   detailRemoveBtn: document.querySelector("#detailRemoveBtn"),
   detailLoopBtn: document.querySelector("#detailLoopBtn"),
-  detailSyncBtn: document.querySelector("#detailSyncBtn"),
   detailDownloadBtn: document.querySelector("#detailDownloadBtn"),
   detailCounter: document.querySelector("#detailCounter"),
+  detailCounterInput: document.querySelector("#detailCounterInput"),
+  detailCounterTotal: document.querySelector("#detailCounterTotal"),
   detailBody: document.querySelector(".detail-body"),
   dialogOverlay: document.querySelector("#dialogOverlay"),
   // 弹窗四元素由 Dialog 动态指向顶层实例元素（仅 components/dialog.js 可写），即时访问自动命中顶层；
@@ -236,15 +256,6 @@ export const store = {
   // 触发 groups 数据重新加载（总是从 background 获取最新分组数据）
   refreshGroups() {
     this.notify("groups");
-  },
-
-  updateWork(awemeId, newWork) {
-    const idx = state.works.findIndex((w) => w.awemeId === awemeId);
-    if (idx === -1) return false;
-    state.works[idx] = newWork;
-    state.dataVersion++;
-    this.notify("work-updated", awemeId, newWork);
-    return true;
   },
 
   // 作品型三域通用的静默移除（按当前域数据源过滤）
@@ -565,32 +576,5 @@ export const services = {
 
   moveWorkLike(domain, awemeIds, targetGroupId) {
     return this.bgMsg({ type: "MOVE_" + domain.toUpperCase(), awemeIds, targetGroupId });
-  },
-
-  async refreshSingleWork(awemeId) {
-    const res = await this.bgMsg({ type: "SYNC_WORKS", awemeIds: [awemeId] });
-    if (!res || !res.requestId) throw new Error("NO_SYNC");
-    const done = await new Promise((resolve) => {
-      const handler = (msg) => {
-        if (msg.type === "SYNC_DONE" && msg.requestId === res.requestId) {
-          chrome.runtime.onMessage.removeListener(handler);
-          resolve(msg);
-        }
-      };
-      chrome.runtime.onMessage.addListener(handler);
-      setTimeout(() => {
-        chrome.runtime.onMessage.removeListener(handler);
-        resolve(null);
-      }, runtimeConfig._cache?.timeoutRequest || config.SYNC_TIMEOUT);
-    });
-    if (!done || !done.ok) throw new Error("SYNC_FAILED");
-    const workRes = await this.bgMsg({ type: "GET_WORK", awemeId });
-    return workRes.work || null;
-  },
-
-  // 四域通用导入校验：按域 itemKey 检查条目数组
-  isDomainData(data, domain) {
-    const key = config.DOMAINS_META[domain].itemKey;
-    return Boolean(data[key] && Array.isArray(data[key]) && data[key].length > 0);
   },
 };

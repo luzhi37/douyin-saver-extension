@@ -22,14 +22,14 @@
     → SAVE_WORKS { works }
       → handleSaveWorks → mergeAndSaveWorks
           valid = 过滤有 awemeId 的条目（空集 → {added:0,updated:0,total:0} 直接返回）
-          并发逐条读旧记录 → mergeWork(w, old) 逐条合并
+          单事务 getBatch 批量读旧记录（按入参序对位，缺失为 null）→ mergeWork(w, old) 逐条合并
           putBatch(toWrite) → count() 得总数
           → 返回 { added, updated, total }
 
 关注域：
   FETCH_FOLLOWING 结果返回 options → SAVE_FOLLOWINGS { followings }
     → handleSaveFollowings(followings, sendResponse, isImport=false)
-        以旧 store 为底，逐条覆盖合并（uid 字符串化为主键）
+        旧记录 getBatch 按需读取 + getAllKeys 键集差做丢失检测（不物化全表）
         ├─ followerCount/awemeCount：>0 才写入（0 值保留旧值——校准结果保护，见 04）
         ├─ groupId：常规同步保留旧值；isImport 时取导入数据自带值（缺省落默认组）
         └─ savedAt：保留旧值；新条目按 baseTime - i 保证同批列表顺序
@@ -37,11 +37,19 @@
         putBatch 全量 → 返回 { ok, added, updated, lost, lostUids, total }
 
 导入：
-  IMPORT_DATA { data, domain }
-    → extractImportItems(data, domain)            // 取 data[itemKey] 数组
+  IMPORT_DATA { text, domain }                  // options 直传文件全文（字符串 clone 是 memcpy 级），
+                                                // JSON.parse 在 SW 侧完成（主线程不再解析大文件、
+                                                // 解析结果不再全量对象 clone 过消息通道）
+    → JSON.parse 失败 → { ok:false, error:"IMPORT_PARSE_FAILED" }
+    → extractImportItems(data, domain)          // 取 data[itemKey] 数组
+    → 空数组 → { ok:false, error:"IMPORT_EMPTY" }  // 原 options 侧 isDomainData 前置校验职责移入
     → reconcileImportGroups(domain, data, items)  // 有 groups 时做三级对账（下节）
     → 二次校验：item.groupId 不在当前有效分组集合 → 回退 CONFIG.GROUPS.DEFAULT_ID("uncategorized")
-    → works 域走 handleSaveWorks / followings 域走 handleSaveFollowings(…, isImport=true)
+    → followings 域走 handleSaveFollowings(…, isImport=true)
+    → 作品型三域按 CONFIG.IMPORT_CHUNK(2000) 分块逐块 mergeAndSave，IMPORT_PROGRESS 逐块
+      回报（单事务 10 万级 put 长时间独占 SW 的 IDB）；计数跨块累计，响应只带计数——
+      不再 spread 单次 mergeAndSave 的 written/addedIds 全记录（旧实现万级导入响应体
+      膨胀至 MB 级，消费方只读 added/updated/total）
 ```
 
 ## 接口 / 方法签名
@@ -49,14 +57,17 @@
 ```js
 // background/data/domain-store.js —— 作品合并
 function mergeWork(w, old) -> Work              // 纯函数：字段覆盖 + 三项保护（见代码片段）
-async function mergeAndSave(domain, works) -> Promise<{ added, updated, changed, total, written, addedIds }>
+async function mergeAndSave(domain, works, { stamps = null } = {}) -> Promise<{ added, updated, changed, total, written, addedIds }>
 // changed = 真实变更计数（新增 + 内容有变化的更新，逐键浅比较 merged vs old 判定）；
 // 内容全等的重复入库不写库、不计入 changed——广播方（DomainHandlers.save 等）据它
 // 决定是否发 STORE_CHANGED，options 不为 no-op 重载网格（2026-09 定案）。
-// written = 本次实际写入的合并后记录（仅真实变更条目）；addedIds = written 中属于新增
-// 的记录 id——DomainHandlers.save 在 changed ≤ BROADCAST.UPSERTS_MAX 时把两者作为
-// STORE_CHANGED 的 upserts/addedIds 载荷发给 options 局部应用（原地替换 vs 新增插入
-// 的区分依据），响应路径则剔除这两字段防大批量保存响应膨胀。
+// stamps（persistScan 扫描落库专用）：Map<主键, savedAt> 覆盖戳——主页序 savedAt 重排
+// 要求全部 valid 记录都写，写入集扩为全集（isSameRecord 在戳覆盖前判定，unchanged
+// 记录写库但不计入 changed）；缺省 null = 常规路径，仅写 changed 集。
+// written = 本次实际写入的合并后记录（常规路径仅真实变更条目）；addedIds = written 中
+// 属于新增的记录 id——DomainHandlers.save 在 changed ≤ BROADCAST.UPSERTS_MAX 时把
+// 两者作为 STORE_CHANGED 的 upserts/addedIds 载荷发给 options 局部应用（原地替换 vs
+// 新增插入的区分依据），响应路径则剔除这两字段防大批量保存响应膨胀。
 // 批量变化（changed > UPSERTS_MAX，如作者入库收尾 runAuthorWorksImport）广播降为
 // 轻量 id 集 changedIds/addedIds（万级 ≈ 几十 KB），options flush 时经
 // GET_WORKS_BY_IDS（DomainHandlers.getByIds，IDB 主键直取）补拉合并后记录，走与点
@@ -112,11 +123,27 @@ stored[uid] = {
   savedAt: old?.savedAt ?? baseTime - i,   // 新条目按批次内序号倒推毫秒 → 列表顺序稳定
 };
 …
-const lostUids = [];                        // 仅关注域有丢失检测；作品域无此逻辑
-for (const uid of Object.keys(stored)) {
-  if (!incomingUids.has(uid)) lostUids.push(uid);
-}
+// 丢失检测改为键集差：旧实现 Object.keys(getAll) 全表物化，
+// 现为 storage.getAllKeys（只取键、不反序列化记录值）
+const lostUids = oldKeys.filter((uid) => !incomingUids.has(String(uid)));
 ```
+
+### 扫描落库（persistScan）：stamps 一遍式
+
+点赞/收藏扫描收尾的落库走 `ScanTasks.persistScan`（persist = "likes"/"favorites"）：
+
+```
+oldKeys = getAllKeys()                            // 丢失检测键集（只取键，不物化记录值）
+stamps  = Map<主键, baseTime - i>                 // i 按有效条目序（主页顺序，最新在前）；
+                                                  // 重复 id 末次出现生效（与 putBatch 后写覆盖等价）
+saved   = mergeAndSave(domain, all, { stamps })   // 单次合并 + 单次 putBatch（一遍式）
+lostUids = oldKeys \ stamps 键集
+```
+
+旧实现「mergeAndSave 后逐条读回全部记录、重打 savedAt 再整批重写一遍」的三遍读写已由
+stamps 消解：戳覆盖发生在 mergeWork 合并之后、写入之前，无需读回；added/updated/changed
+计数仍按覆盖前 isSameRecord 口径，汇总汇报语义不变。取消扫描时跳过 stamps 全流程之外的
+丢失检测（部分拉取会产生假丢失），已收集部分照常落库（幂等）。
 
 ### reconcileImportGroups：分组三级对账
 

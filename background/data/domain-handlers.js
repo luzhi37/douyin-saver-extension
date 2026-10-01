@@ -84,7 +84,7 @@ class DomainHandlers {
   async move(ids, targetGroupId, sendResponse) {
     try {
       const keys = ids.map((id) => domainStore.toStorageId(this.#domain, id));
-      const items = await Promise.all(keys.map((k) => storage.get(this.#cfg.storeName, k)));
+      const items = await storage.getBatch(this.#cfg.storeName, keys);
       const toWrite = items.filter(Boolean).map((item) => ({ ...item, groupId: targetGroupId }));
       if (toWrite.length > 0) await storage.putBatch(this.#cfg.storeName, toWrite);
       sendResponse({ ok: true });
@@ -126,23 +126,13 @@ class DomainHandlers {
     utils.sendMessageSafe(message);
   }
 
-  async getOne(id, sendResponse) {
-    try {
-      const ds = domainStore.facade(this.#domain);
-      const item = await ds.get(id);
-      sendResponse({ work: item || null });
-    } catch (err) {
-      sendResponse({ error: err.message });
-    }
-  }
-
-  // 按 id 集合直取记录（IDB 主键 Promise.all）：bulk STORE_CHANGED 收口的补拉通道——
+  // 按 id 集合直取记录（IDB 主键 getBatch 单事务批量读）：bulk STORE_CHANGED 收口的补拉通道——
   // 广播只携带轻量 id 列表（万级 ≈ 几十 KB，规避全记录消息膨胀），options 据此拉取
   // 合并后记录，走与点载荷相同的局部应用管线，替代整域重载
   async getByIds(ids, sendResponse) {
     try {
       const keys = (ids || []).map((id) => domainStore.toStorageId(this.#domain, id));
-      const items = await Promise.all(keys.map((k) => storage.get(this.#cfg.storeName, k)));
+      const items = await storage.getBatch(this.#cfg.storeName, keys);
       sendResponse({ items: items.filter(Boolean) });
     } catch (err) {
       sendResponse({ error: err.message });

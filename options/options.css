@@ -491,8 +491,13 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   height: calc(var(--dy-card-size) * 4 / 3 + 44px);
   cursor: pointer;
   isolation: isolate;
-  animation: cardFadeIn 0.35s ease both;
   z-index: 1;
+}
+
+/* 入场动画仅限定首段卡（render 打 data-fade）：筛选切换/扩容时数百张卡不再同帧起
+   350ms 动画（屏外卡同样参与动画 tick），滚入/回填的卡直接呈现 */
+.work-card[data-fade] {
+  animation: cardFadeIn 0.35s ease both;
 }
 
 /* 不用 content-visibility:auto：屏外卡被整棵跳过渲染后，远跳落点要走
@@ -665,12 +670,11 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   bottom: 0;
   left: 0;
   right: 0;
-  /* 进度条贴合底栏：底部留白归零，进度条直抵卡片底缘（同详情模式通栏贴底）；
-     左右内缩收到 3px 让控件尽量贴边框（卡片圆角 dy-radius-lg=10px，7px 拇指在
-     进度条极端位置距圆角切线约 0.6px，肉眼不可见）；拇指裁切由
-     .video-progress::-webkit-slider-thumb 缩小到 7px 抵消（10px 圆心在 3px 轨道
-     上会探出底缘 3.5px 被 overflow:hidden 切平） */
-  padding: 8px 3px 0;
+  /* 底部留白 5px：进度条浮在卡片底缘上方——拇指（10px 骑 3px 轨道，下探 3.5px）距
+     overflow:hidden 裁切边界仍有 1.5px 余量，完整显示不被切平；旧的贴底方案
+     （padding-bottom:0）下探出部分必然越界，缩拇指到 7px 的补丁只是减轻不是消除。
+     左右内缩 3px 让控件贴边框；渐变阴影层仍延伸到卡片底缘自然收尾 */
+  padding: 8px 3px 5px;
   display: none;
   flex-direction: column;
   gap: 4px;
@@ -718,14 +722,6 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   border-radius: 50%;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
-}
-
-/* 卡片进度条已贴底（.work-video-controls padding-bottom:0），缩小拇指从 10px→7px，
-   使其圆心在 3px 轨道上探出底缘的量降到约 2px，避免被 .work-media 的
-   overflow:hidden 把拇指下方切平（详情模式进度条贴底栏顶缘、下方有实体底栏故无需） */
-.video-progress::-webkit-slider-thumb {
-  width: 7px;
-  height: 7px;
 }
 
 /* 封面矩形外的信息块：标题一行 + 作者昵称一行，恒定 44px（8+18+2+16，虚拟网格高度数学依赖） */
@@ -802,10 +798,6 @@ body.batch-mode .following-checkbox {
    规则（无论挂在卡片还是 #mainGrid 容器靠继承覆盖）都会随 body class 翻转触发全网格
    级联重算，万级 DOM 实测数百 ms，是进入批量模式卡顿主因；改由 main.js 在批量模式下
    对 #mainGrid mousedown preventDefault（O(1)，零样式成本） */
-
-.work-syncing svg {
-  animation: spin 0.6s linear infinite;
-}
 
 /* ===== 关注者卡片 ===== */
 .following-card {
@@ -1600,10 +1592,6 @@ body.batch-mode .following-checkbox {
   overflow: hidden;
 }
 
-#detailSwitcher.hidden {
-  display: none;
-}
-
 #detailSwitcher button {
   width: 40px;
   height: 36px;
@@ -1665,10 +1653,15 @@ body.batch-mode .following-checkbox {
   min-width: 0;
   text-decoration: none;
   cursor: pointer;
+}
+
+/* 标题文字内联层：hover 变主色挂在文字自身的行盒上——锚点因 flex:1 拉伸铺满作者↔日期之间
+   的整段空间，hover 挂锚点会让文字旁的空白区误命中（:hover 按元素盒子命中而非可见文字） */
+.detail-title-text {
   transition: color var(--dy-transition);
 }
 
-.detail-bar-title:hover {
+.detail-title-text:hover {
   color: var(--dy-primary);
 }
 
@@ -1683,6 +1676,29 @@ body.batch-mode .following-checkbox {
 .detail-bar-counter {
   color: rgba(255, 255, 255, 0.5);
   padding: 0 4px;
+}
+
+/* 计数 K 输入位：外观与静态文本一致，悬停/聚焦下划线提示可编辑 */
+.detail-counter-input {
+  width: 2ch;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: text;
+}
+
+.detail-counter-input:hover,
+.detail-counter-input:focus {
+  box-shadow: 0 1px 0 currentColor;
+}
+
+.detail-counter-input:focus {
+  color: rgba(255, 255, 255, 0.85);
 }
 
 /* ===== 加载指示（建议17） ===== */

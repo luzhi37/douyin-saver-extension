@@ -29,7 +29,7 @@ class Batch {
   selectAll() {
     // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
     const isWorkLike = config.WORK_LIKE_DOMAINS.includes(state.domain);
-    const items = isWorkLike ? search.getWorksView() : state.followings;
+    const items = isWorkLike ? search.getWorksView() : search.getFollowingsView();
     const idKey = isWorkLike ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
     if (allSelected) {
@@ -466,8 +466,10 @@ class Batch {
               dialog.showToast(failParts.join("，"), "error");
               return;
             }
-            dialog.updateDialog("正在打包…", `<p>正在将 ${ok} 个${label}打包为 zip…</p>`);
-            const zip = await createZip(entries);
+            dialog.updateDialog("正在打包…", `<p>正在打包 0 / ${ok} 条…</p>`);
+            const zip = await createZip(entries, (done, total) =>
+              dialog.updateDialog("正在打包…", `<p>正在打包 ${done} / ${total} 条…</p>`),
+            );
             detail.triggerDownload(zip, `${label}批量下载_${this.#today()}.zip`);
             dialog.closeDialog();
             const failed = targets.length - ok;
