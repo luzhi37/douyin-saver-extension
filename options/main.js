@@ -385,8 +385,8 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
 
 // ---------- init IIFE ----------
 (async function init() {
-  // 构建标记：用于确认页面运行的是最新构建（头像探针预载版）
-  console.info("[DDM] options build 2026-08-26 four-domain");
+  // 构建标记：用于确认页面运行的是最新构建（STORE_CHANGED 增量收口版）
+  console.info("[DDM] options build 2026-10-02 store-changed-incremental");
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
   // 预加载运行时配置

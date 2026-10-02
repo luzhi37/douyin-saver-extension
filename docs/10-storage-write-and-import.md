@@ -8,8 +8,8 @@
 
 | 函数 | 服务消息 | 域 |
 |------|----------|----|
-| `mergeAndSaveWorks` | `SAVE_WORKS`（含同步落库、扫描「添加」、手动保存按钮） | works |
-| `handleSaveFollowings` | `SAVE_FOLLOWINGS`（含同步落库与 `isImport` 导入分支） | followings |
+| `domainStore.mergeAndSave` | `SAVE_WORKS`（抖音标签页保存按钮、options 未关注作品入库）与 background 直调（SYNC_WORKS 收尾、persistScan 扫描落库） | 作品型三域 |
+| `domainStore.mergeAndSaveFollowings`（经 `followingsHandlers.save`） | `SAVE_FOLLOWINGS`（同步落库） | followings |
 | `reconcileImportGroups` | `IMPORT_DATA` 的前置步骤 | 两域通用 |
 
 共同设计原则：**用户手动整理的成果优先于新采集数据**——分组归属（groupId）、首次保存时间（savedAt）、已校准计数不被采集结果冲掉。
@@ -18,23 +18,23 @@
 
 ```
 作品域：
-  SYNC_WORKS 完成 / 扫描「添加」/ 手动保存
-    → SAVE_WORKS { works }
-      → handleSaveWorks → mergeAndSaveWorks
-          valid = 过滤有 awemeId 的条目（空集 → {added:0,updated:0,total:0} 直接返回）
-          单事务 getBatch 批量读旧记录（按入参序对位，缺失为 null）→ mergeWork(w, old) 逐条合并
-          putBatch(toWrite) → count() 得总数
-          → 返回 { added, updated, total }
+  手动保存（抖音标签页按钮）/ 未关注作品入库 → SAVE_WORKS { works }
+  SYNC_WORKS 收尾 / persistScan 扫描落库 → background 直调 domainStore.mergeAndSave
+    → domainStore.mergeAndSave
+        valid = 过滤有 awemeId 的条目（空集 → {added:0,updated:0,total:0} 直接返回）
+        单事务 getBatch 批量读旧记录（按入参序对位，缺失为 null）→ mergeWork(w, old) 逐条合并
+        putBatch(toWrite，仅真实变更集) → count() 得总数
+        → 返回 { added, updated, changed, total, written, addedIds }
 
 关注域：
   FETCH_FOLLOWING 结果返回 options → SAVE_FOLLOWINGS { followings }
-    → handleSaveFollowings(followings, sendResponse, isImport=false)
+    → followingsHandlers.save（#saveFollowings）
         旧记录 getBatch 按需读取 + getAllKeys 键集差做丢失检测（不物化全表）
         ├─ followerCount/awemeCount：>0 才写入（0 值保留旧值——校准结果保护，见 04）
         ├─ groupId：常规同步保留旧值；isImport 时取导入数据自带值（缺省落默认组）
         └─ savedAt：保留旧值；新条目按 baseTime - i 保证同批列表顺序
         丢失检测：旧 store 中不在本次集合的 uid 收集为 lostUids（不自动移动）
-        putBatch 全量 → 返回 { ok, added, updated, lost, lostUids, total }
+        putBatch（仅变更集）→ 返回 { ok, added, updated, changed, lost, lostUids, total }
 
 导入：
   IMPORT_DATA { text, domain }                  // options 直传文件全文（字符串 clone 是 memcpy 级），
@@ -51,7 +51,7 @@
     → 空数组 → { ok:false, error:"IMPORT_EMPTY" }  // 原 options 侧 isDomainData 前置校验职责移入
     → reconcileImportGroups(domain, data, items)  // 有 groups 时做三级对账（下节）
     → 二次校验：item.groupId 不在当前有效分组集合 → 回退 CONFIG.GROUPS.DEFAULT_ID("uncategorized")
-    → followings 域走 handleSaveFollowings(…, isImport=true)
+    → followings 域走 domainStore.mergeAndSaveFollowings(…, isImport=true)（导入信任数据自带分组）
     → 作品型三域按 CONFIG.IMPORT_CHUNK(2000) 分块逐块 mergeAndSave，IMPORT_PROGRESS 逐块
       回报（单事务 10 万级 put 长时间独占 SW 的 IDB）；计数跨块累计，响应只带计数——
       不再 spread 单次 mergeAndSave 的 written/addedIds 全记录（旧实现万级导入响应体
@@ -87,9 +87,10 @@ async function mergeAndSaveFollowings(domain, followings, isImport = false) -> P
 // background/data/data-tools.js —— 导入
 function extractImportItems(data, domain) -> any[]     // data[cfg.itemKey] 或空数组
 async function reconcileImportGroups(domain, data, items) -> void   // 就地改写 item.groupId
-async function handleImportData(data, domain, sendResponse)
-async function handleExportData(domain, sendResponse)  // { ok, data: { domain, exportedAt, [itemKey], groups } }
-async function handleResetDomain(domain, sendResponse) // clear(store) + putGroups(defaultGroups)
+async function dataTools.import(text, domain, sendResponse)
+async function dataTools.export(domain, sendResponse)  // { ok, text }——text 为 SW 侧序列化好的
+                                                       // 缩进 JSON（schemaVersion:2 + domain + exportedAt + [itemKey] + groups）
+async function dataTools.reset(domain, sendResponse)   // clear(store) + putGroups(defaultGroups)
 ```
 
 ## 关键代码片段
@@ -165,7 +166,7 @@ await storage.putGroups(groupsName, merged);       // 覆盖数组语义（clear
 for (const item of items) {
   if (item.groupId && groupIdMap.has(item.groupId)) item.groupId = groupIdMap.get(item.groupId);
 }
-// handleImportData 后续再兜一道：不在当前有效分组集合的 groupId → "uncategorized"
+// dataTools.import 后续再兜一道：不在当前有效分组集合的 groupId → "uncategorized"
 ```
 
 ## 异常场景及处理
@@ -194,7 +195,7 @@ for (const item of items) {
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | IndexedDB 结构、DOMAIN_CONFIG、data/storage.js 封装 API、chrome.storage.local 键表 |
-| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_WORKS 循环末尾调用 mergeAndSaveWorks 的位置与时序 |
+| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_WORKS 循环末尾调用 domainStore.mergeAndSave 的位置与时序 |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | 关注列表采集产出的 6 字段形状（本册负责怎么落） |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 计数 >0 才写入规则的上游：校准写入权威计数 |
-| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 扫描弹窗「添加」按钮经 SAVE_WORKS 进入本册合并路径 |
+| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 扫描落库经 persistScan 进入本册合并路径（stamps 一遍式） |

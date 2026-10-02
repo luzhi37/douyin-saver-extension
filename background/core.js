@@ -238,9 +238,9 @@ const CONFIG = {
     STR_DATA: MSSDK_STR_DATA,
   },
   AWEME_TYPE_NOTE: 68,
-  // 端点常量引用抖音 API 路径原文，命名沿用端点词：favorite 端点=点赞列表（点赞链路
-  // 标识符沿用 favorite）、listcollection 端点=收藏列表（收藏域键为 collections、链路词
-  // 为 collection）。favorite 永远只指点赞，禁止指收藏
+  // 端点常量引用抖音 API 路径原文，命名沿用端点词：listcollection 端点=收藏列表
+  //（收藏域键为 collections、链路词为 collection）。favorite 端点（点赞列表）无配置位：
+  // Tab 模式经页面请求自然捕获、独立模式结构性不支持点赞拉取（Turing 风控，见 docs/05）
   API: {
     FOLLOWING: "/aweme/v1/web/user/following/list",
     PROFILE_OTHER: "/aweme/v1/web/user/profile/other/",
@@ -454,6 +454,11 @@ const utils = {
   // 分页端点 has_more 字段归一（宽松判定：服务端可能返回 true/1/"1"，缺判只会多拉一页空数据）
   hasMoreFlag(data) {
     return data.has_more === true || data.has_more === 1 || data.has_more === "1";
+  },
+  // 长任务循环的致命错误判定（tab/独立双模 syncWorks 共用）：缺 Cookie/限流空 body/401/429
+  // 等系统性失败重试无意义，命中即中止整批、剩余条目标 BATCH_TERMINATED
+  isFatalTaskError(errMsg) {
+    return CONFIG.FATAL_ERRORS.has(errMsg) || errMsg.startsWith("HTTP 429") || errMsg.startsWith("HTTP 401");
   },
   // 长任务取消信号守卫：注册 CANCEL_ACTIVE_TASK 监听，返回 { isCancelled, dispose }。
   // 注意 scanTasks.syncWorks 的取消处理器有额外转发逻辑，不适用本 helper。

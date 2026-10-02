@@ -6,6 +6,7 @@ import { independentClient } from "../identity/independent-client.js";
 import { tabBridge } from "../identity/tab-bridge.js";
 import { domainStore } from "../data/domain-store.js";
 import { runAuthorWorksImport } from "./author-works-import.js";
+import { independentTasks } from "./independent-tasks.js";
 
 // ---------- ScanTasks ----------
 // Tab 模式长任务（经 TabBridge 循环）
@@ -87,20 +88,14 @@ class ScanTasks {
   }
 
   // 最近更新日期采集：作品列表第一页全部作品 create_time 的最大值（秒 → 毫秒）。
-  // 与 fetchStats 同款按模式注入取数；失败抛错由调用方静默吞掉
+  // 与 fetchStats 同款按模式注入取数；失败返回 0 由调用方静默保留旧值
   async #fetchLatestWorkTime(secUid) {
     let works = [];
     if (await independentClient.loadMode()) {
-      await credentials.ensureABogus();
-      const data = await independentClient.request(
-        CONFIG.API.POST,
-        await credentials.buildBaseParams({
-          sec_user_id: secUid,
-          max_cursor: "0",
-          count: String(CONFIG.PAGE.POST),
-        }),
-      );
-      works = (data.aweme_list || []).map(formatters.formatWork).filter(Boolean);
+      // 独立分支复用 IndependentTasks.fetchWorksPage 首页取数（同端点同参数，避免第二份
+      // POST+formatWork 实现；类间循环 import 靠 live binding 在调用时消解）
+      const resp = await new Promise((resolve) => independentTasks.fetchWorksPage(secUid, "", resolve));
+      if (resp?.ok && Array.isArray(resp.works)) works = resp.works;
     } else {
       const resp = await tabBridge.sendAsync("FETCH_WORKS_PAGE", {
         secUid,
@@ -400,7 +395,7 @@ class ScanTasks {
     });
   }
 
-  // persistDomain 为空则跳过删本地（原扫描弹窗调用方无域概念）
+  // persistDomain 缺省时防御性跳过删本地（正常调用链由路由层保证 domain 恒在）
   async deleteCancelled(persistDomain, awemeIds, failedAwemeIds) {
     if (!persistDomain) return [];
     const failedSet = new Set((failedAwemeIds || []).map(String));
@@ -447,7 +442,7 @@ class ScanTasks {
 
       if (!resp?.ok) {
         const err = resp?.error || "UNKNOWN";
-        if (CONFIG.FATAL_ERRORS.has(err) || err.startsWith("HTTP 429") || err.startsWith("HTTP 401")) {
+        if (utils.isFatalTaskError(err)) {
           for (let j = i; j < awemeIds.length; j++) {
             errors.push({ awemeId: awemeIds[j], error: j === i ? err : "BATCH_TERMINATED" });
           }

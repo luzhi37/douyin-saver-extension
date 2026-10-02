@@ -93,7 +93,7 @@ const resp = await fetch(CONFIG.MSSDK.API, {
 |------|------|------|
 | `CONFIG.DNR_RULES` | core.js | 7 条规则的唯一事实来源；修改后重载扩展生效 |
 | manifest `permissions` | manifest.json | 必含 `declarativeNetRequest` |
-| manifest `host_permissions` | manifest.json | `*://*.douyin.com/*` / `douyinvod.com` / `douyinpic.com` / `mssdk.bytedance.com` / `mcs.zijieapi.com` / `ttwid.bytedance.com`（后者当前无代码使用，属遗留待清理） |
+| manifest `host_permissions` | manifest.json | `*://*.douyin.com/*` / `douyinvod.com` / `douyinpic.com` / `mssdk.bytedance.com` / `mcs.zijieapi.com` |
 | `CONFIG.DOUYIN_URL_PATTERN` / `DOUYIN_EXCLUDE_DOMAIN` | core.js | Tab 模式选 tab 用（非 DNR），与 excludedInitiatorDomains 语义互补：一个管"发到哪"，一个管"谁发起的不改" |
 
 ## 相关文档

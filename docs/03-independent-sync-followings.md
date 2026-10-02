@@ -4,21 +4,21 @@
 
 ## 概述
 
-options 关注域点击同步 → `services.findSecUid()` 解析目标 sec_uid → 发 `FETCH_FOLLOWING { secUid }`。background 路由按模式分流到 `handleIndependentFetchFollowing`：
+options 关注域点击同步 → `services.findSecUid()` 解析目标 sec_uid → 发 `FETCH_FOLLOWING { secUid }`。background 路由按模式分流到 `independentTasks.fetchFollowing`：
 
 - **sec_uid 再解析**：入参为 `"self"` 或空时，依次尝试 storage 中的 `secUid` 设置值 → `resolveSelfSecUid()`（uid cookie + `im/user/info` 兑换）；两者皆空报 `NO_SEC_UID`。
 - **while 循环翻页**：GET `/aweme/v1/web/user/following/list`，`offset += PAGE.FOLLOWING` 推进；条目按 uid 去重（`seen` Set），连续整页重复即提前终止。
 - 每页经 `formatFollowing` 归一化为 7 字段记录（含 `lastUpdateAt` 占位 0），`followerCount/awemeCount` 占位 0。
-- 列表收集完成后、未被取消且非空时，受 `calibrateFollowings` 开关门控进入 `calibrateFollowingStats` 批量校准（详见 [04](./04-independent-calibrate-followings.md)）。
+- 列表收集完成后、未被取消且非空时，受 `calibrateFollowings` 开关门控进入 `calibrateStats` 批量校准（详见 [04](./04-independent-calibrate-followings.md)）。
 - 结果一次性 `sendResponse({ ok, requestId, followings, total })` 返回，options 收到后自行发 `SAVE_FOLLOWINGS` 落库。
 
 ## 核心流程图（文字描述）
 
 ```
 options: findSecUid() → bgMsg({ type:"FETCH_FOLLOWING", secUid })
-  → background switch "FETCH_FOLLOWING" → loadIndependentMode() === true
-    → handleIndependentFetchFollowing(secUid, sendResponse)
-        ├─ ensureABogus()
+  → background switch "FETCH_FOLLOWING" → independentClient.loadMode() === true
+    → independentTasks.fetchFollowing(secUid, sendResponse)
+        ├─ credentials.ensureABogus()
         ├─ secUid 解析链：
         │     secUid ∈ {undefined,"self",""} → storage.secUid（非 self）→ resolveSelfSecUid()
         │     仍为空 → sendResponse({ ok:false, error:"NO_SEC_UID" }); 结束
@@ -29,7 +29,7 @@ options: findSecUid() → bgMsg({ type:"FETCH_FOLLOWING", secUid })
              params = { sec_user_id, count:PAGE.FOLLOWING(20), offset,
                         min_time:"0", max_time:"0", source_type:"4",
                         gps_access:"0", address_book_access:"0", is_top:"1" }
-             data = independentRequest(API.FOLLOWING, buildBaseParams(params))   // GET + a_bogus
+             data = independentClient.request(API.FOLLOWING, credentials.buildBaseParams(params))   // GET + a_bogus
              data.status_code===0 且 followings 为数组？
                ├─ 空数组 → break（自然到底）
                ├─ newItems = 过滤 seen 中已有 uid；newItems 为空 → break（服务端重复推送保护）
@@ -40,13 +40,13 @@ options: findSecUid() → bgMsg({ type:"FETCH_FOLLOWING", secUid })
              页间延迟 syncFollowings MIN~MAX ms
         │
         ├─ !cancelled && all.length>0 && _calibrateFollowings
-        │     → calibrateFollowingStats(all, fetchStats=独立直连 profile/other, ()=>cancelled, requestId)
+        │     → calibrateStats(all, fetchStats=独立直连 profile/other, ()=>cancelled, requestId)
         │       （进度 phase:"calibrate"，详见 04 文档）
         ├─ 移除 cancelHandler
         └─ sendResponse({ ok:true, requestId, followings: all, total: all.length })
 
 options: res.ok → bgMsg({ type:"SAVE_FOLLOWINGS", followings: res.followings })
-              → handleSaveFollowings 落库（保留 groupId/savedAt，丢失检测返回 lostUids）
+              → followingsHandlers.save 落库（保留 groupId/savedAt，丢失检测返回 lostUids）
 ```
 
 ### resolveSelfSecUid（"self" 兜底解析）
@@ -62,7 +62,7 @@ uid cookie (douyin.com jar) → savedCookie 正则提取 uid
 
 ```js
 // background/tasks/independent-tasks.js
-async function handleIndependentFetchFollowing(secUid, sendResponse)
+async function independentTasks.fetchFollowing(secUid, sendResponse)
 // 出参：{ ok:true, requestId, followings: Following[], total } | { ok:false, error }
 // 进度：FOLLOWING_PROGRESS（列表阶段无 phase 字段）
 
@@ -76,7 +76,7 @@ function formatFollowing(item) -> Following
 //   profileUrl: URL_BASE + "/user/" + sec_uid }
 ```
 
-Tab 模式对照：同消息走 `handleFetchFollowing`，逐页 `sendToTabAsync("FETCH_FOLLOWING_PAGE")` → inject `fetchFollowingPage`；签名复用 `__capturedFollowingQuery`（缺失时 inject 直接回 `NO_SIGNATURE`）。两模式产出相同的 items 形状与进度消息。
+Tab 模式对照：同消息走 `scanTasks.fetchFollowing`，逐页 `sendToTabAsync("FETCH_FOLLOWING_PAGE")` → inject `fetchFollowingPage`；签名复用 `signatureCapture.followingQuery`（缺失时 inject 直接回 `NO_SIGNATURE`）。两模式产出相同的 items 形状与进度消息。
 
 ## 关键代码片段
 
@@ -88,14 +88,14 @@ while (hasMore && !cancelled) {
   const params = { sec_user_id: secUid, count: String(CONFIG.PAGE.FOLLOWING), offset: String(offset),
                    min_time: "0", max_time: "0", source_type: "4",
                    gps_access: "0", address_book_access: "0", is_top: "1" };
-  const data = await independentRequest(CONFIG.API.FOLLOWING, await buildBaseParams(params));
+  const data = await independentClient.request(CONFIG.API.FOLLOWING, await credentials.buildBaseParams(params));
   if (data.status_code === 0 && Array.isArray(data.followings)) {
     if (data.followings.length === 0) break;
     const newItems = data.followings.filter((item) => !seen.has(String(item.uid)));
     if (newItems.length === 0) break;          // 服务端重复推送 → 提前收尾，避免死循环
     newItems.forEach((item) => seen.add(String(item.uid)));
     all.push(...newItems.map(formatFollowing));
-    hasMore = data.has_more === true || data.has_more === 1;
+    hasMore = utils.hasMoreFlag(data);   // true|1|"1" 宽松归一
     if (data.total > 0 && all.length >= data.total) hasMore = false;
     offset += CONFIG.PAGE.FOLLOWING;
   } else break;
@@ -210,7 +210,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | sec_uid 无法解析（self 且无存储值、im/user/info 失败） | `{ ok:false, error:"NO_SEC_UID" }` | options 弹窗引导打开抖音用户页面或填写独立模式 secUid |
-| 目标账号关注列表不可见（抖音 `status_code:2096`「由于该用户隐私设置，列表不可见」） | 独立模式 `IndependentClient.request` 抛 `API_ERROR` 并带 `statusCode:2096`，`handleIndependentFetchFollowing` 捕获后返回 `{ ok:false, error:"FOLLOWING_LIST_PRIVATE" }` | options 状态栏提示「关注列表不可见（账号隐私设置）」；最常见诱因是 self 解析落到他人 sec_uid（如独立模式仍打开了某 `/user/*` 标签页）——`vmSyncFollowings` 现已对独立模式强制传 `"self"` 经 background 自解析链路规避 |
+| 目标账号关注列表不可见（抖音 `status_code:2096`「由于该用户隐私设置，列表不可见」） | 独立模式 `IndependentClient.request` 抛 `API_ERROR` 并带 `statusCode:2096`，`independentTasks.fetchFollowing` 捕获后返回 `{ ok:false, error:"FOLLOWING_LIST_PRIVATE" }` | options 状态栏提示「关注列表不可见（账号隐私设置）」；最常见诱因是 self 解析落到他人 sec_uid（如独立模式仍打开了某 `/user/*` 标签页）——`vmSyncFollowings` 两模式统一先经 `services.findSecUid()` 解析完整本人 sec_uid（不再用 `"self"` 哨兵），已大幅收窄触发面 |
 | `savedCookie` 缺失 | 首次请求抛 `NO_COOKIE` | 设置面板刷新 Cookie |
 | 服务端返回非 0 status_code / HTTP 错误 | 抛 `API_ERROR` / `HTTP_*` | 外层 catch → `{ ok:false, error }`（此时 all 为空，无部分成功语义） |
 | 首页即失败但已收集部分数据 | Tab 模式分支特有 `lastError` 判定：`all.length===0 && lastError` 才报错，否则按部分结果返回 | 独立模式请求异常直接整体失败 |
@@ -233,7 +233,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | Following 六字段模型、SAVE_FOLLOWINGS 0 值保留与丢失检测 |
-| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentRequest 通用骨架与 NO_COOKIE 门禁（本文不重复展开） |
+| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 通用骨架与 NO_COOKIE 门禁（本文不重复展开） |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 收集后的批量校准阶段 + 单用户侧边栏校准 |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 注入 Referer / 剥离 Sec-Fetch-* |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式 FETCH_FOLLOWING_PAGE / fetchProfileOther 与签名多源 fallback |

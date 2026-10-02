@@ -9,7 +9,6 @@ import { groups } from '../data/groups.js';
 // 与 Sync 的差异：扫描结果由 background 直接合并落库 + 丢失检测，本类只驱动进度弹窗与 UI 刷新
 class DomainScanSync {
   #running = false;
-  #requestId = null;
   #domain = null;
   #countEl = null;
   #summaryEl = null;
@@ -49,7 +48,6 @@ class DomainScanSync {
       if (!this.#running) return; // 弹窗已关闭（取消）
       if (!res || !res.ok) throw new Error(res?.error || "FETCH_FAILED");
 
-      this.#requestId = null;
       await services.loadDomainData();
       await groups.renderGroupTabs();
 
@@ -100,14 +98,12 @@ class DomainScanSync {
   closeDialog() {
     dialog.closeDialog();
     this.#running = false;
-    this.#requestId = null;
     this.#domain = null;
   }
 
-  // 进度消息入口（options 全局 listener 分发）
+  // 进度消息入口（options 全局 listener 分发）；三链路互斥保证不串线，按 #running 门控全收
   onScanProgress(msg) {
     if (!this.#running) return;
-    if (this.#requestId !== null && msg.requestId !== this.#requestId) return;
     if (msg.type === "FAVORITES_PROGRESS" || msg.type === "COLLECTION_PROGRESS") {
       if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected}`;
     }

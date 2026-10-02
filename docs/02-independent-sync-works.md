@@ -4,11 +4,11 @@
 
 ## 概述
 
-同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口有三：`sync.syncCurrentGroup()`（当前分组全量刷新）、关注卡片/侧边栏的按需同步、以及**详情页下载兜底**（视频直链失效时单条 `SYNC_WORKS` 重取，受 `runtimeConfig.timeoutRequest` 约束等待 `SYNC_DONE`）。background 按 `loadIndependentMode()` 分流到 `handleIndependentSyncWorks`。该 handler：
+同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口有三：`sync.syncCurrentGroup()`（当前分组全量刷新）、关注卡片/侧边栏的按需同步、以及**详情页下载兜底**（视频直链失效时单条 `SYNC_WORKS` 重取，受 `runtimeConfig.timeoutRequest` 约束等待 `SYNC_DONE`）。background 按 `independentClient.loadMode()` 分流到 `independentTasks.syncWorks`。该 handler：
 
 - 先**立即 ack** `{ ok, true, requestId, total }`（长任务协议：结果经进度消息异步回报）；
-- 循环逐条 `independentRequest(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，a_bogus + webSign，后者由 request 默认叠加）；
-- 每条经 `formatWork` 归一化后暂存，全部完成后一次性 `mergeAndSaveWorks(allWorks)` 落库；
+- 循环逐条 `independentClient.request(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，a_bogus + webSign，后者由 request 默认叠加）；
+- 每条经 `formatWork` 归一化后暂存，全部完成后一次性 `domainStore.mergeAndSave(allWorks)` 落库；
 - 失败条目记入 errors 不中断批次。
 
 ## 核心流程图（文字描述）
@@ -16,18 +16,18 @@
 ```
 options: services.bgMsg({ type:"SYNC_WORKS", awemeIds })
   → background switch "SYNC_WORKS"
-    → loadIndependentMode() === true
-      → handleIndependentSyncWorks(awemeIds, sendResponse)
+    → independentClient.loadMode() === true
+      → independentTasks.syncWorks(awemeIds, sendResponse)
         ├─ 校验 awemeIds 非空数组（否则 { ok:false, error:"EMPTY" }）
-        ├─ ensureABogus()                     // 从 browserFeatures 构造 ABogus 实例
+        ├─ credentials.ensureABogus()                     // 从 browserFeatures 构造 ABogus 实例
         ├─ requestId = crypto.randomUUID()
         ├─ 注册 cancelHandler（收到 CANCEL_ACTIVE_TASK → cancelled = true）
         ├─ sendResponse({ ok:true, requestId, total })   // 立即 ack，sendResponse 到此终结
         │
         └─ for i in awemeIds（&& !cancelled）:
-             params = buildBaseParams({ aweme_id, request_source:"600", origin_type:"video_page" })
+             params = credentials.buildBaseParams({ aweme_id, request_source:"600", origin_type:"video_page" })
              重试环（最多 CONFIG.SYNC.RETRY_MAX 次）:
-                 data = independentRequest("/aweme/v1/web/aweme/detail/", params)   // GET + a_bogus
+                 data = independentClient.request("/aweme/v1/web/aweme/detail/", params)   // GET + a_bogus
                  w = data.aweme_detail ? formatWork(data.aweme_detail) : null
                  w 为空且非末次尝试 → 页间延迟后重试；成功 → break
              w ? allWorks.push(w) : errors.push({ awemeId, error:"DELETED"|errMsg })
@@ -38,7 +38,7 @@ options: services.bgMsg({ type:"SYNC_WORKS", awemeIds })
                (i+1)%BATCH_SIZE==0 → 批间暂停 10–20s（KEEPALIVE_INTERVAL 分段保活 SW）
                否则               → syncWorks 延迟 MIN~MAX ms
         │
-        ├─ allWorks 非空 → mergeAndSaveWorks(allWorks)
+        ├─ allWorks 非空 → domainStore.mergeAndSave(allWorks)
         │                   → sendMessage(SYNC_DONE { ok:true, refreshed: added+updated, failed, failedAwemeIds })
         └─ 否则           → sendMessage(SYNC_DONE { ok:false, error: errors[0]?.error || "NO_WORKS_COLLECTED" })
         └─ 外层 catch（ack 之后）→ sendMessage(SYNC_DONE { ok:false, error: e.message })  // sendResponse 通道已关，保证弹窗必收尾
@@ -66,34 +66,34 @@ options: 监听 SYNC_PROGRESS / SYNC_DONE（按 requestId 匹配）更新弹窗�
 
 ```js
 // background/tasks/independent-tasks.js
-async function handleIndependentSyncWorks(awemeIds, sendResponse)
+async function independentTasks.syncWorks(awemeIds, sendResponse)
 // 入参：awemeIds: string[]（非空）；立即 sendResponse({ok,requestId,total}) 后不再使用 sendResponse
 // 出参（ack）：{ ok: true, requestId: string, total: number }
 // 进度：SYNC_PROGRESS*N → SYNC_DONE
 
-async function ensureABogus()            // 读 browserFeatures → new ABogus(ua, platform, features)
-async function buildBaseParams(extra)    // 环境参数全集（见下），返回普通对象供 URLSearchParams 序列化
-async function independentRequest(apiPath, params, options?) -> Promise<object>   // 见通用请求骨架
-function formatWork(aw) -> Work|null     // 无 aweme_id 返回 null
-async function mergeAndSaveWorks(works) -> Promise<{ added, updated, total }>
-function mergeWork(w, old) -> Work       // 保留旧 groupId/savedAt；长效链不被短效链覆盖降级
+credentials.credentials.ensureABogus()          // background/identity/credentials.js：读 browserFeatures → new ABogus(ua, platform, features)
+credentials.credentials.buildBaseParams(extra)  // background/identity/credentials.js：环境参数全集（见下），返回普通对象供 URLSearchParams 序列化
+independentClient.request(apiPath, params, options?) -> Promise<object>  // background/identity/independent-client.js，见通用请求骨架
+formatters.formatWork(aw) -> Work|null   // background/core.js：无 aweme_id 返回 null
+domainStore.mergeAndSave(domain, works) -> Promise<{ added, updated, changed, total, written, addedIds }>
+domainStore.mergeWork(w, old) -> Work    // 保留旧 groupId/savedAt；长效链不被短效链覆盖降级
 ```
 
-### independentRequest 通用请求骨架（所有独立模式端点共用）
+### independentClient.request 通用请求骨架（所有独立模式端点共用）
 
 ```js
-async function independentRequest(apiPath, params, options = {}) {
+async function independentClient.request(apiPath, params, options = {}) {
   const { savedCookie } = await chrome.storage.local.get("savedCookie");
   if (!savedCookie) throw new Error("NO_COOKIE");           // 门禁：必须已有 cookie 快照
-  params.msToken = await getMsToken();
+  params.msToken = await credentials.getMsToken();
   const qs = new URLSearchParams(params).toString();        // qs 即最终查询串（不含 a_bogus），键序即发送序
-  const a_bogus = abOgus.getValue(qs, method, await getClockSkew());
+  const a_bogus = credentials.sign(qs, method, await credentials.credentials.getClockSkew());
   let urlQuery = qs + "&a_bogus=" + a_bogus;
   // webSign 默认开启（options.webSign !== false）：追加 timestamp + x-secsdk-web-signature（算法见 05）
   // … fetch(url, { credentials:"include", referrer, UA=abOgus.userAgent, signal }) …
   // 空 body（限流/风控典型响应）→ throw RATE_LIMITED（与 tab 模式 inject 同语义）
   // 非 2xx：argus_security_code === "web_id_sign_invalid" 且未重试过
-  //        → refreshWebIdChain() 刷新 webid 后整体重试一次（_webIdRetried 标志防死循环）；其余 → HTTP <code>: <body 前 160 字>
+  //        → credentials.refreshWebIdChain() 刷新 webid 后整体重试一次（_webIdRetried 标志防死循环）；其余 → HTTP <code>: <body 前 160 字>
   // data.status_code !== 0 → throw API_ERROR(<code>)（err.statusCode 保留，供 2096 等业务判断）
   // 响应非 JSON → throw INVALID_JSON
 }
@@ -106,14 +106,14 @@ async function independentRequest(apiPath, params, options = {}) {
 ### 单条请求参数组装与重试
 
 ```js
-const params = await buildBaseParams({
+const params = await credentials.buildBaseParams({
   aweme_id: awemeIds[i],
   request_source: "600",
   origin_type: "video_page",
 });
 let data, w;
 for (let attempt = 0; attempt < CONFIG.SYNC.RETRY_MAX; attempt++) {
-  data = await independentRequest(CONFIG.API.DETAIL, params);
+  data = await independentClient.request(CONFIG.API.DETAIL, params);
   w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
   if (w) break;
   if (attempt === 0) { /* syncWorks 延迟后重试一次 */ }
@@ -160,7 +160,7 @@ https://www.douyin.com/user/MS4wLjAB…?modal_id=7267428670501915945 → modal_i
 | 环境 | `browser_*` / `os_*` / `engine_*` / `screen_*` 等 | Edge 149 / Win32 / Blink … | 来自 browserFeatures 快照，缺省有兜底 |
 | 环境 | `webid` / `uifid` / `odin_tt` | `<webid>` 等 | 设备/会话身份，实时 Cookie 优先 |
 
-最后 independentRequest 追加 `msToken`。键序 = 对象插入序：环境键在前、业务键在后、msToken 最末。
+最后 independentClient.request 追加 `msToken`。键序 = 对象插入序：环境键在前、业务键在后、msToken 最末。
 
 ### 第三步：a_bogus 签名 → 最终请求 URL
 
@@ -258,8 +258,8 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | `awemeIds` 为空/非数组 | 同步返回 `{ ok:false, error:"EMPTY" }` | options 侧提示 |
 | `savedCookie` 缺失 | 每条请求抛 `NO_COOKIE` | 属致命：首条命中即早退，剩余记 `BATCH_TERMINATED`；状态行显示 `NO_COOKIE`，引导刷新 Cookie |
 | 作品已被删除/不可见 | `data.aweme_detail` 缺失，重试耗尽 | 记 `DELETED`，继续下一批（非致命） |
-| 限流（空 body） | `independentRequest` 抛 `RATE_LIMITED`（与 tab 模式 inject 同语义） | 致命：早退 + 剩余 `BATCH_TERMINATED`，状态行显示 `RATE_LIMITED` |
-| a_bogus 被拒（`web_id_sign_invalid` 403） | independentRequest 内部识别 | 自动 `refreshWebIdChain()` 换新 webid 重试一次 |
+| 限流（空 body） | `independentClient.request` 抛 `RATE_LIMITED`（与 tab 模式 inject 同语义） | 致命：早退 + 剩余 `BATCH_TERMINATED`，状态行显示 `RATE_LIMITED` |
+| a_bogus 被拒（`web_id_sign_invalid` 403） | independentClient.request 内部识别 | 自动 `credentials.refreshWebIdChain()` 换新 webid 重试一次 |
 | HTTP 401/429 | 抛 `HTTP 401` / `HTTP 429` | 致命：早退 + 剩余 `BATCH_TERMINATED` |
 | HTTP 403（其他文案）/5xx/超时 | 抛 `HTTP <code>` / 请求超时 abort | abort 归一 `CANCELLED`（致命）；其余记入 errors 跳过继续（非致命） |
 | `status_code !== 0` | 抛 `API_ERROR(<code>)`，`err.statusCode` 保留 | 非致命，记入 errors 跳过继续（仅整批全失败时状态行显示首错） |
@@ -272,7 +272,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 
 | 配置 | 默认 | 作用 |
 |------|------|------|
-| `runtimeConfig.timeoutRequest` → `CONFIG.TIMEOUT.REQUEST` | 30000ms | independentRequest 单请求超时（AbortController） |
+| `runtimeConfig.timeoutRequest` → `CONFIG.TIMEOUT.REQUEST` | 30000ms | independentClient.request 单请求超时（AbortController） |
 | `runtimeConfig.syncWorksDelayMin/Max` → `CONFIG.DELAY.syncWorks` | 500/1000ms | 条间随机延迟 |
 | `runtimeConfig.syncBatchSize` → `CONFIG.SYNC.BATCH_SIZE` | 40 | 每 N 条触发批间暂停 |
 | `runtimeConfig.syncBatchPauseMin/Max` | 10000/20000ms | 批间暂停时长区间 |
@@ -285,8 +285,8 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、四域存储模型、FATAL_ERRORS 分类 |
-| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / mergeAndSaveWorks 的合并语义（本册只讲调用时序） |
-| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentRequest 的 webSign 分支（默认开启，本流程随之生效） |
+| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / domainStore.mergeAndSave 的合并语义（本册只讲调用时序） |
+| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentClient.request 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式同款链路（FETCH_WORK_DETAIL → fetchOneDetail）；extractVideo 双实现同步约束 |
 | — | [TIKTOK_REFERENCE.md](./TIKTOK_REFERENCE.md) | `/aweme/detail/` 端点参数表 |

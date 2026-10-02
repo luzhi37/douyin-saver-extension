@@ -26,7 +26,7 @@
 bg 端复合索引 keyset 游标直出、每次只物化单页 + `total` 计数，首页延迟几十毫秒量级）到达即
 `store.set` → render() 按 `total` **预铺至 `GRID_PREMOUNT_CAP` 上限**（未到达槽位为无键占位卡，
 超出上限的部分滚近底部时倍增扩容——滚动条物理上到不了未挂载区，远跳落进空白结构性不存在）；
-余量以 `nextCursor`（末条索引键）keyset 续页 `appendWorkLike`
+余量以 `nextCursor`（末条索引键）keyset 续页 `appendWorkRecord`
 → `work-record-appended` 事件 → 默认视图 `fillSlots(start)` 按键前缀自锚定回填（零 DOM 增删；
   落点 = 传入 start 与首个无键槽取小者，删除使 #slots 相对页序收缩时自愈）、`done` 时
 `pruneEmptyTail` 摘除尾部未回填占位卡（预铺超出的兜底残余，removeItems 已同步收缩 #totalSlots）；筛选激活时静默累积到
@@ -165,8 +165,7 @@ Detail.markMediaFail() / markMediaOk() / mediaRetryBlocked()
 Detail.#scheduleCoverDrain / #showAvatarFallback / #imgProbeToken
 Detail.#renderVideoProgress / #resetVideoProgressUI / #applySeek(frac)
 Detail.#buildNoteSegs / #renderNoteSegs(cur, total) / #onNoteAudioTimeUpdate / #onNoteAudioEnded
-Detail.#markDetailActive()                    // 闲置 2.6s 隐藏播放条/切换器的复位入口
-Sync.#followingsRequestId                     // 关注进度过滤（可 === null）
+Sync.#requestId                               // 同步进度过滤（收集期可为 null，null 时全收）
 ```
 
 ## 关键代码片段
@@ -281,7 +280,7 @@ probe.onerror = () => {
 
 ### 媒体加载统一体系（div + background-image，禁止改回 `<img src>`）
 
-五个槽位 `.following-avatar` / `.work-thumb` / `.sidebar-work-cover` / `.fav-work-thumb` / `#detailImage` 全是 `<div role="img">`。验收标准：`grep '<img'` 模板应只剩图标 `<use>`。背景图加载失败时浏览器不绘制任何占位图标——原生断裂图在元素层面失去载体，这是历史三轮"切换/滚动时瞬态裂图"报告的根治手段。
+四个槽位 `.following-avatar` / `.work-thumb` / `.sidebar-work-cover` / `#detailImage` 全是 `<div role="img">`。验收标准：`grep '<img'` 模板应只剩图标 `<use>`。背景图加载失败时浏览器不绘制任何占位图标——原生断裂图在元素层面失去载体，这是历史三轮"切换/滚动时瞬态裂图"报告的根治手段。
 
 加载统一走离屏 `new Image()` 探针先行，成功才提交 `style.backgroundImage`，死链在探针阶段终结。各槽位失败语义：
 
@@ -290,7 +289,6 @@ probe.onerror = () => {
 | 关注头像 | `#scheduleAvatarDrain` | 切首字回退并退出 media-loading |
 | 作品缩略图 | `#scheduleCoverDrain` | 原样重试一次（`dataset.retry` 挂可见节点、随重填换新自然复位；熔断冷却中不重试），仍失败停留透明渐变占位态 |
 | 侧边栏封面 | `#scheduleImgDrain`（仅升级态发探针） | 成功隐藏 `.sidebar-work-cover-placeholder`；失败由条目底色兜底 |
-| 收藏弹窗 fav-work-thumb | 无熔断联动 | 直赋背景图即可 |
 
 代际防乱序（在途探针回调必须先校验代际再提交，否则旧 URL 会提交到已换人的槽位）：
 
@@ -329,7 +327,7 @@ probe.onerror = () => {
 
 ### 同步进度过滤的 requestId 时序差异
 
-`SYNC_WORKS` **立即**返回 requestId；`FETCH_FOLLOWING` 等**收集完成才**返回。关注进度过滤因此必须兼容 `Sync.#followingsRequestId === null`（列表阶段尚未拿到 requestId 时不得按 requestId 过滤丢弃进度消息）。进度消息载荷见 01。
+`SYNC_WORKS` **立即**返回 requestId；`FETCH_FOLLOWING` 等**收集完成才**返回。关注进度过滤因此必须兼容 `Sync.#requestId === null`（列表阶段尚未拿到 requestId 时不得按 requestId 过滤丢弃进度消息）。进度消息载荷见 01。
 
 ### 分组 tab 滑块（对齐域切换 ds-slider）
 
@@ -353,9 +351,8 @@ probe.onerror = () => {
 
 播放条最右端作品序号「K / N」中 K 为真实输入框（`#detailCounterInput`，外观与静态文本一致，悬停/聚焦下划线提示）：聚焦全选、输入仅留数字、宽度随总位数/输入位数自适应（ch）。**Enter 提交跳转**（非数字/越界钳制到 [1, N]；相邻序号复用 ↑/↓ 方向感过渡、远跳走普通淡入）、**Esc 还原退出**（stopPropagation 拦在 document 层「Esc 关详情」之前）、**失焦还原**——展示值与当前作品恒一致。详情 document keydown 在 Tab 圈定后对该输入框整体让位（数字/方向键不得切作品、删键不得触发移除），Tab 焦点圈定照常覆盖该输入框。跳转只改 `#index` + `renderDetail`；关闭详情时网格滚动恢复走既有 `restoreGridScroll`，跳转结果自然落位。
 
-### 详情层闲置隐藏与几何（对齐抖音播放界面）
+### 详情层几何（对齐抖音播放界面）
 
-- **闲置隐藏**：overlay 内 mousemove/wheel/keydown 活动即复位 2.6s 定时器（`#markDetailActive`），超时挂 `#detailOverlay.idle`——CSS 淡出 `#detailBottomBar` 与 `#detailSwitcher`（opacity+pointer-events）。**红线：`:focus-within` 豁免必须保留**，键盘 Tab 聚焦到控件时不允许消失。
 - **几何**：`.detail-body` 全屏宽、`flex:1`（高度=视口−56px 播放条，零重叠）；`.media-view` 居中，宽度=`min(视口宽, 可视高×媒体宽高比)`（`--media-aspect` 由 `Detail.#setMediaAspect` 写入 overlay：视频 `loadedmetadata` 的 videoWidth/Height、图片探针成功后的 naturalWidth/Height，图集逐图跟随；切作品在 `#transitionToNext` 复位 9:16 缺省防上一件残留），竖版/横版/方形一律等比铺满可视高、零裁切（2026-09-29 修订：废弃横版/方形 39.3vw 封顶——`.media-view` 高度恒为满高列，封顶使横版在列内只剩一条居中横带，与「对齐抖音播放界面」相悖；超宽媒体由 `min(100%, …)` 截断）；视频/大图 `object-fit/background-size: contain` 完整显示（2026-09 定案，反转旧 cover 裁切——9:16 竖版在固定 3:4 胖容器里会被裁掉约 24% 画面），列内留白由 `#detailOverlay::before` 模糊背景透出填充（`brightness(0.8)`，非旧版 0.4）。
 - **⌃⌄ 切换器**（`#detailSwitcher`）：右缘垂直居中（`position:fixed` 必须用 `calc((100% - var(--detail-bar-height)) / 2)` 显式扣除底栏高度——与绝对定位于 `.detail-body` 内的左右箭头共用同一居中基准，否则比箭头中心线低半个底栏），只切上一个/下一个作品（接 `prevDetail/nextDetail`），不参与图集翻页——图集翻页归左右箭头（56px、锚定 10vw、悬浮/聚焦常显）、分段条 seek 与自动轮播。
 - **bar-controls 信息位**：视频=`#detailTime`（0:00/0:00），图集=`#detailOrder`（K/N），由 `#updateCounters` 分工写入；`#detailCounter`（作品序号）仍在最右端。
@@ -379,11 +376,11 @@ probe.onerror = () => {
   **视图函数返回共享缓存数组，调用方一律只读**（网格/Detail/Batch 现有调用均为只读遍历）；
   需要变更序（reverse 等）自行拷贝。逆序段必须拷贝后翻转，原地 reverse 会串段污染缓存。
 - **`state.dataVersion` 写入版本号（红线）**：视图缓存的唯一数据侧失效判据。store 的域数据
-  变更方法（set/appendWorkLike/spliceWork/removeWorkLikeSilent/removeFollowingsSilent）
+  变更方法（set/appendWorkRecord/spliceWork/removeWorkRecordSilent/removeFollowingsSilent）
   与 `services.loadFollowedUids`（归属判定输入）自动自增；**绕过 store 封装的
-  原地写入必须手动自增**——现存三处：`main.js` `tryHeadInsert`（头插 splice）、
-  `applyStoreUpserts`（原地替换 `list[idx] = work`）、`detail.js` `removeWork`（静默移除
-  filter）。新增绕行写入点若漏增，视图缓存将读到脏数据（漏增不炸、错显，最难排查）。
+  原地写入必须手动自增**——现存两处：`main.js` `tryHeadInsert`（头插 splice）、
+  `applyStoreUpserts`（原地替换 `list[idx] = work`）。新增绕行写入点若漏增，视图缓存
+  将读到脏数据（漏增不炸、错显，最难排查）。
 - **关键词归一化侧表（`lcFields` + WeakMap）**：每条记录的 desc/nickname/id/uid 小写形与
   作者簇键（authorCount 口径）惰性缓存一次。用 WeakMap 而非往记录挂字段：记录经
   EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容更新一律整对象替换，
@@ -456,7 +453,7 @@ probe.onerror = () => {
 | 余量骨架未挂载就交接观察 | `#extendObservation` 把未连接节点视作重渲染死节点直接丢弃，分圈断链 | 拼装完成后必须先 `appendChild` 挂载、再 `#observeNewSkeletons` |
 | fill IO 回调对占位卡 unobserve | 预铺占位卡被摘除观察后，回填完成也永不再触发填充（永久灰卡） | 回调对无键占位卡保持观察；带内回填由 `fillSlots` 主动入队 |
 | 网格卡片层挂 `content-visibility: auto` | 屏外卡整棵跳过渲染（无像素），远跳落点要走「相关性判定→补布局→绘制→光栅」按需管线，瞬间只见空占位框（透底色）、骨架延迟出现；快速滚动期 CV 进出判定 = Layerize 抖动 | 网格全量预铺架构下禁用 CV（2026-09 定案，`.work-card`/`.work-skeleton`/`.following-card`）；骨架扫光随之静态化（动画元素各自晋升合成层，万级下成本不可接受） |
-| 渐进分页经 `'works'` 事件逐页 `store.set` 消费 | 每页触发全量重渲：骨架闪烁、已填卡封面重探 | 回填必须走 `appendWorkLike` → `fillSlots`；筛选激活时静默累积、加载完整渲 |
+| 渐进分页经 `'works'` 事件逐页 `store.set` 消费 | 每页触发全量重渲：骨架闪烁、已填卡封面重探 | 回填必须走 `appendWorkRecord` → `fillSlots`；筛选激活时静默累积、加载完整渲 |
 | `render()`/`abortRender()` 未清队列状态 | 旧骨架引用残留、重复填充 | 重置时同步清 `#pendingSkeletons`/`#sentinelCard`/observers |
 | 用 `replaceChild`/`replaceWith` 换卡片根节点 | Blink 全量重排，3000 卡单次 >10ms | 只允许原地切换（改类名 + 增删后代） |
 | 把填充/卸载两圈 rootMargin 调近 | 边界抖动、反复填/降级 | 保持滞回间隙（1600px vs 2400px，800px） |
@@ -468,7 +465,21 @@ probe.onerror = () => {
 
 ## 配置项说明
 
-options 侧 `config`（47 键）的权威键表与默认值统一维护在 [01](./01-project-architecture.md)「配置项说明 · options/core.js 顶层 config」，本册不再重复分表；各分册只收录与其机制直接相关的键（如 `GRID_PREMOUNT_CAP`/`FAST_SCROLL_THRESHOLD` 见上文渲染管线）。
+options 侧 `config`（50 键，含 icons 图标表）的权威键表与默认值统一维护在 [01](./01-project-architecture.md)「配置项说明 · options/core.js 顶层 config」，本册不再重复分表；各分册只收录与其机制直接相关的键（如 `GRID_PREMOUNT_CAP`/`FAST_SCROLL_THRESHOLD` 见上文渲染管线）。
+
+## 响应式状态管理（store.on 事件表）
+
+> 本节自 AGENTS.md 迁入（2026-10-03 瘦身）。`store.on()` 监听事件：
+
+| 事件               | 处理                                                                                                     |
+|--------------------|----------------------------------------------------------------------------------------------------------|
+| `'domain'`         | 更新同步按钮、渲染分组 tab、加载域数据 |
+| `'works'` / `'favorites'` / `'collections'` | `search.refreshGridView()`（仅 domain 命中该域时）                                                       |
+| `'work-record-appended'` | 渐进分页回填（作品型三域，loadDomainData 逐页发）：默认视图 `fillSlots` 回填 + `syncCount`，`done` 时 `pruneEmptyTail` 摘尾；筛选激活时静默累积、加载完成整渲；domain/groupId 双校验防旧页混入（细节见本册「STORE_CHANGED 增量收口管线」） |
+| `'followings'`     | 刷新关注全集（方案A 归属判定输入）+ domain 命中或归属筛选激活时 `search.refreshGridView()`                |
+| `'groups'`         | `groups.renderGroupTabs()`                                                                               |
+| `'currentGroupId'` | `appShell.clearActiveGrid()` + `groups.syncActiveTabs()` + 加载域数据（tab 集合未变，不重建 tab）         |
+| `'batchMode'`      | toggle body `.batch-mode` class + `Batch.syncSelectionUI`（批量栏显隐由 CSS `body.batch-mode` 驱动，无独立 #batchBar）        |
 
 ## 相关文档
 
@@ -476,7 +487,8 @@ options 侧 `config`（47 键）的权威键表与默认值统一维护在 [01](
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | options/ 代码布局约束、进度消息载荷表、CANCEL_ACTIVE_TASK 双路径 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_PROGRESS/SYNC_DONE 的产生侧（本册的消费侧过滤） |
-| 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | FOLLOWING_PROGRESS 时序（#followingsRequestId 过滤的上游） |
+| 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | FOLLOWING_PROGRESS 时序（#requestId 过滤的上游） |
 | 07 | [07-independent-fetch-user-works.md](./07-independent-fetch-user-works.md) | 侧边栏滚动加载的数据来源 |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | CANCEL_ACTIVE_TASK 抵达 inject 的后半程 |
 | 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | 网格数据源（GET_WORKS/GET_FOLLOWINGS 结果）的落库语义 |
+| 12 | [12-class-map.md](./12-class-map.md) | options 侧各类职责对照表（本册机制细节的上层导览） |

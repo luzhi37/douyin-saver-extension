@@ -624,10 +624,8 @@ export class VirtualGrid {
     );
   }
 
-  // 分圈观察：新骨架先进待观察队列，只把最靠前一圈（OBSERVE_CHUNK_SIZE 个）交给 IO，
-  // 圈尾哨兵进圈（进入 OBSERVER_ROOT_MARGIN）时再放下一批。
-  // computeIntersections 成本随已观察目标数线性，全量 observe 会让滚动期每帧
-  // 重算 O(全部卡) 次几何——这是侧边栏打开后风扇高转的主因之一（实测 trace 占 1.2s/5s）
+  // 分圈观察的入队端（分圈推进机制与全量 observe 的成本依据见 #ensureFillObserver）：
+  // 逐个 push：余量骨架可能上万，spread 实参（push(...nodes)）在大数组下有栈上限
   #observeNewSkeletons(nodes) {
     this.#ensureFillObserver();
     // 逐个 push：余量骨架可能上万，spread 实参（push(...nodes)）在大数组下有栈上限

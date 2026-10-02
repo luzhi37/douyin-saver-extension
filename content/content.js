@@ -264,8 +264,7 @@
         video = await this.#fetchDetailByAwemeId(fullWork.awemeId);
       }
 
-      const baseWork = fullWork || apiData;
-      const work = { ...baseWork, video };
+      const work = { ...fullWork, video };
 
       chrome.runtime.sendMessage({ type: "SAVE_WORKS", works: [work] }, (response) => {
         if (chrome.runtime.lastError) return;

@@ -16,7 +16,6 @@ export const config = {
 
   // 超时
   FETCH_RETRY_DELAY: 1000,
-  SYNC_TIMEOUT: 30000,  // fallback; primary = runtimeConfig._cache?.timeoutRequest
   VIDEO_FALLBACK_TIMEOUT: 5000,
 
   // UI 延迟
@@ -219,9 +218,9 @@ export const state = {
   // 读取后即清），按 total 一次铺满全量骨架，余页经 fillSlots 以键前缀自锚定回填
   gridSlots: null,
   // 域数据写入版本号：SearchBar 视图阶段缓存（#viewCache）的失效判据。store 的数据
-  // 变更方法自动自增；绕过 store 封装的原地写入（main.js tryHeadInsert/applyStoreUpserts、
-  // detail.removeWork 静默移除）与归属判定输入重载（services.loadFollowedUids）必须手动
-  // 自增，否则缓存读到脏视图（红线见 docs/11「视图阶段缓存」）
+  // 变更方法自动自增；绕过 store 封装的原地写入（main.js tryHeadInsert/applyStoreUpserts）
+  // 与归属判定输入重载（services.loadFollowedUids）必须手动自增，否则缓存读到脏视图
+  //（红线见 docs/11「视图阶段缓存」）
   dataVersion: 0,
 };
 
@@ -344,6 +343,15 @@ export const utils = {
     const d = new Date(sec * 1000);
     const pad = (n) => String(n).padStart(2, "0");
     return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  },
+  // 四域统一的网格锚点：视口内最上方可见卡片（骨架/完整卡均参与网格流、位置真实）。
+  // AppShell 侧栏折叠锚定与 Sidebar 锚点兜底共用（无卡片时返回 null，调用方自行降级）
+  topVisibleGridCard() {
+    const gridTop = dom.mainGrid.getBoundingClientRect().top;
+    for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {
+      if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
+    }
+    return null;
   },
 };
 

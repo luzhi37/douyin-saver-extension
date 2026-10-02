@@ -1,6 +1,6 @@
 # 抖音数据管理 (Douyin Data Manager)
 
-Chrome Manifest V3 扩展，统一管理抖音的作品、关注、点赞与收藏数据。扩展本体纯原生 JavaScript，零运行时依赖、无构建步骤——仓库中的 `package.json` 仅为开发期测试依赖，加载扩展不需要 npm。
+Chrome Manifest V3 扩展，统一管理抖音的作品、关注、点赞与收藏数据。扩展本体纯原生 JavaScript，零运行时依赖、无构建步骤，加载扩展不需要 npm。
 
 ## 功能
 
@@ -54,8 +54,8 @@ IndexedDB 库 `douyin-saver`，四域同构，作品型三域含 `savedAt_id` / 
 | 域       | IndexedDB 表        | 主键      | 说明                              |
 |----------|---------------------|-----------|-----------------------------------|
 | 作品     | `works`             | `awemeId` | 视频/图文笔记，含视频直链与过期时间 |
-| 点赞     | `likes`             | `awemeId` | 与作品同构                        |
-| 收藏     | `favorites`         | `awemeId` | 与作品同构                        |
+| 点赞     | `favorites`         | `awemeId` | 与作品同构                        |
+| 收藏     | `collections`       | `awemeId` | 与作品同构                        |
 | 关注     | `followings`        | `uid`     | 用户档案，计数经校准写入          |
 | 分组     | `*_groups`（×4）    | `id`      | 每域独立的分组定义                |
 

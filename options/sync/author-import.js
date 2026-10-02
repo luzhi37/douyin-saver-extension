@@ -12,7 +12,6 @@ import { domainScanSync } from './domain-scan-sync.js';
 // （由 background mergeWork/mergeAndSaveFollowings 内建，本模块不做任何加工）。
 class AuthorImport {
   #running = false;
-  #requestId = null;
   #currentSecUid = "";
   #countEl = null;
   #summaryEl = null;
@@ -66,7 +65,6 @@ class AuthorImport {
   closeDialog() {
     dialog.closeDialog();
     this.#running = false;
-    this.#requestId = null;
     this.#currentSecUid = "";
     this.#countEl = this.#summaryEl = this.#statusEl = null;
     this.#worksInput = this.#followingsInput = null;
@@ -94,7 +92,6 @@ class AuthorImport {
     }
 
     this.#running = true;
-    this.#requestId = null;
     this.#currentSecUid = secUid;
     // 清残留任务再开新循环（DomainScanSync 同款）
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
@@ -107,7 +104,6 @@ class AuthorImport {
         this.#showError(res?.error || "IMPORT_FAILED");
         return;
       }
-      this.#requestId = null;
       this.#showDone(res);
     } catch (err) {
       if (!this.#running) return;
@@ -115,7 +111,6 @@ class AuthorImport {
     } finally {
       // 终态复位与 closeDialog 的复位并存：finally 管完成/失败落地（允许原地再发起），closeDialog 管取消窗口期
       this.#running = false;
-      this.#requestId = null;
     }
   }
 
@@ -158,11 +153,10 @@ class AuthorImport {
     }
   }
 
-  // 进度消息入口（options 全局 listener 分发）；requestId 在终态前拿不到，running 期间全收
-  //（三链路互斥保证不会串线，DomainScanSync 同款过滤逻辑）
+  // 进度消息入口（options 全局 listener 分发）；进度载荷虽带 requestId，但任务由
+  // 三链路互斥保证唯一（入口已挡并发发起），按 #running 门控全收即可（DomainScanSync 同款）
   onProgress(msg) {
     if (!this.#running) return;
-    if (this.#requestId !== null && msg.requestId !== this.#requestId) return;
     if (msg.type !== "IMPORT_WORKS_PROGRESS") return;
     const total = msg.total > 0 ? ` / 约 ${msg.total}` : "";
     if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected ?? 0}${total} · 已入库 ${msg.saved ?? 0}`;
@@ -175,7 +169,6 @@ class AuthorImport {
   #closeProgressDialog() {
     dialog.closeDialog();
     this.#running = false;
-    this.#requestId = null;
     this.#countEl = this.#summaryEl = this.#statusEl = null;
   }
 

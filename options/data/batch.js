@@ -47,7 +47,7 @@ class Batch {
     dom.batchSelectAll.title = allSelected ? "取消全选" : "全选";
   }
 
-  // 已选计数与按钮可用性统一在此刷新（docs/UI_IMPROVEMENTS.md 建议4）
+  // 已选计数与按钮可用性统一在此刷新（见 docs/11）
   syncSelectionUI() {
     const count = state.selectedIds.size;
     if (dom.batchCount) dom.batchCount.textContent = `已选 ${count}`;

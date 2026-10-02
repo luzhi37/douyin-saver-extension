@@ -32,7 +32,7 @@ class FollowingsGrid extends VirtualGrid {
     if (filtered) {
       this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试", 0, premountCap);
     } else {
-      this.render(view, "还没有保存的关注者", "点击菜单「同步」获取你的关注列表", 0, premountCap);
+      this.render(view, this.emptyText, this.emptyHintText, 0, premountCap);
     }
   }
 

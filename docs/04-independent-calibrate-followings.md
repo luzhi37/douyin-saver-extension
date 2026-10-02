@@ -6,22 +6,22 @@
 
 关注列表接口返回的粉丝/作品计数是**滞后快照**（与主页展示差异大），因此全仓约定：列表采集一律占位 0，权威计数只从 `GET /aweme/v1/web/user/profile/other/?sec_user_id=…` 的 `user.aweme_count / user.follower_count` 获取。`lastUpdateAt`（最近更新日期，毫秒时间戳）同样只在校准阶段写入——来源为**该关注者作品列表第一页全部作品 `create_time` 的最大值**（`GET /aweme/v1/web/aweme/post/`，`max_cursor=0`，秒 → 毫秒换算），未校准占位 0。校准有两条入口：
 
-1. **批量校准**（`calibrateFollowingStats`）：`FETCH_FOLLOWING` 列表收集完成后自动进入；受运行参数 `calibrateFollowings` 门控；进度以 `FOLLOWING_PROGRESS { phase:"calibrate" }` 透传。
-2. **单用户校准**（`handleCalibrateFollowing`）：options 打开作者侧边栏时发 `CALIBRATE_FOLLOWING { uid, secUid }`；不受开关门控；background 取到计数后**直接落库**并返回，options 更新 state 与可见卡片 DOM。
+1. **批量校准**（`calibrateStats`）：`FETCH_FOLLOWING` 列表收集完成后自动进入；受运行参数 `calibrateFollowings` 门控；进度以 `FOLLOWING_PROGRESS { phase:"calibrate" }` 透传。
+2. **单用户校准**（`scanTasks.calibrateOne`）：options 打开作者侧边栏时发 `CALIBRATE_FOLLOWING { uid, secUid }`；不受开关门控；background 取到计数后**直接落库**并返回，options 更新 state 与可见卡片 DOM。
 
 两条入口的 `fetchStats` 都按模式注入：
 
 - Tab模式：`sendToTabAsync("FETCH_PROFILE_OTHER")` → inject `fetchProfileOther`；
-- 独立模式：`independentRequest(CONFIG.API.PROFILE_OTHER, buildBaseParams({ sec_user_id }))` 直接 GET。
+- 独立模式：`independentClient.request(CONFIG.API.PROFILE_OTHER, credentials.buildBaseParams({ sec_user_id }))` 直接 GET。
 
 ## 核心流程图（文字描述）
 
 ### 批量校准（同步关注尾部阶段）
 
 ```
-handleIndependentFetchFollowing / handleFetchFollowing 收集完成
+independentTasks.fetchFollowing / scanTasks.fetchFollowing 收集完成
   条件：!cancelled && all.length > 0 && _calibrateFollowings(运行参数)
-  → calibrateFollowingStats(list, fetchStats, isCancelled, requestId)
+  → calibrateStats(list, fetchStats, isCancelled, requestId)
       for entry of list（&& !isCancelled()）:
         sec_uid ← String(entry.profileUrl).match(/\/user\/([^/?#]+)/)[1]
         try: stats = await fetchStats(sec_uid)
@@ -38,13 +38,13 @@ handleIndependentFetchFollowing / handleFetchFollowing 收集完成
     （SAVE_FOLLOWINGS 对 >0 计数正常写入，对 0 值保留旧值——见 01 文档）
 
 fetchStats 注入：
-  独立模式：(sec_uid) => independentRequest(API.PROFILE_OTHER, …)
+  独立模式：(sec_uid) => independentClient.request(API.PROFILE_OTHER, …)
             data.user 缺失 → throw "PROFILE_FETCH_FAILED"
   Tab模式：  (sec_uid) => sendToTabAsync("FETCH_PROFILE_OTHER", { secUid })
             !resp.ok → throw resp.error || "PROFILE_FETCH_FAILED"
 
 fetchLatestWorkTime 注入（scanTasks 私有方法 #fetchLatestWorkTime，两模式分支取作品第一页）：
-  独立模式：independentRequest(API.POST, buildBaseParams({ sec_user_id, max_cursor:"0", count:PAGE.POST }))
+  独立模式：independentClient.request(API.POST, credentials.buildBaseParams({ sec_user_id, max_cursor:"0", count:PAGE.POST }))
             → data.aweme_list → formatWork 归一化 → max createTime
   Tab模式：  sendToTabAsync("FETCH_WORKS_PAGE", { secUid, cursor:"", count:PAGE.POST, timeout })
             → resp.works → max createTime
@@ -57,10 +57,10 @@ fetchLatestWorkTime 注入（scanTasks 私有方法 #fetchLatestWorkTime，两�
 options Sidebar.openSidebar(following)
   → #calibrateFollowing(following)：secUid = state.currentFollowingSecUid
   → bgMsg({ type:"CALIBRATE_FOLLOWING", uid, secUid })     // 不受 calibrateFollowings 开关门控
-    → background handleCalibrateFollowing(uid, secUid, sendResponse)
+    → background scanTasks.calibrateOne(uid, secUid, sendResponse)
         ├─ 参数缺失 → { ok:false, error:"BAD_PARAMS" }
-        ├─ loadIndependentMode()
-        │   ├─ true：ensureABogus → independentRequest(PROFILE_OTHER, { sec_user_id })
+        ├─ independentClient.loadMode()
+        │   ├─ true：credentials.ensureABogus → independentClient.request(PROFILE_OTHER, { sec_user_id })
         │   │        data.user 缺失 → throw PROFILE_FETCH_FAILED
         │   └─ false：sendToTabAsync("FETCH_PROFILE_OTHER", { secUid })
         ├─ ds.get(String(uid)) 无记录 → { ok:false, error:"NOT_FOUND" }
@@ -77,22 +77,22 @@ options Sidebar.openSidebar(following)
 
 ```js
 // background/tasks/scan-tasks.js —— 批量校准（纯迭代器，不落库；写回发生在调用方的整体落库路径上）
-async function calibrateFollowingStats(list, fetchStats, isCancelled, requestId)
+async function scanTasks.calibrateStats(list, fetchStats, isCancelled, requestId)
 // list: Following[]（原地改写 awemeCount/followerCount/lastUpdateAt）
 // fetchStats: (secUid) => Promise<{ awemeCount, followerCount }>
 // isCancelled: () => boolean
 // 进度：FOLLOWING_PROGRESS { phase:"calibrate", collected, total, hasMore:false, requestId }
 
-async function handleCalibrateFollowing(uid, secUid, sendResponse)
+async function scanTasks.calibrateOne(uid, secUid, sendResponse)
 // 出参：{ ok:true, awemeCount, followerCount, lastUpdateAt }
 //     | { ok:false, error:"BAD_PARAMS"|"NOT_FOUND"|其他 }
 
 async #fetchLatestWorkTime(secUid) -> Promise<number>
-// 最近更新日期采集（毫秒）：作品列表第一页 max(create_time)×1000；失败抛错由调用方吞掉；无作品/全 0 → 0
-// 独立模式：independentRequest(API.POST, { sec_user_id, max_cursor:"0", count:PAGE.POST })
+// 最近更新日期采集（毫秒）：作品列表第一页 max(create_time)×1000；失败返回 0 由调用方静默保留旧值；无作品/全 0 → 0
+// 独立模式：复用 independentTasks.fetchWorksPage 首页取数（同端点同参数，避免第二份实现）
 // Tab 模式：sendToTabAsync("FETCH_WORKS_PAGE", { secUid, cursor:"", count:PAGE.POST, timeout })
 
-async function independentRequest(CONFIG.API.PROFILE_OTHER, params)   // GET，a_bogus + webSign（request 默认叠加）
+independentClient.request(CONFIG.API.PROFILE_OTHER, params)   // GET，a_bogus + webSign（request 默认叠加）
 ```
 
 ```js
@@ -102,7 +102,7 @@ async #calibrateFollowing(following)
 ```
 
 Tab 模式对照：inject 端 `fetchProfileOther(secUid)` 的签名源为多源 fallback——
-`__capturedProfileQuery || __capturedFollowingQuery || __capturedPostQuery || __capturedFavoriteQuery || __capturedCollectionQuery`，
+`signatureCapture.profileQuery || signatureCapture.followingQuery || signatureCapture.postQuery || signatureCapture.favoriteQuery || signatureCapture.collectionQuery`，
 经 `stripSdkKeys`（剥签名键）+ `stripPageKeys`（剥分页键）合并后走 `window.fetch(_dyInternal:true)`，签名由页面包装器代签；全部为空时事件层直接回 `NO_SIGNATURE`。fallback 链每环都必须剥签名键——profile/other 已被强制 Argus webSign 校验，任一来源带入的旧 `x-secsdk-web-signature` 都会导致包装器跳过重签而被 Argus 拒绝（见 09 签名策略节）。
 
 ## 关键代码片段
@@ -218,7 +218,7 @@ Tab 模式对照：同一 URL 由 inject `fetchProfileOther` 以 DEVICE_PARAMS +
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | SAVE_FOLLOWINGS 的 0 值保留规则与丢失检测 |
-| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentRequest 通用骨架 |
+| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 通用骨架 |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | 上游列表采集流程与 formatFollowing 占位约定 |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3（独立模式 GET 头改写） |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | FETCH_PROFILE_OTHER 事件对、fetchProfileOther 签名多源 fallback |

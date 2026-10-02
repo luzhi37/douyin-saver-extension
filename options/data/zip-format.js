@@ -33,7 +33,7 @@ export function crc32(bytes) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function dosDateTime(date) {
+function dosDateTime(date) {
   return {
     time: (date.getHours() << 11) | (date.getMinutes() << 5) | (date.getSeconds() >> 1),
     date: ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
@@ -48,7 +48,7 @@ function writeU32(view, offset, value) {
   view.setUint32(offset, value, true);
 }
 
-export function buildLocalHeader(nameBytes, method, crc, csize, usize, dos) {
+function buildLocalHeader(nameBytes, method, crc, csize, usize, dos) {
   const buf = new ArrayBuffer(LOCAL_HEADER_SIZE + nameBytes.length);
   const view = new DataView(buf);
   writeU32(view, 0, ZIP_SIG_LOCAL);
@@ -66,7 +66,7 @@ export function buildLocalHeader(nameBytes, method, crc, csize, usize, dos) {
   return buf;
 }
 
-export function buildCentralHeader(nameBytes, method, crc, csize, usize, dos, offset) {
+function buildCentralHeader(nameBytes, method, crc, csize, usize, dos, offset) {
   const buf = new ArrayBuffer(CENTRAL_HEADER_SIZE + nameBytes.length);
   const view = new DataView(buf);
   writeU32(view, 0, ZIP_SIG_CENTRAL);
@@ -90,7 +90,7 @@ export function buildCentralHeader(nameBytes, method, crc, csize, usize, dos, of
   return buf;
 }
 
-export function buildEocd(recordCount, cdSize, cdOffset) {
+function buildEocd(recordCount, cdSize, cdOffset) {
   const buf = new ArrayBuffer(EOCD_SIZE);
   const view = new DataView(buf);
   writeU32(view, 0, ZIP_SIG_EOCD);

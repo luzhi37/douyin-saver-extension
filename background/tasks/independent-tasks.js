@@ -192,13 +192,10 @@ class IndependentTasks {
           if (w) allWorks.push(w);
           else { errors.push({ awemeId: awemeIds[i], error: "DELETED" }); currentOk = false; }
         } catch (e) {
-          // 系统性错误（缺 Cookie/限流空 body/401/429/超时 abort）镜像 tab 模式致命分类：早退 + 剩余标记 BATCH_TERMINATED
+          // 系统性错误（缺 Cookie/限流空 body/401/429/超时 abort）与 tab 模式共用致命分类：
+          // utils.isFatalTaskError 命中即早退 + 剩余标记 BATCH_TERMINATED
           const errMsg = e && e.name === "AbortError" ? "CANCELLED" : e.message;
-          const fatal =
-            CONFIG.FATAL_ERRORS.has(errMsg) ||
-            errMsg.startsWith("HTTP 429") ||
-            errMsg.startsWith("HTTP 401");
-          if (fatal) {
+          if (utils.isFatalTaskError(errMsg)) {
             for (let j = i; j < awemeIds.length; j++) {
               errors.push({ awemeId: awemeIds[j], error: j === i ? errMsg : "BATCH_TERMINATED" });
             }

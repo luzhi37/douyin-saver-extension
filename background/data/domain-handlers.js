@@ -5,7 +5,7 @@ import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
 
 // ---------- DomainHandlers ----------
-// 域数据操作的对外入口；save 已改域驱动（决策 8），闭合 favorites/collections 断路缺陷。
+// 域数据操作的对外入口；save 按域分流（作品型三域 → mergeAndSave，followings → #saveFollowings）
 class DomainHandlers {
   #cfg;
   #domain;
@@ -17,11 +17,14 @@ class DomainHandlers {
 
   // page=0 = 渐进加载首页；cursor = keyset 续页（上页末条索引键，开区间上界）；
   // 两者皆无 = 一次性全量（loadWorks 同步清单/重试路径，语义不变）。
-  // 分页每次只物化 PAGE.GRID 条记录（v3 复合索引 savedAt_id / groupId_savedAt_id），
+  // 分页每次只物化 PAGE.GRID 条记录（复合索引 savedAt_id / groupId_savedAt_id），
   // 不再全量读取+排序——万级分组的首页响应从数百毫秒降到几十毫秒
   async get(groupId, sendResponse, page, cursor) {
     try {
       if (page === 0 || cursor) {
+        // 分页仅作品型三域支持（依赖复合索引；followings 单发全量加载、store 无此索引）：
+        // followings 带分页参数显式报错，防止调用方误用后静默拿到整域载荷
+        if (this.#domain === CONFIG.STORAGE_KEYS.FOLLOWINGS) throw new Error("FOLLOWINGS_PAGING_UNSUPPORTED");
         sendResponse(await this.#readPaged(groupId, cursor || null));
         return;
       }
@@ -94,10 +97,10 @@ class DomainHandlers {
   }
 
   // save 必须域驱动：works/favorites/collections → domainStore.mergeAndSave；followings → #saveFollowings
-  async save(items, sendResponse, isImport = false) {
-    if (this.#domain === CONFIG.STORAGE_KEYS.FOLLOWINGS) return this.#saveFollowings(items, isImport, sendResponse);
+  async save(items, sendResponse) {
+    if (this.#domain === CONFIG.STORAGE_KEYS.FOLLOWINGS) return this.#saveFollowings(items, sendResponse);
     const result = await domainStore.mergeAndSave(this.#domain, items);
-    const idField = DOMAIN_CONFIG[this.#domain].idField;
+    const idField = this.#cfg.idField;
     const invalid = (items || []).filter((w) => !w || !w[idField]).length;
     // 内容真有变化才广播：重复添加已有且字段全等的作品是 no-op，不该让 options 重载网格。
     // 变化条数少于阈值时携带合并后记录（upserts/addedIds），options 局部应用——单发保存
@@ -107,8 +110,9 @@ class DomainHandlers {
     sendResponse({ ok: true, ...counts, invalid });
   }
 
-  async #saveFollowings(items, isImport, sendResponse) {
-    const result = await domainStore.mergeAndSaveFollowings(this.#domain, items, isImport);
+  async #saveFollowings(items, sendResponse) {
+    // 导入路径（分组还原语义）由 dataTools 直调 mergeAndSaveFollowings(…, true)，不经此处
+    const result = await domainStore.mergeAndSaveFollowings(this.#domain, items);
     // followings 不走点载荷：网格无单卡更新原语，且关注变化低频，整刷成本可接受
     if (result.changed > 0) this.#broadcastStoreChanged();
     sendResponse({ ok: true, ...result });

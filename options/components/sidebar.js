@@ -57,7 +57,7 @@ class Sidebar {
       dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width,
     );
     // 拖拽释放会吸附到吸附点（650/0），跨列阈值时同样锚定视口内最上方卡片
-    this.#preserveAnchor(this.#topVisibleCard(), () => {
+    this.#preserveAnchor(utils.topVisibleGridCard(), () => {
       this.setSidebarWidth(finalWidth);
       this.saveSidebarWidth(finalWidth);
     });
@@ -69,12 +69,12 @@ class Sidebar {
   toggleSidebar() {
     if (dom.sidebar.classList.contains("sidebar-zero")) {
       const target = this.#loadWidth() || Sidebar.SNAP_POINTS[0];
-      this.#preserveAnchor(this.#topVisibleCard(), () => {
+      this.#preserveAnchor(utils.topVisibleGridCard(), () => {
         this.setSidebarWidth(target);
         this.saveSidebarWidth(target);
       });
     } else {
-      this.#preserveAnchor(this.#topVisibleCard(), () => {
+      this.#preserveAnchor(utils.topVisibleGridCard(), () => {
         this.setSidebarWidth(0);
         this.saveSidebarWidth(0);
       });
@@ -264,17 +264,6 @@ class Sidebar {
     const delta = after - before;
     if (Math.abs(delta) > 1) grid.scrollTop += delta;
     return result;
-  }
-
-  // 锚点兜底：取视口内最上方的卡片作锚（骨架/完整卡都参与网格流、几何位置真实，
-  // 视口顶部的卡处于填充圈内、通常为完整卡）；四域共用 selector（与 AppShell.#topVisibleGridCard 同款，
-  // 覆盖 works/favorites/collections 域的 .work-card 与 followings 域的 .following-card）；无卡片（空态/错误态）时返回 null
-  #topVisibleCard() {
-    const gridTop = dom.mainGrid.getBoundingClientRect().top;
-    for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {
-      if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
-    }
-    return null;
   }
 
   #initResize() {

@@ -1843,7 +1843,7 @@ body.batch-mode .following-checkbox {
   z-index: 999999;
   pointer-events: none;
   opacity: 0;
-  /* 分型左色条（见 docs/UI_IMPROVEMENTS.md 建议1）；允许换行防长错误文本横向溢出 */
+  /* 分型左色条（见 docs/11）；允许换行防长错误文本横向溢出 */
   border-left: 3px solid transparent;
   max-width: 80vw;
   white-space: normal;

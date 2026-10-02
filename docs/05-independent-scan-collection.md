@@ -4,26 +4,26 @@
 
 ## 概述
 
-options「扫描收藏」→ `collections.openScanDialog(cfg)`（`needSecUid:false`，收藏归属由 Cookie 决定，不传 sec_user_id）→ `FETCH_COLLECTION` → background 分流到 `handleIndependentFetchCollection`：
+options「扫描收藏」→ `domainScanSync.syncDomain("collections")` 打开进度弹窗（收藏归属由 Cookie 决定，不传 sec_user_id）→ 发 `FETCH_COLLECTION { persist:"collections" }` → background 分流到 `independentTasks.fetchCollection`：
 
-- while 循环翻页：环境参数走 query（`buildBaseParams()`），业务分页参数 `count/cursor` 走 urlencoded body——空 body 的 POST 固定被 Argus 以 `Signature Not Found` 拒绝；
-- 每页经 `independentRequest(..., { method:"POST", ... })` 发出，叠加 Argus webSign 三件套头（request 内默认开启）；
+- while 循环翻页：环境参数走 query（`credentials.buildBaseParams()`），业务分页参数 `count/cursor` 走 urlencoded body——空 body 的 POST 固定被 Argus 以 `Signature Not Found` 拒绝；
+- 每页经 `independentClient.request(..., { method:"POST", ... })` 发出，叠加 Argus webSign 三件套头（request 内默认开启）；
 - 条目经 `formatWork` 归一化（带 `authorFollowed`），进度 `COLLECTION_PROGRESS` 含未关注计数；
-- 结果 `{ ok, requestId, works, timedOut }` 一次性返回 options，渲染未关注作品网格并提供「添加」（SAVE_WORKS 批量入库）与「取消收藏」（见 [06](./06-independent-cancel-collection.md)）两个动作。
+- 循环收尾由 background `scanTasks.persistScan` 按 `persist` 域**直接落库**（stamps 一遍式写 + 丢失检测，见 [10](./10-storage-write-and-import.md)），响应 `{ ok, requestId, works, timedOut, saved, lostUids }` 返回 options；弹窗展示「新增/更新/已取消」汇总，丢失条目（扫描期间已取消收藏）经垃圾桶按钮移入「稍后删除」分组。
 
 > 边界说明：**点赞扫描（FETCH_FAVORITES）无独立分支**——favorite GET 端点受 Turing 风控验证，独立模式不可用（待补充：如需支持须另行逆向 Turing 方案）。点赞扫描仅 Tab 模式，链路见 [09](./09-inject-tab-mode.md)。
 
 ## 核心流程图（文字描述）
 
 ```
-options: collections.openScanDialog({ buildFetchArgs: () => ({ type:"FETCH_COLLECTION" }), needSecUid:false })
-  → bgMsg(FETCH_COLLECTION)
-    → background switch → loadIndependentMode() === true
-      → handleIndependentFetchCollection(sendResponse)
-          ├─ ensureABogus()
-          ├─ requestId = randomUUID()；注册 cancelHandler
+options: domainScanSync.syncDomain("collections")
+  → 打开进度弹窗 + bgMsg(FETCH_COLLECTION { persist: "collections" })
+    → background switch → independentClient.loadMode() === true
+      → independentTasks.fetchCollection(persist, sendResponse)
+          ├─ credentials.ensureABogus()
+          ├─ requestId = randomUUID()
           └─ while (hasMore && !cancelled):
-               data = independentRequest(API.COLLECTION, buildBaseParams(), {
+               data = independentClient.request(API.COLLECTION, credentials.buildBaseParams(), {
                  method: "POST",
                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
                  body: new URLSearchParams({ count: "20", cursor }).toString(),
@@ -36,11 +36,11 @@ options: collections.openScanDialog({ buildFetchArgs: () => ({ type:"FETCH_COLLE
                  └─ cursor = data.cursor || data.max_cursor || cursor+20
                un = all.filter(w => w.authorFollowed === false).length
                sendMessage(COLLECTION_PROGRESS { collected, unfollowedCount, hasMore, total, requestId })
-               页间延迟 syncFollowings MIN~MAX ms
-          ├─ 移除 cancelHandler
-          └─ sendResponse({ ok:true, requestId, works: all, timedOut: cancelled })
+               页间延迟 syncCollection MIN~MAX ms
+          ├─ persistScan(persist, all, cancelled)：stamps 一遍式落库 + 丢失检测（见 10）
+          └─ sendResponse({ ok:true, requestId, works: all, timedOut, saved, lostUids })
 
-options: 渲染 favGrid → 标题 (未关注N/总数) → 「添加 N」/「取消收藏」按钮
+options: 弹窗收尾「新增 X · 更新 Y · 已取消 Z」；lostUids 非空挂垃圾桶按钮（移入「稍后删除」分组）
 ```
 
 ### 一次请求的完整要素表
@@ -55,7 +55,7 @@ options: 渲染 favGrid → 标题 (未关注N/总数) → 「添加 N」/「取
 | `a_bogus` | ABogus 类对 `qs+method` 本地签名 | 参数被认定篡改 |
 | **webSign** | 本文算法（request 默认开启，全端点生效） | `Signature Not Found` |
 | Referer / Sec-Fetch-* | DNR rule 3 + rule 4 注入（见 [08](./08-dnr-rules.md)） | 缺头被拦 |
-| 时钟偏移 | `getClockSkew()` 校正本地钟差 | 时间戳类签名全歪 |
+| 时钟偏移 | `credentials.getClockSkew()` 校正本地钟差 | 时间戳类签名全歪 |
 
 ### msToken 五级来源
 
@@ -63,20 +63,20 @@ options: 渲染 favGrid → 标题 (未关注N/总数) → 「添加 N」/「取
 ① savedMsToken 缓存（无过期逻辑）
 ② douyin.com cookie jar 的 msToken（注：页面 SDK 走 mssdk 兑换后签发域在 bytedance.com，
    jar 里没有 msToken 属正常现象）
-③ mssdk 兑换：先删 bytedance.com 旧 msToken cookie → POST 静态载荷（identity/crypto.js 的
+③ savedCookie 字符串正则提取 msToken=…
+④ mssdk 兑换：先删 bytedance.com 旧 msToken cookie → POST 静态载荷（identity/crypto.js 的
    MSSDK_STR_DATA）到 mssdk.bytedance.com/web/common（DNR rule 7 补 Origin/Referer）→
    SW 读不到 Set-Cookie，
    从 bytedance.com jar 读回新签发的真 token（参考 TikTokDownloader src/encrypt/msToken.py）
-④ savedCookie 字符串正则提取 msToken=…
 ⑤ 兜底：generateRandomMsToken() 156 位随机字符（服务端不认，严格端点 403）
 判别手段：真 token 字符集不含 - / _ = ；刷新结果带这些字符即走了兜底。
-设置面板「刷新」= 删 savedMsToken 重走 getMsToken()，jar 无值时必然触发一次兑换。
+设置面板「刷新」= 删 savedMsToken 重走 credentials.getMsToken()，jar 无值时必然触发一次兑换。
 ```
 
 ### Argus webSign 算法（定案速查卡）
 
 ```text
-ts  = floor((Date.now() + clockSkew) / 1000)            // 与 a_bogus 共用 getClockSkew()
+ts  = floor((Date.now() + clockSkew) / 1000)            // 与 a_bogus 共用 credentials.getClockSkew()
 qs' = <环境参数qs含msToken/uifid/odin_tt> + "&a_bogus=" + ab + "&timestamp=" + ts
 sig = md5_hex( uifid + "_" + ts + "_" + SALT + "_" + qs' )
 query = qs' + "&x-secsdk-web-signature=" + sig           // POST body: count=&cursor=
@@ -95,15 +95,17 @@ SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"                // CONFIG.WEB_SIGN_SALT
 
 ```js
 // background/tasks/independent-tasks.js
-async function handleIndependentFetchCollection(sendResponse)
-// 出参：{ ok:true, requestId, works: Work[], timedOut: boolean }
+async function independentTasks.fetchCollection(persist, sendResponse)
+// 入参：persist = "favorites" | "collections"（persistScan 直写落库域）
+// 出参：{ ok:true, requestId, works: Work[], timedOut, saved, lostUids }
 //     | { ok:false, error }
 // 进度：COLLECTION_PROGRESS { collected, unfollowedCount, hasMore, total, requestId }
 
-async function getMsToken() -> Promise<string>      // 五级来源，结果写回 savedMsToken
-async function mintMsToken() -> Promise<string>     // mssdk 兑换，失败返回 ""
-async function getClockSkew() -> Promise<number>    // HEAD douyin.com 取 Date 头，缓存 5 分钟
-function getWebId() / refreshWebIdChain()           // webid 三级获取 / 强制重取并回写 cookie
+credentials.getMsToken() -> Promise<string>              // 五级来源，结果写回 savedMsToken
+credentials.mintMsToken() -> Promise<string>             // mssdk 兑换，失败返回 ""（getMsToken 内部步骤）
+credentials.getClockSkew() -> Promise<number>            // HEAD douyin.com 取 Date 头，缓存 5 分钟
+credentials.getWebId() / credentials.refreshWebIdChain() // webid 三级获取 / 强制重取并回写 cookie
+scanTasks.persistScan(persist, all, cancelled)           // stamps 一遍式落库 + 丢失检测（见 10）
 ```
 
 ```js
@@ -111,15 +113,15 @@ function getWebId() / refreshWebIdChain()           // webid 三级获取 / 强�
 export class Crypto { ... static md5Hex(...) -> string }   // 标准 MD5 → 32 位小写 hex（SW 无 node crypto，纯 JS 实现）
 
 // options/ —— 下游消费
-Favorites.openScanDialog(cfg)                        // cfg 见 01 文档扫描入口；needSecUid=false
-#renderGrid / 「添加」按钮 → SAVE_WORKS { works: 未关注 targets }
+domainScanSync.syncDomain("collections")   // 进度弹窗驱动；落库由 background persistScan 直写
+lostUids 非空 → dialog.addTrashButton → moveLostToTrash（移入「稍后删除」分组）
 ```
 
-Tab 模式对照：同消息走 `handleFetchCollection`，逐页 `sendToTabAsync("FETCH_COLLECTION_PAGE")` → inject `fetchOneCollectionPage`——签名方式完全不同：剥离 SDK 注入键后直接 `window.fetch`，由抖音页面自己的 fetch 包装器注入新鲜签名（详见 [09](./09-inject-tab-mode.md)）。
+Tab 模式对照：同消息走 `scanTasks.fetchCollection`，逐页 `sendToTabAsync("FETCH_COLLECTION_PAGE")` → inject `fetchOneCollectionPage`——签名方式完全不同：剥离 SDK 注入键后直接 `window.fetch`，由抖音页面自己的 fetch 包装器注入新鲜签名（详见 [09](./09-inject-tab-mode.md)）。
 
 ## 关键代码片段
 
-### independentRequest 的 webSign 分支
+### independentClient.request 的 webSign 分支
 
 ```js
 let urlQuery = qs + "&a_bogus=" + a_bogus;
@@ -127,7 +129,7 @@ const webSignHeaders = {};
 if (options.webSign !== false) {                    // 默认开启；显式传 false 才关闭
   const uifid = String(params.uifid || "");
   if (uifid) {                                          // 无 uifid 宁可 403 不可崩
-    const tsSec = Math.floor((Date.now() + (await getClockSkew())) / 1000);
+    const tsSec = Math.floor((Date.now() + (await credentials.getClockSkew())) / 1000);
     urlQuery += "&timestamp=" + tsSec;
     const sig = md5Hex(uifid + "_" + tsSec + "_" + CONFIG.WEB_SIGN_SALT + "_" + urlQuery);
     urlQuery += "&x-secsdk-web-signature=" + sig;
@@ -161,8 +163,8 @@ header 段 —— 必带三件套 + Content-Type：
 ### 拼装顺序（五步）
 
 ```
-① buildBaseParams({})          → 环境参数全集（无业务键，注意不传 sec_user_id）
-② params.msToken = getMsToken() → 五级来源取真 token
+① credentials.buildBaseParams({})          → 环境参数全集（无业务键，注意不传 sec_user_id）
+② params.msToken = credentials.getMsToken() → 五级来源取真 token
 ③ qs = URLSearchParams(params)  → a_bogus = ABogus(qs, "POST", clockSkew)
 ④ urlQuery = qs + "&a_bogus=…" + "&timestamp=<ts秒>"
    sig = md5(uifid_ts_SALT_urlQuery)
@@ -224,7 +226,7 @@ count=20&cursor=0
 |------|------|------|
 | `savedCookie` 缺失 | 抛 `NO_COOKIE` | 设置面板刷新 Cookie |
 | msToken 只有兜底假值 | listcollection 403 | 设置面板「刷新」强制走 mssdk 兑换 |
-| a_bogus 被拒 `web_id_sign_invalid` | independentRequest 自动刷新 webid 重试一次 | 内建 `_webIdRetried` 防死循环 |
+| a_bogus 被拒 `web_id_sign_invalid` | independentClient.request 自动刷新 webid 重试一次 | 内建 `_webIdRetried` 防死循环 |
 | 用户取消 | `CANCEL_ACTIVE_TASK` → cancelled | 返回已收集部分，`timedOut:true`；options 显示「已超时退出，仅获取部分数据」 |
 | 盐轮换（复发） | 此前能用的版本突然固定 `Signature Not Found` 且线格式无误 | 见下方处置指南 |
 
@@ -312,7 +314,7 @@ CryptoJS.MD5 = (msg, ...rest) => {
 | 配置 | 默认 | 作用 |
 |------|------|------|
 | `CONFIG.WEB_SIGN_SALT` | `A96D855A08C0A9707F8BEF0D9A527E4E` | Argus webSign 盐；盐轮换时更新此处 |
-| `CONFIG.PAGE.FAVORITES` | 20 | body 中每页条数 |
+| `CONFIG.PAGE.COLLECTION` | 20 | body 中每页条数 |
 | `runtimeConfig.syncCollectionDelayMin/Max` | 500/1000ms | 页间延迟 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 单请求超时 |
 | `CONFIG.MSSDK.API` + `MSSDK_STR_DATA` | — | msToken 兑换端点与静态载荷 |
@@ -323,10 +325,10 @@ CryptoJS.MD5 = (msg, ...rest) => {
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | chrome.storage.local 凭据缓存键表、openScanDialog 下游 |
-| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentRequest 非 webSign 主路径、buildBaseParams 会话敏感项 |
-| 06 | [06-independent-cancel-collection.md](./06-independent-cancel-collection.md) | 扫描结果「取消收藏」动作的独立模式实现 |
-| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | 「添加」按钮 SAVE_WORKS 进入的合并路径（mergeWork 去重保护） |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | chrome.storage.local 凭据缓存键表、DomainScanSync 下游 |
+| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 非 webSign 主路径、buildBaseParams 会话敏感项 |
+| 06 | [06-independent-cancel-collection.md](./06-independent-cancel-collection.md) | 批量取消收藏的独立模式实现 |
+| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | persistScan 直写进入的合并路径（mergeWork 去重保护） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 4（本端点专用 priority 2 规则）与 rule 7（mssdk 兑换头） |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式 fetchOneCollectionPage 的"包装器代签"方案对照 |
 | — | [TIKTOK_REFERENCE.md](./TIKTOK_REFERENCE.md) | `/aweme/listcollection/` 端点表、msToken 模块对照 |

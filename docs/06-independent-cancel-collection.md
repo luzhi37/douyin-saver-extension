@@ -4,12 +4,12 @@
 
 ## 概述
 
-扫描收藏弹窗的「取消收藏」按钮对同批未关注作品发起批量取消。background 路由：
+options 批量操作对选中条目发起批量取消（batch.js 按域派发 `CANCEL_FAVORITES` / `CANCEL_COLLECTION`）。background 路由：
 
 ```
-CANCEL_COLLECTION → loadIndependentMode()
-  ├─ true  → handleIndependentCancel(awemeIds, "collection", sendResponse)
-  └─ false → runCancelBatch(awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", …)   // Tab模式
+CANCEL_COLLECTION → independentClient.loadMode()
+  ├─ true  → independentTasks.cancel(awemeIds, "collection", persistDomain, sendResponse)
+  └─ false → scanTasks.runCancelBatch(awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", persistDomain, …)   // Tab模式
 ```
 
 独立模式实现要点：
@@ -18,20 +18,21 @@ CANCEL_COLLECTION → loadIndependentMode()
 - 前置校验：awemeIds 非空（`EMPTY`）、`savedCookie` 存在（`NO_COOKIE`）、kind 存在（`UNKNOWN_KIND`）；
 - 密钥头 `bd-ticket-guard-ree-public-key` 取自 `browserFeatures.securityKey`——该值由 inject 在抖音页面采集 localStorage 而来（需用户曾访问过 douyin.com；采集机制见 [09](./09-inject-tab-mode.md)），缺失时**不带该头**继续尝试；
 - SW 的 `fetch()` 无法设置 Referer（forbidden header），精确 Referer 与 Sec-Fetch-* 同源元数据由 DNR rules 3/5 在网络层补齐；
-- 取消信号在 background 循环内自消化（cancelHandler 监听 `CANCEL_ACTIVE_TASK`），不经 content→inject。
+- 取消信号在 background 循环内自消化（`utils.withCancelGuard()` 监听 `CANCEL_ACTIVE_TASK`），不经 content→inject；
+- 移除 = 取消并删本地：远端取消成功的条目经 `scanTasks.deleteCancelled` 同步删除该域本地记录，`CANCEL_DONE` 载荷携带 `deletedIds` 供 options 增量移除网格卡片。
 
 ## 核心流程图（文字描述）
 
 ```
-options 扫描弹窗「取消收藏」
-  → bgMsg({ type:"CANCEL_COLLECTION", awemeIds })
-    → background switch → loadIndependentMode() === true
-      → handleIndependentCancel(awemeIds, "collection", sendResponse)
+options 批量操作「取消收藏」（选中条目）
+  → bgMsg({ type:"CANCEL_COLLECTION", awemeIds, domain })
+    → background switch → independentClient.loadMode() === true
+      → independentTasks.cancel(awemeIds, "collection", domain, sendResponse)
           ├─ 校验：!Array||empty → { ok:false, error:"EMPTY" }
           ├─         !savedCookie → { ok:false, error:"NO_COOKIE" }
           ├─         CONFIG.CANCEL[kind] 不存在 → { ok:false, error:"UNKNOWN_KIND" }
           ├─ key = browserFeatures.securityKey || ""
-          ├─ requestId = randomUUID()；注册 cancelHandler
+          ├─ requestId = randomUUID()；guard = utils.withCancelGuard()
           ├─ sendResponse({ ok:true, requestId, total })        // 立即 ack
           │
           └─ for i in awemeIds（&& !cancelled）:
@@ -47,11 +48,13 @@ options 扫描弹窗「取消收藏」
                  });
                  ok = resp.ok;
                } catch (_) {}
+               if (!ok) errors.push({ awemeId, error: "FAILED" })
                sendMessage(CANCEL_PROGRESS { index, total, status: ok?"ok":"error", awemeId })
                条目间延迟 cancelCollection MIN~MAX ms（末条不加）
-          ├─ 移除 cancelHandler
+          ├─ guard.dispose()
+          ├─ deletedIds = scanTasks.deleteCancelled(domain, awemeIds, failedAwemeIds)
           └─ sendMessage(CANCEL_DONE { requestId, ok:true, cancelled,
-                                        refreshed, failed, failedAwemeIds })
+                                        refreshed, failed, failedAwemeIds, deletedIds })
 
 端点四要素（CONFIG.CANCEL.collection）：
   url      https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383
@@ -64,12 +67,12 @@ options 扫描弹窗「取消收藏」
 
 ```js
 // background/tasks/independent-tasks.js
-async function handleIndependentCancel(awemeIds, kind, sendResponse)
-// awemeIds: string[]；kind: "collection"
+async function independentTasks.cancel(awemeIds, kind, persistDomain, sendResponse)
+// awemeIds: string[]；kind: "collection"；persistDomain: 取消成功后删本地记录的目标域
 // 出参（ack）：{ ok:true, requestId, total }；后续结果仅经 CANCEL_PROGRESS / CANCEL_DONE 消息
 // 进度：CANCEL_PROGRESS*N → CANCEL_DONE
 
-async function runCancelBatch(awemeIds, tabType, progressType, sendResponse)   // Tab模式对照分支
+async function scanTasks.runCancelBatch(awemeIds, tabType, progressType, persistDomain, sendResponse)   // Tab模式对照分支
 ```
 
 ### 双模式实现差异对照
@@ -125,7 +128,7 @@ body: action=0&aweme_id=7267428670501915945&aweme_type=0
 |---|---|---|
 | `aid`（query） | `6383` | 抖音 web 端应用 ID |
 | `action` | `0` | **0 = 取消收藏**（1 = 添加） |
-| `aweme_id` | `7267428670501915945` | 目标作品，即扫描结果网格里的 awemeId |
+| `aweme_id` | `7267428670501915945` | 目标作品 awemeId（批量勾选条目） |
 | `aweme_type` | `0` | 作品类型占位（页面同款固定值） |
 
 要点：
@@ -142,7 +145,7 @@ body: action=0&aweme_id=7267428670501915945&aweme_type=0
 | 密钥过期 | 服务端拒绝，`resp.ok=false` | options 弹 toast 提示刷新页面重新捕获；无效 ticket-guard 密钥有触发服务端登出的风险 |
 | 单条网络异常 | catch 后 ok 保持 false | 记入进度 error 状态，循环继续 |
 | 用户关闭弹窗 | `CANCEL_ACTIVE_TASK` | cancelled 置位；当前在途请求完成后停止（无法即时中断） |
-| **已知偏差（待补充修复）** | 独立模式下逐条失败的 `errors[]` 从未填充：汇总 `CANCEL_DONE` 的 `failed` 恒为 0、`refreshed` 恒等于总数 | options 结算 toast 以 CANCEL_DONE 为准会显示全部成功；真实成败以逐条 CANCEL_PROGRESS 的 status 字段为准。修复方向：循环内 `if (!ok) errors.push({ awemeId, error:"HTTP_"+status })` 与 Tab 分支对齐 |
+| 逐条失败计数的双通道 | `CANCEL_DONE.failed` 为汇总真值；`CANCEL_PROGRESS.status` 为逐条实时反馈 | 循环内 `if (!ok) errors.push({ awemeId, error:"FAILED" })` 填充 errors，`refreshed = 总数 - failed`；两条通道同源于同一循环 |
 
 ## 配置项说明
 
@@ -158,6 +161,6 @@ body: action=0&aweme_id=7267428670501915945&aweme_type=0
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、browserFeatures 缓存键 |
-| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 上游扫描弹窗与「添加」动作；同批 targets 的来源 |
+| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 上游扫描（persistScan 落库）；同批 targets 的来源 |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 5 全文（本流程可用性的根）、rule 3 兜底关系 |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式 cancelOne XHR 实现、getSecurityKey、AUTH_FAILED 语义对照 |

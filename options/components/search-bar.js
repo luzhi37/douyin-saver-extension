@@ -5,7 +5,7 @@ import { worksGrid, favoritesGrid, collectionsGrid } from '../grids/works-grid.j
 import { batch } from '../data/batch.js';
 
 // ---------- 检索：搜索/排序 ----------
-// 数据层过滤（docs/UI_IMPROVEMENTS.md 建议5）：state.works/followings 保持全量，
+// 数据层过滤（见 docs/11）：state.works/followings 保持全量，
 // 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响。
 // 视图函数返回共享缓存数组（三段流水线见 #viewCache），调用方一律只读——不得原地
 // sort/reverse/push 返回数组，需要变更序自行拷贝
@@ -136,7 +136,7 @@ class SearchBar {
     const s = this.#searchState;
     let list = source;
     if (kw) {
-      // 关键词按「范围」取匹配字段（docs/UI_IMPROVEMENTS.md 建议5）
+      // 关键词按「范围」取匹配字段（见 docs/11）
       list = list.filter((w) => {
         const m = lcFields(w);
         switch (s.scope) {

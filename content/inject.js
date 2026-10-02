@@ -42,8 +42,9 @@
       FETCH_PAGE: 15000,
       FETCH_DETAIL: 8000,
     },
-    // 取消操作端点四要素，按域组构（与 background CONFIG.CANCEL 同构）：
-    // favorites=点赞域（digg 端点）、collection=收藏（collect 端点）——url 值引用端点原文
+    // 取消操作端点四要素，按域组构（favorites=点赞域 digg 端点、collection=收藏 collect 端点；
+    // background CONFIG.CANCEL 仅有 collection——独立模式结构性不支持点赞取消，两侧形状不同构）：
+    // url 值引用端点原文
     CANCEL: {
       favorites: {
         url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
@@ -205,6 +206,13 @@
         if (secUid && secUid !== "self") return secUid;
       }
       return "";
+    }
+
+    // profile/other 请求的签名源兜底链：profile 端点无专属捕获时按端点族回退。
+    // 单一出处——EventRouter.#onFetchProfileOther 的 NO_SIGNATURE 预判与
+    // ApiClient.fetchProfileOther 的实际取数共用，调整回退顺序只改这里
+    profileSigSource() {
+      return this.#profileQuery || this.#followingQuery || this.#postQuery || this.#favoriteQuery || this.#collectionQuery;
     }
 
     get detailQuery() {
@@ -686,12 +694,7 @@
     }
 
     async fetchProfileOther(secUid, externalSignal) {
-      const sigSource =
-        signatureCapture.profileQuery ||
-        signatureCapture.followingQuery ||
-        signatureCapture.postQuery ||
-        signatureCapture.favoriteQuery ||
-        signatureCapture.collectionQuery;
+      const sigSource = signatureCapture.profileSigSource();
       const url = signatureCapture.buildUrl(
         CONFIG.API.PROFILE_OTHER,
         Object.assign({}, CONFIG.DEVICE_PARAMS, {
@@ -1242,12 +1245,7 @@
     #onFetchProfileOther(e) {
       const { requestId, secUid } = e.detail || {};
       if (!requestId || !secUid) return;
-      const sigSource =
-        signatureCapture.profileQuery ||
-        signatureCapture.followingQuery ||
-        signatureCapture.postQuery ||
-        signatureCapture.favoriteQuery ||
-        signatureCapture.collectionQuery;
+      const sigSource = signatureCapture.profileSigSource();
       if (!sigSource) {
         this.#dispatchResult(CONFIG.EVENTS.FETCH_PROFILE_OTHER_RESULT, { requestId, ok: false, error: "NO_SIGNATURE" });
         return;

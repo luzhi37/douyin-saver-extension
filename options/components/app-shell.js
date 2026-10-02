@@ -1,5 +1,5 @@
 // ---------- AppShell（应用壳：域切换 / 全局错误态 / 弹窗关闭入口） ----------
-import { dom, state, services, store } from '../core.js';
+import { dom, state, services, store, utils } from '../core.js';
 import { worksGrid, favoritesGrid, collectionsGrid } from '../grids/works-grid.js';
 import { followingsGrid } from '../grids/followings-grid.js';
 import { detail } from './detail.js';
@@ -31,20 +31,11 @@ class AppShell {
     const collapsed = !dom.leftSidebar.classList.contains("collapsed");
     // 左侧边栏折叠同样改变主网格宽度，auto-fill 跨列阈值时卡片跳位：
     // 锚定视口内最上方卡片，折叠前后保持其视口 Y
-    const anchor = this.#topVisibleGridCard();
+    const anchor = utils.topVisibleGridCard();
     sidebar.preserveGridAnchor(anchor, () => {
       dom.leftSidebar.classList.toggle("collapsed", collapsed);
       localStorage.setItem(AppShell.LEFT_SIDEBAR_KEY, collapsed ? "1" : "");
     });
-  }
-
-  // 四域统一的网格锚点：视口内最上方可见卡片（骨架/完整卡均参与网格流、位置真实）
-  #topVisibleGridCard() {
-    const gridTop = dom.mainGrid.getBoundingClientRect().top;
-    for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {
-      if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
-    }
-    return null;
   }
 
   initLeftSidebar() {
@@ -140,7 +131,7 @@ class AppShell {
     }
   }
 
-  // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（docs/UI_IMPROVEMENTS.md 建议3），作用于顶层弹窗。
+  // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（见 docs/11），作用于顶层弹窗。
   // 短操作锁 preventDialogClose 期间不响应；长操作经 activeDialog 发取消信号
   async requestDialogClose() {
     if (state.preventDialogClose) return;

@@ -48,8 +48,8 @@ XHR Hook：包装 open 记录 _dyUrl，send 后 load 事件里 /aweme/ 预检 �
   （仅签名捕获，不提取数据；取消操作走原生 XHR 自动带页面签名）
 
 六个端点缓存一一对应、不可混用：
-  __lastCapturedDetailQuery / __capturedProfileQuery / __capturedFollowingQuery /
-  __capturedPostQuery / __capturedFavoriteQuery / __capturedCollectionQuery
+  signatureCapture.detailQuery / signatureCapture.profileQuery / signatureCapture.followingQuery /
+  signatureCapture.postQuery / signatureCapture.favoriteQuery / signatureCapture.collectionQuery
 ```
 
 ### 六类 API 请求的签名策略
@@ -57,8 +57,8 @@ XHR Hook：包装 open 记录 _dyUrl，send 后 load 事件里 /aweme/ 预检 �
 | 函数 | 端点 | 方法 | 签名来源 | 超时 |
 |------|------|------|----------|------|
 | `fetchOneDetail` | `/aweme/detail/` | GET | **包装器代签**：stripSdkKeys 剥签名键后裸发（跳过 aweme_id 键） | 8s |
-| `fetchAuthorWorks` | `/aweme/post/` | GET | 同上（代签，合并 `__capturedPostQuery` 业务参数） | 15s |
-| `fetchFollowingPage` | `/user/following/list` | GET | 同上（代签，合并 `__capturedFollowingQuery` 业务参数） | 15s |
+| `fetchAuthorWorks` | `/aweme/post/` | GET | 同上（代签，合并 `signatureCapture.postQuery` 业务参数） | 15s |
+| `fetchFollowingPage` | `/user/following/list` | GET | 同上（代签，合并 `signatureCapture.followingQuery` 业务参数） | 15s |
 | `fetchProfileOther` | `/user/profile/other/` | GET | 同上（代签；sigSource 五源 fallback：profile→following→post→favorite→collection，每环都经 stripSdkKeys） | 15s |
 | `fetchOneFavoritesPage` | `/aweme/favorite/` | GET | 同上（代签） | 15s |
 | `fetchOneCollectionPage` | `/aweme/listcollection/` | POST | 同上（代签），Content-Type urlencoded | 15s |
@@ -96,7 +96,7 @@ function buildUrl(pathname, params) -> URL        // origin 相对路径 + 参�
 function mergeParams(url, captured) -> URL        // 已有键不覆盖
 function stripPageKeys(captured) -> Map|null      // 剥 offset/count/cursor*/max_*/min_*
 function stripSdkKeys(captured) -> Map|null       // 剥 SDK_INJECT_KEYS 全部签名注入项
-function resolveSelfSecUidFromCaptures() -> string// favorite/post/following/collection 缓存中找 sec_user_id
+function resolveSelfSecUid() -> string// favorite/post/following/collection 缓存中找 sec_user_id
 
 // inject.js —— 数据提取
 function normalizeWork(raw, source: "api"|"fiber") -> Work|null
@@ -114,7 +114,7 @@ async function fetchOneFavoritesPage(secUid, cursor, count, signal?)
 async function fetchOneCollectionPage(cursor, count, signal?)
 async function fetchAuthorWorks(secUid, startCursor, count)
 function cancelOne(awemeId, url, bodyFn, referrer, signal?) -> Promise   // XHR
-function cancelOneLike / cancelOneCollection (awemeId, signal?)
+function cancelOneFavorites / cancelOneCollection (awemeId, signal?)
 
 // inject.js —— 任务槽与采集
 function setActiveTask(abortFn|null)              // 单槽位：注册前 abort 旧任务
@@ -259,16 +259,16 @@ Tab 模式下 inject 回 `NO_SIGNATURE` 后，options 弹 `showNoSignatureDialog
 
 | 入口 | 引导页 | 文案来源 |
 |------|--------|----------|
-| 关注同步（vmSyncFollowings 收到 NO_SIGNATURE） | `/user/self?showTab=following` | 硬编码 |
-| 扫描点赞（openScanDialog） | `cfg.noSignatureUrl` = `/user/self?showTab=like` | `cfg.noSignatureStep` / `cfg.noSignatureScan` |
-| 扫描收藏（openScanDialog） | `cfg.noSignatureUrl` = `/user/self?showTab=favorite_collection` | 同上 |
+| 关注同步（Sync 收到 NO_SIGNATURE） | `/user/self?showTab=following` | 硬编码 |
+| 点赞/收藏域扫描（DomainScanSync） | `URL_USER_SELF + URL_FAVORITE_TAB / URL_COLLECTION_TAB` | `DOMAINS_META[domain].label` |
+| 作者作品入库（AuthorImport） | `URL_BASE + "/user/" + secUid`（作者主页，浏览作品列表即完成 post 捕获） | 硬编码「作品」/「导入作品」 |
 
 ## 异常场景及处理
 
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | 冷启动无签名缓存 | following/favorite/collection/profile 事件层直接回 `NO_SIGNATURE` | options 弹 `showNoSignatureDialog` 引导先打开对应抖音页面（触发条件见上文）；detail/post 无此前置检查（见 07 待补充项） |
-| 用户在 `/user/self` 页触发扫描 | secUid === "self" | `resolveSelfSecUidFromCaptures()` 从缓存签名解析真实 sec_uid；解析不出仍报 NO_SIGNATURE |
+| 用户在 `/user/self` 页触发扫描 | secUid === "self" | `resolveSelfSecUid()` 从缓存签名解析真实 sec_uid；解析不出仍报 NO_SIGNATURE |
 | detail 返回空 body | 抛 `RATE_LIMITED` | 属致命错误码，终止整个同步批次（01 文档分类表） |
 | 预塞旧签名（误改 stripSdkKeys） | argus `web_id_sign_invalid` 403 | 保持"剥离全部 SDK 键再裸发"的形态不变 |
 | AbortError | fetch/XHR 被 abort | 统一转译为 `CANCELLED`（cancelOne）/由外层 catch 上抛（fetch 路径） |

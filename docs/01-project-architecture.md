@@ -83,7 +83,7 @@ options 触发（如 SYNC_WORKS）
 options 设置面板开关 → SET_MODE { enabled }
   → chrome.storage.local.set({ independentMode }) + setIndependentMode() 写 SW 内存缓存
   → enabled=true 时预热 ensureABogus()（构造 ABogus 实例供后续签名）
-读取：loadIndependentMode() 首次从 storage 读入 _independentMode 并缓存（SW 存活期内不再回读）
+读取：independentClient.loadMode() 首次从 storage 读入并缓存到私有字段 #mode（SW 存活期内不再回读）
 ```
 
 > 关键约束：**options 发出的消息类型与参数格式与模式无关**。两模式的差异完全封装在 background 路由之后，产出相同响应形状。两模式不共享算法代码、不共用缓存变量。
@@ -147,8 +147,27 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 | `FOLLOWING_PROGRESS` | `{ collected, hasMore, total, requestId, phase?: "calibrate" }` |
 | `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` | `{ collected, unfollowedCount, hasMore, total, requestId }` |
 | `CANCEL_PROGRESS` | `{ requestId, index, total, status, awemeId }` |
-| `CANCEL_DONE` | `{ requestId, ok, cancelled, refreshed, failed, failedAwemeIds }` |
+| `CANCEL_DONE` | `{ requestId, ok, cancelled, refreshed, failed, failedAwemeIds, deletedIds }` |
 | `IMPORT_PROGRESS` | `{ domain, processed, total }`（IMPORT_DATA 作品域分块落库逐块回报） |
+
+## 消息类型总表（App.route 全量分发）
+
+> 本表自 AGENTS.md「消息协议」迁入（2026-10-03 瘦身）。`App.route()`（`background/main.js`）switch 分发所有 `chrome.runtime.sendMessage`。
+
+| 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
+|----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见本册「接口 / 方法签名」） |
+| 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
+| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准，见 docs/04） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
+| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options 触发 background 循环扫描、逐页透传进度；`FETCH_FOLLOWING` 收集完成后自动校准（门控与细节见 docs/04）                              |
+| 入库                       | `IMPORT_USER_WORKS` / `IMPORT_FOLLOWING` — 作者作品分页入作品域 + 作者档案入关注域，均双模支持（分组/去重语义见 docs/07）；过程消息 `IMPORT_WORKS_PROGRESS`。入口为菜单「入库」弹窗（`AuthorImport`） |
+| 存储广播                   | `STORE_CHANGED { domain, upserts?, addedIds?, changedIds? }` — 落库成功后 background 广播（发送方可能是抖音标签页等外部上下文），**仅在 `changed>0` 时发**（no-op 不广播）。两种载荷：**point**（works 域单发保存，`changed ≤ BROADCAST.UPSERTS_MAX`=8 时附带合并后记录 `upserts` 与新增 id 集 `addedIds`）；**bulk**（入库循环收尾等批量变化，附带轻量 id 集 `changedIds`/`addedIds`——禁止改回全量记录载荷防消息膨胀；关注域无载荷）。载荷语义见 [docs/10](./10-storage-write-and-import.md)；options 侧去抖/flush/头插收口管线与红线见 [docs/11](./11-options-ui.md)「STORE_CHANGED 增量收口」 |
+| 取消入口                   | `CANCEL_FAVORITES` / `CANCEL_COLLECTION` — options 触发 background 批量取消：tab 模式逐条派发 `CANCEL_ONE_*` 到 inject；独立模式仅 `CANCEL_COLLECTION` 在 background 循环 POST（细节见 docs/06）                                                                                                     |
+| 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环；仅在长操作弹窗关闭时发送（无 `state.activeDialog` 时不发送）                                                                                              |
+| Tab 转发（background→tab） | `FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`（tab 模式经 content→inject；独立模式由 background 直接 POST，见 docs/07） |
+| 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE`（载荷含 `deletedIds`：取消成功条目已同步删除该域本地记录）/ `IMPORT_PROGRESS`（IMPORT_DATA 分块落库逐块回报） — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发（`FOLLOWING_PROGRESS` 带 `phase:"calibrate"` 表示关注校准阶段）                                                                                                |
+
+> 长任务链路原语（`tabBridge.send`/`sendAsync`/`requestResponse`）与同步/扫描/取消的完整链路、时序差异、分页参数见本册「接口 / 方法签名」与 docs/02–09 各分册。
 
 ## 关键代码片段
 
@@ -156,10 +175,10 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 
 ```js
 case "SYNC_WORKS":
-  return asyncHandler(async () => {
-    const im = await loadIndependentMode();
-    if (im) return handleIndependentSyncWorks(message.awemeIds, sendResponse);
-    return handleSyncWorks(message.awemeIds, sendResponse);
+  return utils.asyncHandler(async () => {
+    const im = await independentClient.loadMode();
+    if (im) return independentTasks.syncWorks(message.awemeIds, sendResponse);
+    return scanTasks.syncWorks(message.awemeIds, sendResponse);
   }, sendResponse);
 ```
 
@@ -196,20 +215,20 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 2. **class 定义与实例化成对出现**——类定义后紧跟 `const name = new Class()`，不允许先集中列出所有 class 再集中实例化。
 3. 大段分隔用边框注释 `// ---------- 标签 ----------`。
 4. options/core.js 顶层集中定义并 export `config / dom / state / store / utils / runtimeConfig / services`，所有类模块经 ES import 引用这些模块级变量；类内部自引用必须用 `this.xxx()`，不得用单例变量名。
-5. 私有方法使用 `#` 语法；**class field 箭头函数仅用于 add/remove 对称的事件回调**（如 `Detail.#noteKeyHandler`）。
+5. 私有方法使用 `#` 语法；**class field 箭头函数仅用于 add/remove 对称的事件回调**（如 `Sidebar.#onResizeDown/Move/Up`）。
 6. options/main.js 组合根启动打印 `[DDM] options build …` 构建标记，用于排查用户端跑旧构建。
 
 ## 四域存储模型
 
-### IndexedDB（data/storage.js 封装，库名 `douyin-saver` v1）
+### IndexedDB（data/storage.js 封装，库名 `douyin-saver`，DB_VERSION = 5；无改名迁移——低版本旧库升级前须先在旧版导出备份）
 
 | store | keyPath | 索引 | 内容 |
 |-------|---------|------|------|
-| `works` | `awemeId` | `groupId` | `{ [awemeId]: Work }` |
+| `works` | `awemeId` | `groupId` / `savedAt_id` / `groupId_savedAt_id` | `{ [awemeId]: Work }` |
 | `works_groups` | `id` | — | `[{ id, name, fixed, order? }]` |
-| `favorites` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
+| `favorites` | `awemeId` | `groupId` / `savedAt_id` / `groupId_savedAt_id` | `{ [awemeId]: Work }`（与 works 同构） |
 | `favorites_groups` | `id` | — | 同 groups 结构 |
-| `collections` | `awemeId` | `groupId` | `{ [awemeId]: Work }`（与 works 同构） |
+| `collections` | `awemeId` | `groupId` / `savedAt_id` / `groupId_savedAt_id` | `{ [awemeId]: Work }`（与 works 同构） |
 | `collections_groups` | `id` | — | 同 groups 结构 |
 | `followings` | `uid`（字符串化） | `groupId` | `{ [uid]: Following }` |
 | `followings_groups` | `id` | — | 同 groups 结构 |
@@ -246,12 +265,12 @@ DOMAIN_CONFIG = {
 | `savedCookie` + `savedCookieTime` | string + number | REFRESH_COOKIE | douyin.com cookie jar 全量字符串快照；门禁与 UIFID/uid 提取源 |
 | `browserFeatures` + `browserFeaturesTime` | object + number | CAPTURE_BROWSER_FEATURES / REFRESH_BROWSER_FEATURES | 浏览器特征指纹（含 securityKey） |
 | `independentMode` | boolean | SET_MODE | 模式开关 |
-| `secUid` | string | options 输入框 debounce 500ms | 独立模式目标用户 |
+| `secUid` | string | options 设置面板 `saveBeforeClose` 关闭面板时一次性写入 | 独立模式目标用户 |
 | `runtimeConfig` | object | options 设置面板保存 → RELOAD_CONFIG | 运行参数（见配置项说明） |
 
 ### 设置面板与凭据缓存刷新链
 
-设置面板含 4 个 section：**独立模式**（开关 + secUid 输入 + 缓存列表）、**Cookie 配置**（键值对表格）、**浏览器特征**（只读表格）、**Tab 模式**（安全状态）。缓存列表各项的「刷新」按钮经 `TYPE_MAP = { cookie:"COOKIE", mstoken:"MSTOKEN", webid:"WEBID", browser_features:"BROWSER_FEATURES" }` 映射为消息：
+设置面板含 4 个 section：**运行参数**（独立模式开关 + 校准开关 + secUid 输入 + 缓存列表 + 延迟/超时参数）、**Cookie 配置**（键值对表格）、**浏览器特征**（只读表格）、**Tab 模式**（安全状态）。缓存列表各项的「刷新」按钮经 `TYPE_MAP = { cookie:"COOKIE", mstoken:"MSTOKEN", webid:"WEBID", browser_features:"BROWSER_FEATURES" }` 映射为消息：
 
 | 面板项 | 消息 | 行为 |
 |--------|------|------|
@@ -307,7 +326,7 @@ DOMAIN_CONFIG = {
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 视频重试   | `VIDEO_RETRY_DELAYS` `[200,400,600]` / `VIDEO_RETRY_MAX` `3` / `VIDEO_RETRY_FALLBACK_DELAY` `1000`                                                            |
 | 媒体熔断   | `MEDIA_FAIL_WINDOW` `5000` / `MEDIA_FAIL_MAX` `10` / `MEDIA_BREAK_COOLDOWN` `15000`                                                                           |
-| 超时       | `FETCH_RETRY_DELAY` `1000` / `SYNC_TIMEOUT` `30000` / `VIDEO_FALLBACK_TIMEOUT` `5000`                                                                         |
+| 超时       | `FETCH_RETRY_DELAY` `1000` / `VIDEO_FALLBACK_TIMEOUT` `5000`                                                                                                  |
 | 详情页     | `DETAIL_TITLE_MAX_LEN` `40` / `TOAST_DURATION` `2000` / `TOAST_ERROR_DURATION` `4500` / `DOWNLOAD_MAX_RETRY` `1`                                              |
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000` / `SEARCH_DEBOUNCE` `200`                                        |
 | 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
@@ -325,7 +344,7 @@ DOMAIN_CONFIG = {
 |------|------|----------|
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_WORKS 独立模式分支全链路 |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | FETCH_FOLLOWING 独立模式分支 |
-| 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | calibrateFollowingStats / CALIBRATE_FOLLOWING |
+| 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | calibrateStats / CALIBRATE_FOLLOWING |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | FETCH_COLLECTION 独立模式分支 + webSign |
 | 06 | [06-independent-cancel-collection.md](./06-independent-cancel-collection.md) | CANCEL_COLLECTION 独立模式分支 |
 | 07 | [07-independent-fetch-user-works.md](./07-independent-fetch-user-works.md) | FETCH_WORKS_PAGE 双模分支 |

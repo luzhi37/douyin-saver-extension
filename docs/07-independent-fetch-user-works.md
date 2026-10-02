@@ -1,6 +1,6 @@
 # 07 · 独立模式（逆向）— 获取用户作品列表
 
-> 职责边界：`FETCH_WORKS_PAGE` 的双模实现——作者主页作品分页（`/aweme/v1/web/aweme/post/`），供管理页作者侧边栏滚动加载。独立模式为 background 单次直连；Tab 模式为 sendToTab → inject `fetchAuthorWorks`。侧边栏的渲染与虚拟化不在本文范围（见 AGENTS.md Sidebar 条目）。
+> 职责边界：`FETCH_WORKS_PAGE` 的双模实现——作者主页作品分页（`/aweme/v1/web/aweme/post/`），供管理页作者侧边栏滚动加载。独立模式为 background 单次直连；Tab 模式为 sendToTab → inject `fetchAuthorWorks`。侧边栏的渲染与虚拟化不在本文范围（见 [12-class-map](./12-class-map.md) `Sidebar` 条目与 AGENTS.md 渲染红线）。
 
 ## 概述
 
@@ -12,10 +12,10 @@
 options Sidebar 滚动近底
   → 守卫：sidebarLoading || !sidebarCursor || !currentFollowingSecUid → 直接返回
   → bgMsg({ type:"FETCH_WORKS_PAGE", secUid, cursor })
-    → background switch "FETCH_WORKS_PAGE" → loadIndependentMode()
-        ├─ true：handleIndependentFetchWorksPage(secUid, cursor, sendResponse)
-        │    ├─ ensureABogus()
-        │    └─ data = independentRequest(API.POST, buildBaseParams({
+    → background switch "FETCH_WORKS_PAGE" → independentClient.loadMode()
+        ├─ true：independentTasks.fetchWorksPage(secUid, cursor, sendResponse)
+        │    ├─ credentials.ensureABogus()
+        │    └─ data = independentClient.request(API.POST, credentials.buildBaseParams({
         │           sec_user_id, max_cursor: String(cursor||0), count: String(PAGE.POST=20) }))
         │         // GET /aweme/v1/web/aweme/post/，webSign 由 request 默认叠加
         │       works = (data.aweme_list||[]).map(formatWork).filter(Boolean)
@@ -28,7 +28,7 @@ options Sidebar 滚动近底
              → content BRIDGE（固定 60s 兜底超时）→ DY_FETCH_WORKS_PAGE_REQUEST
              → inject fetchAuthorWorks(secUid, maxCursor, count)
                   url = buildUrl(API.POST, DEVICE_PARAMS + { sec_user_id, max_cursor, count })
-                  merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)))   // 剥签名键+分页键，包装器代签
+                  merged = mergeParams(url, stripPageKeys(stripSdkKeys(signatureCapture.postQuery)))   // 剥签名键+分页键，包装器代签
                   window.fetch(merged, { _dyInternal:true })                      // 15s 超时
              → 结果事件回传 → sendResponse 同形状
 
@@ -42,7 +42,7 @@ options 收到结果：
 
 ```js
 // background/tasks/independent-tasks.js（独立分支）
-async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse)
+async function independentTasks.fetchWorksPage(secUid, cursor, sendResponse)
 // 出参：{ ok:true, works: Work[], hasMore: boolean, maxCursor: string }
 //     | { ok:false, error }
 // 注意：单次请求协议——不 ack requestId、不发进度消息、无 CANCEL_ACTIVE_TASK 监听
@@ -57,19 +57,19 @@ async function fetchAuthorWorks(secUid, startCursor, count)
 | 模式 | 层级 |
 |------|------|
 | Tab模式 | sendToTab 超时（`msg.timeout` = CONFIG.TIMEOUT.REQUEST，默认 30s）+ content.js requestResponse 固定 60s 兜底 |
-| 独立模式 | independentRequest 单层超时（runtimeConfig.timeoutRequest，默认 30s） |
+| 独立模式 | independentClient.request 单层超时（runtimeConfig.timeoutRequest，默认 30s） |
 
 ## 关键代码片段
 
 ### 独立分支全貌
 
 ```js
-async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
+async function independentTasks.fetchWorksPage(secUid, cursor, sendResponse) {
   try {
-    await ensureABogus();
-    const data = await independentRequest(
+    await credentials.ensureABogus();
+    const data = await independentClient.request(
       CONFIG.API.POST,                                   // "/aweme/v1/web/aweme/post/"
-      await buildBaseParams({
+      await credentials.buildBaseParams({
         sec_user_id: secUid,
         max_cursor: String(cursor || 0),
         count: String(CONFIG.PAGE.POST),               // 20
@@ -78,7 +78,7 @@ async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
     const works = (data.aweme_list || []).map(formatWork).filter(Boolean);
     sendResponse({
       ok: true, works,
-      hasMore: data.has_more === true || data.has_more === 1,
+      hasMore: utils.hasMoreFlag(data),
       maxCursor: data.max_cursor || "",
     });
   } catch (e) {
@@ -90,11 +90,11 @@ async function handleIndependentFetchWorksPage(secUid, cursor, sendResponse) {
 ### Tab 分支的签名复用点
 
 ```js
-const merged = mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)));
+const merged = mergeParams(url, stripPageKeys(stripSdkKeys(signatureCapture.postQuery)));
 // 剥签名键（stripSdkKeys）+ 分页键（stripPageKeys）后仅合并业务/环境参数，签名由页面
 // 包装器代签——post 端点已被风控强制 Argus webSign 校验，复用捕获的旧
 // x-secsdk-web-signature 会被原样重放、包装器不再重签 → Blocked by ArgusSecurityPlugin
-// Sign Invalid（详见 09 签名策略节）。__capturedPostQuery 为空时 mergeParams 原样返回，
+// Sign Invalid（详见 09 签名策略节）。signatureCapture.postQuery 为空时 mergeParams 原样返回，
 // 发裸参数请求由包装器从零补签，不报错。
 ```
 
@@ -139,14 +139,14 @@ has_more=false → options 置 sidebarCursor=null 停止监听滚动
 
 对照：[03](./03-independent-sync-followings.md) 的 following/list 用 `offset += 20` 自行推进；本文游标完全由服务端掌舵。响应 `aweme_list[]` 每条经 `formatWork` 三级取链（直链解剖见 [02](./02-independent-sync-works.md) 第四步）。
 
-Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 URL 后 `mergeParams(url, stripPageKeys(stripSdkKeys(__capturedPostQuery)))` 合并页面捕获的业务/环境键（签名键已剥离），签名由页面包装器代注入——缓存缺失时不报错、发裸参数请求由包装器从零补签（已知偏差见异常表）。
+Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 URL 后 `mergeParams(url, stripPageKeys(stripSdkKeys(signatureCapture.postQuery)))` 合并页面捕获的业务/环境键（签名键已剥离），签名由页面包装器代注入——缓存缺失时不报错、发裸参数请求由包装器从零补签（已知偏差见异常表）。
 
 ## 异常场景及处理
 
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | 独立模式 `savedCookie` 缺失 / HTTP 错误 | `{ ok:false, error:"NO_COOKIE"/"HTTP_*" }` | options 侧边栏停止追加；无自动重试 |
-| a_bogus 被拒 `web_id_sign_invalid` | independentRequest 内部刷新 webid 重试一次 | 内建恢复 |
+| a_bogus 被拒 `web_id_sign_invalid` | independentClient.request 内部刷新 webid 重试一次 | 内建恢复 |
 | Argus 风控间歇强制 webSign（403 `Signature Not Found`） | request 默认叠加 webSign 后消除；盐轮换会复发 | 按 [05](./05-independent-scan-collection.md) 复发处置指南更新 `CONFIG.WEB_SIGN_SALT` |
 | Tab模式签名缓存缺失（冷启动未浏览过作者页） | 发出裸参数请求，服务端大概率拒绝或返回错误码 | **待补充**：可对齐 following/favorite 的做法在缓存缺失时显式回 `NO_SIGNATURE` 引导用户先浏览页面 |
 | 双层超时（Tab） | sendToTab 先 TIMEOUT 并补发 CANCEL_ACTIVE_TASK | content 60s 兜底仅在 background 未及时应答时生效 |
@@ -198,6 +198,6 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | formatWork 字段模型；sendToTab/requestResponse 协议 |
-| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentRequest 骨架与三级取链（formatWork 与 inject extractVideo 双实现约束） |
+| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 骨架与三级取链（formatWork 与 inject extractVideo 双实现约束） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3（独立模式 GET 头改写） |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | fetchAuthorWorks 所在的签名复用体系与 `_dyInternal` 保护 |

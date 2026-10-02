@@ -6,7 +6,7 @@
 import { crc32, assembleStoreZip } from "./zip-format.js";
 
 self.onmessage = (e) => {
-  const { id, entries } = e.data;
+  const { entries } = e.data;
   (async () => {
     try {
       const entryData = [];
@@ -14,12 +14,12 @@ self.onmessage = (e) => {
         const { name, blob } = entries[i];
         const buf = await blob.arrayBuffer();
         entryData.push({ name, crc: crc32(new Uint8Array(buf)), blob });
-        self.postMessage({ id, type: "progress", index: i + 1, total: entries.length });
+        self.postMessage({ type: "progress", index: i + 1, total: entries.length });
       }
       const blob = assembleStoreZip(entryData);
-      self.postMessage({ id, type: "done", blob });
+      self.postMessage({ type: "done", blob });
     } catch (err) {
-      self.postMessage({ id, type: "error", message: err?.message || String(err) });
+      self.postMessage({ type: "error", message: err?.message || String(err) });
     }
   })();
 };

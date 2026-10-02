@@ -1,7 +1,7 @@
 // ===== 平台标注说明 =====
 // 抖音（Douyin）：a_bogus 签名（ABogus）及其依赖（SM3 国密哈希 / RC4 / 自定义 Base64）、
 //                mssdk 静态设备上报载荷（MSSDK_STR_DATA，独立模式兑换真 msToken 用）
-// 通用：两平台共用（msToken 生成 / Cookie 解析）
+// 通用：与平台无关的纯工具（msToken 随机生成 / Cookie 解析）
 // 注：TikTok 相关签名（X-Bogus / X-Gnarly / device_id）已于 2026-08-04 移除，本扩展仅支持抖音
 // ============================
 
@@ -327,7 +327,7 @@ export class Crypto {
       .filter(Boolean);
   }
 
-  // 平台：通用 — msToken 生成（抖音/TikTok 共用；本项目用于抖音请求）
+  // 平台：通用 — msToken 随机生成（与平台无关的纯随机串；本项目用于抖音请求）
   static generateRandomMsToken(size = 156) {
     const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let result = "";

@@ -45,7 +45,7 @@
   <!-- ====== 主体内容 ====== -->
   <div id="appBody">
     <div id="mainCol" class="flex-col">
-      <!-- ====== 搜索栏（侧边栏「搜索」在顶栏下方展开的内联工具条，见 docs/UI_IMPROVEMENTS.md 建议5） ====== -->
+      <!-- ====== 搜索栏（侧边栏「搜索」在顶栏下方展开的内联工具条，见 docs/11） ====== -->
       <div id="searchBar" class="search-bar hidden">
         <div class="sb-seg" id="sbScope">
           <button class="sb-seg-btn active" data-scope="all">综合</button>
@@ -140,7 +140,7 @@
     </aside>
   </div>
 
-  <!-- ====== 详情报覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ====== -->
+  <!-- ====== 详情覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ====== -->
   <div id="detailOverlay" class="flex-col hidden">
     <button id="detailClose" class="flex-center" aria-label="关闭详情">
       <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round">
@@ -562,7 +562,7 @@
     </div>
   </template>
 
-  <!-- ====== 图标模板（JS 动态使用，通过 ICONS.xxx → innerHTML） ====== -->
+  <!-- ====== 图标模板（JS 动态使用，经 config.icons[name] → innerHTML） ====== -->
   <template id="icon-pause">
     <svg width="32" height="32" viewBox="0 0 32 32" fill="currentColor">
       <path

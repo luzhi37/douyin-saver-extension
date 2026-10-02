@@ -387,8 +387,7 @@ class Detail {
     // 作品型三域按当前域删除本地记录（点赞/收藏域仅删本地，远端取消走批量入口）
     if (config.WORK_RECORD_DOMAINS.includes(state.domain)) {
       await services.deleteWorkRecord(state.domain, [awemeId]);
-      state[state.domain] = state[state.domain].filter((w) => w.awemeId !== awemeId);
-      state.dataVersion++; // 绕过 store 封装的原地移除，须手动计入数据版本（视图缓存失效判据）
+      store.removeWorkRecordSilent(state.domain, new Set([awemeId]));
       state.selectedIds.delete(awemeId);
       search.activeWorkRecordGrid().removeItems(new Set([awemeId]));
       store.refreshGroups();
@@ -454,7 +453,7 @@ class Detail {
     dom.detailLoopBtn.setAttribute("aria-label", dom.detailLoopBtn.title);
   }
 
-  // ===== 详情层 UI 增强（docs/UI_IMPROVEMENTS.md 建议10-21）=====
+  // ===== 详情层 UI 增强（定案见 docs/11）=====
 
   // 计数展示：bar-controls 信息位——视频为播放时间（#renderVideoProgress 维护 detailTime），
   // 图集为 K/N 图片顺序（#detailOrder，随 #noteShowImage 更新）；播放条最右端仍为作品序号
