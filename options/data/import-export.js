@@ -61,7 +61,6 @@ class ImportExport {
     confirmBody.className = "confirm-delete-msg";
     confirmBody.textContent = `确定要清空${domainName}域的所有数据？此操作不可撤销！`;
     dialog.pushDialog(`确认重置${domainName}`, confirmBody, [
-      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
       {
         text: `清空${domainName}数据`,
         danger: true,
@@ -79,9 +78,8 @@ class ImportExport {
             store.set("batchMode", false);
             store.set(domain, []);
             await groups.renderGroupTabs();
-            dom.dialogTitle.textContent = "重置完成";
-            dom.dialogBody.innerHTML = `<p>${domainName}数据已清空</p>`;
-            dialog.showOkDialog();
+            dialog.closeDialog();
+            dialog.showToast(`${domainName}数据已清空`, "success");
           } finally {
             state.preventDialogClose = false;
           }
@@ -97,7 +95,7 @@ class ImportExport {
     const domain = this.#pendingImportDomain;
     this.#pendingImportDomain = "";
     if (!domain) return;
-    // 进度/结果层叠于备份弹窗之上：关闭后回到弹窗继续操作，无需重开
+    // 进度层叠于备份弹窗之上：终态一律关层 + toast 收口，回到备份弹窗继续操作
     dialog.pushDialog("正在导入…", "<p>正在读取文件…</p>");
     state.preventDialogClose = true;
     try {
@@ -109,7 +107,7 @@ class ImportExport {
       const res = await services.bgMsg({ type: "IMPORT_DATA", text: raw, domain });
       // 前置校验职责移入 background，专用错误码映射回原文案
       if (!res.ok && ["IMPORT_PARSE_FAILED", "IMPORT_EMPTY", "LEGACY_COLLECTION_BACKUP"].includes(res.error)) {
-        dom.dialogTitle.textContent = "导入失败";
+        dialog.closeDialog();
         const expected = config.DOMAINS_META[domain].label + "数据";
         const messages = {
           IMPORT_EMPTY: `文件内容不是${expected}`,
@@ -117,8 +115,7 @@ class ImportExport {
           // favorites 键在旧版备份里是收藏数据、新版是点赞数据，同名不同义，按版本区分
           LEGACY_COLLECTION_BACKUP: "检测到旧版收藏备份，请改在收藏域导入（收藏域已自动兼容旧格式）",
         };
-        dom.dialogBody.innerHTML = `<p class="dy-text-danger">${messages[res.error]}</p>`;
-        dialog.showOkDialog();
+        dialog.showToast(messages[res.error], "error");
         return;
       }
 
@@ -128,27 +125,16 @@ class ImportExport {
         await groups.renderGroupTabs();
       }
 
-      dom.dialogBody.innerHTML = "";
       if (res.ok) {
-        const importTmpl = document.getElementById("importResultTemplate");
-        const importBody = importTmpl.content.cloneNode(true);
-        importBody.querySelector(".import-file-name").textContent = file.name;
-        importBody.querySelector(".import-added").textContent = res.added;
-        importBody.querySelector(".import-updated").textContent = res.updated;
-        importBody.querySelector(".import-invalid").textContent = res.invalid || 0;
-        importBody.querySelector(".import-total").textContent = res.total;
-        dom.dialogTitle.textContent = "导入完成";
-        dom.dialogBody.appendChild(importBody);
-        dialog.showOkDialog();
+        dialog.closeDialog();
+        dialog.showToast(`导入完成：新增 ${res.added} · 更新 ${res.updated} · 无效 ${res.invalid || 0}`, "success");
       } else {
-        dom.dialogTitle.textContent = "导入失败";
-        dom.dialogBody.innerHTML = `<p class="dy-text-danger">${res.error || "解析失败，请检查文件格式"}</p>`;
-        dialog.showOkDialog();
+        dialog.closeDialog();
+        dialog.showToast("导入失败: " + (res.error || "解析失败，请检查文件格式"), "error");
       }
     } catch (err) {
-      dom.dialogTitle.textContent = "导入失败";
-      dom.dialogBody.innerHTML = `<p class="dy-text-danger">文件解析错误：${err.message}</p>`;
-      dialog.showOkDialog();
+      dialog.closeDialog();
+      dialog.showToast("文件解析错误：" + err.message, "error");
     } finally {
       state.preventDialogClose = false;
     }
@@ -168,9 +154,8 @@ class ImportExport {
     try {
       const res = await services.bgMsg({ type: "EXPORT_DATA", domain });
       if (!res.ok || !res.text) {
-        dom.dialogTitle.textContent = "导出失败";
-        dom.dialogBody.innerHTML = `<p class="dy-text-danger">${res?.error || "未知错误"}</p>`;
-        dialog.showOkDialog();
+        dialog.closeDialog();
+        dialog.showToast("导出失败: " + (res?.error || "未知错误"), "error");
         return;
       }
       const dateStr = new Date().toLocaleDateString("zh-CN").replace(/\//g, "-");
@@ -184,13 +169,11 @@ class ImportExport {
       // 延迟 revoke（对齐 detail.triggerDownload）：同步 revoke 在大文件下载启动前
       // 撤源可能截断下载
       setTimeout(() => URL.revokeObjectURL(url), config.BLOB_REVOKE_DELAY);
-      dom.dialogTitle.textContent = "导出完成";
-      dom.dialogBody.innerHTML = `<p>文件已下载：${filename}</p>`;
-      dialog.showOkDialog();
+      dialog.closeDialog();
+      dialog.showToast(`导出完成，已下载 ${filename}`, "success");
     } catch (err) {
-      dom.dialogTitle.textContent = "导出失败";
-      dom.dialogBody.innerHTML = `<p class="dy-text-danger">${err.message}</p>`;
-      dialog.showOkDialog();
+      dialog.closeDialog();
+      dialog.showToast("导出失败: " + err.message, "error");
     } finally {
       state.preventDialogClose = false;
     }

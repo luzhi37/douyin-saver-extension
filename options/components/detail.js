@@ -19,6 +19,7 @@ class Detail {
   #index = -1;
   #cleanups = [];
   #loopMode = "single";
+  #detailMuted = false;         // 详情层静音偏好单一事实源：视频与图集音乐共享，跨类型切换不丢
   #detailListenersAttached = false;
   #noteWork = null;
   #noteImgIndex = 0;
@@ -301,9 +302,15 @@ class Detail {
   #toggleNoteMute() {
     const audio = dom.detailAudio;
     if (!audio) return;
-    audio.muted = !audio.muted;
-    dom.detailMuteBtn.innerHTML = audio.muted ? config.icons.mute : config.icons.unmute;
-    const label = audio.muted ? "取消静音" : "静音";
+    this.#detailMuted = !this.#detailMuted;
+    audio.muted = this.#detailMuted;
+    this.#syncDetailMuteBtn();
+  }
+
+  // 静音按钮（图标/tooltip/aria）统一从 #detailMuted 同步：视频与图集音乐两条渲染路径共用
+  #syncDetailMuteBtn() {
+    dom.detailMuteBtn.innerHTML = this.#detailMuted ? config.icons.mute : config.icons.unmute;
+    const label = this.#detailMuted ? "取消静音" : "静音";
     dom.detailMuteBtn.title = label;
     dom.detailMuteBtn.setAttribute("aria-label", label);
   }
@@ -412,7 +419,6 @@ class Detail {
       ? `确定要从${config.DOMAINS_META[state.domain].label}域移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？远端点赞/收藏不受影响。`
       : `确定要移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？`;
     dialog.showDialog("移除作品", removeBody, [
-      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
       {
         text: "移除",
         danger: true,
@@ -751,7 +757,9 @@ class Detail {
     // 加载指示（建议17）：canplay 前亮 spinner
     dom.detailLoader.classList.remove("hidden");
 
-    dom.detailMuteBtn.innerHTML = video.muted ? config.icons.mute : config.icons.unmute;
+    // 静音偏好跨作品保留：从 #detailMuted 施加到本作品（图集音乐同源，视频↔图集切换不丢）
+    video.muted = this.#detailMuted;
+    this.#syncDetailMuteBtn();
 
     // 视频可播放时结束过渡
     let readyFired = false;
@@ -780,8 +788,10 @@ class Detail {
 
     video.play().catch((err) => {
       if (err.name === "NotAllowedError") {
+        // 自动播放被浏览器拦截：强制静音换播放权，并计入共享静音偏好（后续作品沿用）
+        this.#detailMuted = true;
         video.muted = true;
-        dom.detailMuteBtn.innerHTML = config.icons.mute;
+        this.#syncDetailMuteBtn();
         video.play().catch(() => {});
       }
       // 播放失败也算准备完成，避免卡死
@@ -879,13 +889,16 @@ class Detail {
     if (work.music) {
       audio.src = utils.pickHttpsUrl(work.music);
       audio.currentTime = 0;
-
-      dom.detailMuteBtn.innerHTML = audio.muted ? config.icons.mute : config.icons.unmute;
+      // 静音偏好跨作品保留：从 #detailMuted 施加到本作品（视频同源）
+      audio.muted = this.#detailMuted;
+      this.#syncDetailMuteBtn();
 
       audio.play().catch((err) => {
         if (err.name === "NotAllowedError") {
+          // 同视频路径：拦截即强制静音并计入共享偏好
+          this.#detailMuted = true;
           audio.muted = true;
-          dom.detailMuteBtn.innerHTML = config.icons.mute;
+          this.#syncDetailMuteBtn();
           audio.play().catch(() => {});
         }
       });
@@ -1195,11 +1208,6 @@ class Detail {
     }
   }
 
-  toggleVideoMute(video, muteBtn) {
-    video.muted = !video.muted;
-    muteBtn.innerHTML = video.muted ? config.icons.mute : config.icons.unmute;
-  }
-
   // ===== 详情播放条进度（视频模式：真实 currentTime/duration/buffered 驱动） =====
   #ensureProgressEls() {
     if (this.#trackPlayed) return;
@@ -1336,10 +1344,9 @@ class Detail {
   }
 
   toggleDetailVideoMute() {
-    this.toggleVideoMute(dom.detailVideo, dom.detailMuteBtn);
-    const label = dom.detailVideo.muted ? "取消静音" : "静音";
-    dom.detailMuteBtn.title = label;
-    dom.detailMuteBtn.setAttribute("aria-label", label);
+    this.#detailMuted = !this.#detailMuted;
+    dom.detailVideo.muted = this.#detailMuted;
+    this.#syncDetailMuteBtn();
   }
 
   // 离开扩展页面（切标签/最小化，页面转为隐藏）暂停详情播放：

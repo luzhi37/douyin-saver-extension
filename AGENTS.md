@@ -103,6 +103,7 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 
 - **批量勾选必须用 `Batch.updateCheckboxDOM`** — 只设 `innerHTML` 不加/移除 `checked` 类则图标透明不可见；`handleBatchSelectAll` 按域选择 checkbox（作品域 `.work-checkbox`，关注域 `.following-checkbox`）。勾选框**显隐由 `body.batch-mode` 纯 CSS 驱动**，JS 禁止逐元素写 inline display；勾选框随填充创建、降级（clearCard）即移除，退出批量只清 `.checked` 的。**批量禁选文本走 `#mainGrid` mousedown preventDefault，禁止用 CSS user-select**（全网格级联重算是进入批量模式卡顿主因，见 docs/11）。
 - **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
+- **弹窗 footer 按钮键盘直达（无焦点设计）** — Enter=顶层弹窗主动作（footer 按钮 danger>primary 推断、ghost 永不占）、Ctrl+Enter 仅显式 `hotkey: "ctrl+enter"` 可占；登记随 footer 增清同步（`updateDialog` 清空即失效、`addDialogBtn` 追加补登），按钮内 `.dy-btn-kbd` 徽标显示实际绑定、与槽位解析同源；输入框一律让位、焦点在弹窗内部操作按钮时走原生激活（**✕ 默认落点除外，Enter 仍直达主动作**），弹窗开启时弹窗外的 Enter/Space 被 `preventDefault` 屏蔽；Esc 仍归 main.js 单点收口、Tab 不管理。见 docs/11「弹窗 footer 按钮键盘直达」。
 - **`state.activeDialog` 在弹窗挂载时由 `Dialog.#mountLayer` 写入（恒等于顶层 onClose）** — 只在 `closeDialog` 出栈时补写会使「本次打开后的首次关闭」静默失效（机制与回归教训见 docs/11）。无 onClose 的弹窗该值为 null，走兜底关闭。
 - **Esc 关闭优先级在 main.js 单点收口（红线）** — 弹窗 → 详情 → 退出批量 → 收起搜索，一次按键只关一层；**detail 监听不得自管 Esc**——同事件多 document 监听串行执行，main.js 先关掉弹窗后 detail 查到的 dialogOverlay 已是关闭态，detail 若自管 Esc 会连详情一并关掉。计数输入框内 Esc 走其自身监听（stopPropagation 还原编辑、不关详情）。
 - **详情层双形态进度条**（视频连续轨道/图集分段音乐驱动，seek 统一 `#applySeek`）、`.media-view` 宽度随媒体宽高比自适应（`--media-aspect` 由 `Detail.#setMediaAspect` 写入，切作品复位 9:16）与模糊背景 `brightness(0.8)` 为既定视觉，定案细节见 docs/11（2026-09-29 修订：废弃横版 39.3vw 封顶）。
@@ -126,7 +127,7 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 ### 媒体体系
 
 - **媒体加载有全局熔断** — 失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`。
-- **卡片预览静音是全局联动，详情播放器独立** — 三域卡片静音走 `WorksGrid.#togglePreviewMute()`（共享 `#previewMuted`），填充与悬停起播读该标志保证继承；`Detail.toggleVideoMute` 勿与卡片联动。
+- **卡片预览静音是全局联动，详情播放器独立** — 三域卡片静音走 `WorksGrid.#togglePreviewMute()`（共享 `#previewMuted`），填充与悬停起播读该标志保证继承；详情层静音偏好 `Detail.#detailMuted` 为视频/图集音乐共享的单一事实源（渲染路径统一施加，勿读元素 `muted` 回写偏好），勿与卡片联动。
 - **离开扩展页面即暂停全部播放** — `visibilitychange`(hidden) 触发：卡片预览走 `WorksGrid.stopAllMedia`，详情走 `Detail.pauseOnHidden`；仅页面真正隐藏时暂停，窗口失焦不暂停。
 - **全站媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际；切换路径旧背景保持到新背景提交（零空档）。
 

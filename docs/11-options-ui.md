@@ -304,7 +304,7 @@ probe.onerror = () => {
 ### 卡片预览静音全局联动（详情播放器独立）
 
 - 三域卡片静音切换走 `WorksGrid.#togglePreviewMute()`：共享 `#previewMuted` 标志，遍历容器内全部已渲染 `.work-video-player` 同步 `video.muted` 与按钮图标；卡片填充与悬停起播都读该标志保证新卡继承。禁止改回单卡独立静音。
-- `Detail.toggleVideoMute` 只服务详情覆盖层（`dom.detailVideo`/note 音频），勿与卡片联动。
+- 详情播放器静音独立于卡片：`Detail.#detailMuted` 是详情层静音偏好的单一事实源，视频（`dom.detailVideo`）与图集音乐（`dom.detailAudio`）渲染时统一施加，视频↔图集切换/切作品不丢；浏览器拦截自动播放强制静音时同样写入该标志（按钮 UI 经 `#syncDetailMuteBtn` 同源同步）。勿与卡片 `#previewMuted` 联动。
 
 ### 媒体全局熔断
 
@@ -321,9 +321,18 @@ probe.onerror = () => {
 
 - 单 overlay 多实例：基层为静态 `#dialogOverlay`，`showDialog` = 销毁全部上层后重置基层（既有调用点语义不变）；`pushDialog` = 当前层原地保留为父层、新 overlay 实例叠加（z-index 逐层递增、`.layered` 遮罩减淡至 0.4），关闭顶层即销毁实例、露出父层——父层 DOM 原地不动，监听器/输入值天然保留。
 - `dom.dialogTitle/dialogBody/dialogFooter/dialogClose` 由 Dialog 动态指向顶层实例元素（仅该类可写），调用方即时访问自动命中顶层；`dom.dialogOverlay` 恒指基层，其 hidden 即「有无弹窗」全局信号（Esc 分流、悬停预览守卫、键盘守卫均依赖）。
-- 同层内容切换（进度 → 结果）**必须就地改写** `dom.dialogTitle/dialogBody` + `showOkDialog`（import-export / AuthorImport.#showDone 同款），禁止改调 `showDialog`——那会清栈重建基层、摧毁父层。
+- 同层内容切换（进度 → 结果）**必须就地改写** `dom.dialogTitle/dialogBody` + `showOkDialog`（唯一存留点：AuthorImport.#showDone 的 PARTIAL 分支），禁止改调 `showDialog`——那会清栈重建基层、摧毁父层。终态无需停留阅读的提示型结果（导入/导出/重置/删除分组的完成与失败）一律 `closeDialog()` + `showToast` 收口、关层回父弹窗，不再弹「好的」结果层（2026-10-04 定案）。
 - 关闭入口 `requestDialogClose` 以 depth 快照防连关：`activeDialog()`（onClose 通常自行关层）已使 depth 变化时直接返回；`settings.saveBeforeClose` 仅在关闭基层（`dialog.isBase`）时触发。X 按钮为 document 级 `.dy-dialog-close` 委托（每层各有 ✕）。
 - 焦点三段式：基层打开记触发元素 → 关闭顶层焦点移入父层第一控件 → 最终关闭归还触发元素。
+
+### 弹窗 footer 按钮键盘直达（无焦点设计）
+
+- 键盘不依赖焦点、不管理 Tab：**Enter = 顶层弹窗主动作**（footer 按钮 danger 优先于 primary 推断，ghost 永不占——取消语义 Esc 已覆盖）、**Ctrl+Enter = 显式 `hotkey: "ctrl+enter"` 标注的次要动作**（唯一使用点：批量取消点赞/收藏确认弹窗的「直接移除」）。Ctrl+Enter 槽不做自动推断，避免危险弹窗两个动作都被键盘直达。
+- 登记随 footer 增清同步（`Dialog` 每层四个槽位字段 enterExplicit/dangerAction/primaryAction/ctrlEnterAction）：`#mountLayer` 重置、`addDialogBtn` 追加补登（`showOkDialog` 的「好的」由此成为 Enter 目标，现仅 AuthorImport.#showDone 的 PARTIAL 分支使用）、`updateDialog` 清 footer 即失效——进度态 Enter 自动 no-op，杜绝悬空引用已移除按钮的回调。
+- 收口在 `Dialog#handleKeydown`（document 级监听绑定于 dialog.js 底部）：只作用顶层弹窗；输入框（input/textarea/select/contenteditable）一律让位；焦点落在顶层弹窗内部操作按钮（原生 Tab / 鼠标点击残留）时全让位走原生激活，不与直达键争抢——**✕ 关闭钮除外**：它是 `focusFirstControl` 对纯文本弹窗的默认落点，若让位则 Enter 恒走原生「点击 ✕ = 关闭」，直达键永无生效机会（2026-10-03 修复）。弹窗外的残留焦点则被 `preventDefault` 屏蔽（Chrome 鼠标点过的按钮保留 DOM 焦点，否则弹窗开着按 Enter/Space 会被隐形触发——Space 在弹窗开启、非输入位时直接吞掉）。Esc 不在此处理（main.js 单点收口）。
+- footer 按钮内以 `.dy-btn-kbd` 徽标显示实际绑定（Enter / Ctrl+Enter）：徽标在按钮创建时按槽位解析结果追加，**只标真正占用槽位的按钮**（danger>primary 推断赢家、显式 hotkey 按钮），随 footer 增清同步重建，与 `handleKeydown` 分发同源不脱钩；`.dy-btn` 为 flex（gap 6px），徽标免 margin。
+- 纯关闭型「取消」ghost 按钮已整体移除（2026-10-03 定案）：Esc 与 header ✕ 与其功能完全相同，footer 只保留真实动作按钮——确认型弹窗 footer 仅剩主动作键（danger/primary，带 Enter 徽标）与显式 `hotkey` 次要动作（如「直接移除」Ctrl+Enter）；「好的」（签名引导/入库 PARTIAL 结果弹窗）为 primary 动作键、Enter 目标，不属于冗余关闭件；速查弹窗的「好的」已移除（2026-10-04，Esc/✕ 关闭）。
+- footer 无按钮的弹窗（进度/移动到分组/设置/分组管理/数据维护/入库/快捷键速查）不参与本机制，行为零变化。
 
 ### 同步进度过滤的 requestId 时序差异
 
@@ -392,7 +401,12 @@ probe.onerror = () => {
   跳过重渲只刷计数（切了不改变结果集的筛选、重复点击同段成本归零）。`refreshGridView` 是
   renderCards/renderFollowingCards 的唯一调用方，`#lastRenderedView` 仅在其渲染分支写入——
   域/分组切换必经数据重载（dataVersion 自增 → 数组重建），不存在「DOM 已清场但数组恒等」
-  的假跳过。
+  的假跳过。**段数组不可变发布（不变量）**：base/sorted/view 一经产出不得再原地
+  sort/reverse/写，恒等快路径的前提是「同引用必同内容」。2026-10-03 关注域切粉丝数/作品数/
+  最近更新不重排即违反此不变量：sorted 段曾在 base 上原地 sort，reverse=false 时
+  view/sorted/base 三者同引用，切排序被误判无变化而跳过重渲；修复为拷贝后排序（`[...base]`，
+  O(n) 拷贝远低于排序本身）。作品域 authorCount 段本就产出新数组、saved 段返回的 base
+  后续不再被改，均满足不变量。
 - **筛选态降档预铺 + 键控扩容**：筛选态是封闭视图（无未来分页、无 fillSlots 回填方），预铺
   降档至 `GRID_PREMOUNT_CAP_FILTER`(600)，滚近底部 `#extendIfNeeded` 键控分支从 `#viewItems`
   快照锚接续铺真实键卡（锚 = 槽尾带键卡在快照中的下标，DOM 实况推导；渐进态维持无键占位卡
