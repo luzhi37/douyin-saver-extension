@@ -41,6 +41,10 @@ class Dialog {
       body: dom.dialogOverlay.querySelector("#dialogBody"),
       footer: dom.dialogOverlay.querySelector("#dialogFooter"),
       onClose: null,
+      enterExplicit: null,
+      dangerAction: null,
+      primaryAction: null,
+      ctrlEnterAction: null,
     };
   }
 
@@ -64,6 +68,10 @@ class Dialog {
       body: overlay.querySelector(".dy-dialog-body"),
       footer: overlay.querySelector(".dy-dialog-footer"),
       onClose: null,
+      enterExplicit: null,
+      dangerAction: null,
+      primaryAction: null,
+      ctrlEnterAction: null,
     };
   }
 
@@ -72,6 +80,7 @@ class Dialog {
     layer.title.textContent = title;
     layer.body.innerHTML = "";
     layer.footer.innerHTML = "";
+    this.#resetFooterHotkeys(layer);
     layer.onClose = onClose || null;
     this.#syncTopDom();
     // 顶层 onClose 登记给 requestDialogClose：X/Esc 关闭时调用并联动 CANCEL_ACTIVE_TASK
@@ -84,12 +93,21 @@ class Dialog {
     }
 
     if (footerBtns) {
+      const created = [];
       for (const btn of footerBtns) {
         const el = document.createElement("button");
         el.className = `dy-btn flex-inline-center ${btn.primary ? "dy-btn-primary" : ""} ${btn.danger ? "dy-btn-danger" : ""} ${btn.ghost ? "dy-btn-ghost" : ""}`;
         el.textContent = btn.text;
         el.addEventListener("click", btn.callback);
+        this.#applyBtnHotkey(layer, btn, btn.callback);
         layer.footer.appendChild(el);
+        created.push([btn, el]);
+      }
+      // 徽标只标真正占用槽位的按钮：Ctrl+Enter 跟随显式标注；Enter 徽标跟随后解析的
+      // 主动作（enterExplicit > danger > primary），与 handleKeydown 分发同源不脱钩
+      const enterCb = layer.enterExplicit || layer.dangerAction || layer.primaryAction;
+      for (const [btn, el] of created) {
+        this.#applyHotkeyBadge(el, btn.hotkey === "ctrl+enter" ? "Ctrl+Enter" : btn.callback === enterCb ? "Enter" : "");
       }
     }
 
@@ -131,6 +149,70 @@ class Dialog {
     this.focusFirstControl();
   }
 
+  // ---------- footer 按钮键盘直达（无焦点设计） ----------
+  // 键盘不依赖焦点、不管理 Tab：Enter 直接触发顶层弹窗的主动作，Ctrl+Enter 触发显式
+  // hotkey 标注的次要动作。登记随 footer 增清同步：mount 重置、追加按钮补登、
+  // updateDialog 清 footer 即失效——杜绝悬空引用已移除按钮的回调
+  #resetFooterHotkeys(layer) {
+    layer.enterExplicit = null;
+    layer.dangerAction = null;
+    layer.primaryAction = null;
+    layer.ctrlEnterAction = null;
+  }
+
+  // 推断规则：danger 优先于 primary 占 Enter，ghost 永不占（取消语义 Esc 已覆盖）；
+  // 显式 hotkey 覆盖推断。Ctrl+Enter 槽仅显式 `hotkey: "ctrl+enter"` 可占、不做自动推断
+  //（避免危险弹窗两个动作都被键盘直达）
+  #applyBtnHotkey(layer, def, callback) {
+    if (def.hotkey === "ctrl+enter") {
+      layer.ctrlEnterAction = callback;
+    } else if (def.hotkey === "enter") {
+      layer.enterExplicit = callback;
+    } else if (def.danger) {
+      layer.dangerAction = callback;
+    } else if (def.primary) {
+      layer.primaryAction = callback;
+    }
+  }
+
+  // 按钮内快捷键徽标（.dy-btn-kbd）：与 handleKeydown 的实际绑定严格一致，label 为空不加节点
+  #applyHotkeyBadge(el, label) {
+    if (!label) return;
+    const kbd = document.createElement("kbd");
+    kbd.className = "dy-btn-kbd";
+    kbd.textContent = label;
+    el.appendChild(kbd);
+  }
+
+  // 键盘直达收口（document 级监听在本文件底部绑定）：只作用顶层弹窗；输入框让位（改名/
+  // 新分组/入库等输入位 Enter 有自身语义）；Esc 不在此处理（main.js 单点收口）。
+  // 焦点恰好落在顶层弹窗内部的操作按钮（原生 Tab / 鼠标点击残留）时全让位走原生激活，
+  // 不与直达键争抢；✕ 关闭钮除外——它是 focusFirstControl 对纯文本弹窗的默认落点，
+  // 若让位则 Enter 恒走原生「点击 ✕ = 关闭」，直达键永无生效机会（2026-10-03 修复）。
+  // 弹窗外的残留焦点元素则被 preventDefault 屏蔽（Chrome 鼠标点过的按钮保留 DOM 焦点，
+  // 否则弹窗开着按 Enter/Space 会被那个看不见的焦点隐形触发）
+  handleKeydown(e) {
+    if (this.#layers.length === 0) return;
+    const top = this.#layers[this.#layers.length - 1];
+    if (top.overlay.classList.contains("hidden")) return;
+    const t = e.target;
+    if (t instanceof HTMLElement && t.closest("input, textarea, select, [contenteditable]")) return;
+    if (
+      t instanceof Element &&
+      top.overlay.contains(t) &&
+      t.closest("button") &&
+      !t.closest(".dy-dialog-close")
+    ) {
+      return;
+    }
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    if (e.key === "Enter" && !e.altKey) {
+      if (e.ctrlKey || e.metaKey) top.ctrlEnterAction?.();
+      else (top.enterExplicit || top.dangerAction || top.primaryAction)?.();
+    }
+  }
+
   addTrashButton(onClick, onClose) {
     const btn = document.createElement("button");
     btn.className = "dy-btn flex-inline-center dy-btn-ghost";
@@ -154,6 +236,8 @@ class Dialog {
     dom.dialogTitle.textContent = title;
     dom.dialogBody.innerHTML = bodyHtml || "";
     dom.dialogFooter.innerHTML = "";
+    const top = this.#layers[this.#layers.length - 1];
+    if (top) this.#resetFooterHotkeys(top);
   }
 
   addDialogBtn(text, type, cb) {
@@ -162,6 +246,12 @@ class Dialog {
     btn.textContent = text;
     btn.addEventListener("click", cb);
     dom.dialogFooter.appendChild(btn);
+    const top = this.#layers[this.#layers.length - 1];
+    if (top) {
+      this.#applyBtnHotkey(top, { danger: type === "danger", primary: type === "primary" }, cb);
+      const resolved = top.enterExplicit || top.dangerAction || top.primaryAction;
+      if (cb === resolved) this.#applyHotkeyBadge(btn, "Enter");
+    }
   }
 
   showOkDialog() {
@@ -214,3 +304,8 @@ class Dialog {
 }
 
 export const dialog = new Dialog();
+
+// ---------- 弹窗键盘直达监听 ----------
+// Enter/Ctrl+Enter/Space 分发见 Dialog#handleKeydown；Esc 归 main.js 单点收口，Tab 不管理
+//（无焦点设计）
+document.addEventListener("keydown", (e) => dialog.handleKeydown(e));

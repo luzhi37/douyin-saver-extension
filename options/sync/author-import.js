@@ -186,6 +186,18 @@ class AuthorImport {
   }
 
   #showDone(res) {
+    // 网格/分组数字刷新由 background 收尾的 STORE_CHANGED 统一承担（全部批次落库完才
+    // 发一次：refreshGroups 重算分组数字 + 当前域一致时 loadDomainData，含取消/部分失败）；
+    // 此处不再手动 loadDomainData，避免与广播的双重整网格重载
+    // 完全成功走 toast 收口（关进度层回「入库」弹窗）；PARTIAL 保留弹窗确认部分落库结果
+    if (!res.timedOut) {
+      this.#closeProgressDialog();
+      dialog.showToast(
+        `作品域入库完成：已扫描 ${res.collected ?? 0} 个作品，新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}`,
+        "success",
+      );
+      return;
+    }
     const tmpl = document.getElementById("syncDialogBodyTemplate");
     const body = tmpl.content.cloneNode(true);
     this.#countEl = body.querySelector(".sync-count");
@@ -193,22 +205,16 @@ class AuthorImport {
     this.#statusEl = body.querySelector(".sync-status");
     this.#countEl.textContent = `已扫描作品 ${res.collected ?? 0}`;
     this.#summaryEl.textContent = `新增 ${res.added ?? 0}（入「未分组」）· 更新 ${res.updated ?? 0}（保留原分组）`;
-    this.#statusEl.textContent = res.timedOut ? "PARTIAL" : "DONE";
-    if (res.timedOut) {
-      const hint = document.createElement("p");
-      hint.className = "dy-text-danger sync-timeout-hint";
-      hint.textContent = "已中途取消，仅保留部分数据";
-      body.appendChild(hint);
-    }
-    // 结果就地改写进度层（showDialog 会清栈重建基层、摧毁「入库」弹窗，不可用）
-    dom.dialogTitle.textContent = "导入作者作品";
-    dom.dialogBody.innerHTML = "";
+    this.#statusEl.textContent = "PARTIAL";
+    const hint = document.createElement("p");
+    hint.className = "dy-text-danger sync-timeout-hint";
+    hint.textContent = "已中途取消，仅保留部分数据";
+    body.appendChild(hint);
+    // 结果就地改写进度层（showDialog 会清栈重建基层、摧毁「入库」弹窗，不可用）；
+    // 经 updateDialog 收口（footer 增清与键盘直达槽位同步），body 节点随后补挂
+    dialog.updateDialog("导入作者作品");
     dom.dialogBody.appendChild(body);
-    dom.dialogFooter.innerHTML = "";
     dialog.showOkDialog();
-    // 网格/分组数字刷新由 background 收尾的 STORE_CHANGED 统一承担（全部批次落库完才
-    // 发一次：refreshGroups 重算分组数字 + 当前域一致时 loadDomainData，含取消/部分失败）；
-    // 此处不再手动 loadDomainData，避免与广播的双重整网格重载
   }
 
   // 错误展示：进度弹窗内联（summary 清空 + status 显示错误，DomainScanSync 同款）；

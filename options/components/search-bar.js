@@ -230,9 +230,11 @@ class SearchBar {
     const sortKey = `${baseKey}|${s.followingsSort}`;
     if (c.sortKey !== sortKey) {
       // 计数字段仅由校准写入、未校准占位为 0，排序时自然沉底；同数按 uid 定序保证稳定。
-      // base 为缓存私有数组，原地排序安全
+      // 必须拷贝后排序、不得原地 sort base：refreshGridView 以「引用恒等 ⇒ 内容恒等」
+      // 跳过重渲，原地排序会让 sorted/view 与上次渲染数组同引用（内容却已变），切粉丝数/
+      // 作品数/最近更新被误判无变化而跳过重渲（2026-10-03 修复）；拷贝成本 O(n) 远低于排序
       const field = { works: "awemeCount", update: "lastUpdateAt" }[s.followingsSort] || "followerCount";
-      c.sorted = c.base.sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
+      c.sorted = [...c.base].sort((a, b) => (b[field] || 0) - (a[field] || 0) || String(a.uid).localeCompare(String(b.uid)));
       c.sortKey = sortKey;
       c.viewKey = "";
     }

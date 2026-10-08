@@ -220,7 +220,6 @@ class Batch {
     delBody.className = "confirm-delete-msg";
     delBody.textContent = `确定移除选中的 ${count} 个${name}？此操作不可撤销。`;
     dialog.showDialog("确认移除", delBody, [
-      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
       {
         text: "移除",
         danger: true,
@@ -265,9 +264,11 @@ class Batch {
     confirmBody.textContent = `确定对选中的 ${count} 个作品执行${actionLabel}并从本域移除？远端${actionLabel}后不可恢复。若已在抖音取消过，选「直接移除」仅删本地记录。`;
     dialog.showDialog(`确认${actionLabel}`, confirmBody, [
       {
-        // 直接移除：仅删本地记录——作品可能已在抖音侧被取消点赞/收藏，无需重复远端操作
+        // 直接移除：仅删本地记录——作品可能已在抖音侧被取消点赞/收藏，无需重复远端操作。
+        // ghost 不占推断的 Enter，显式标注 Ctrl+Enter 作为次要动作直达键
         text: "直接移除",
         ghost: true,
+        hotkey: "ctrl+enter",
         callback: async () => {
           dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个作品…</p>`);
           state.preventDialogClose = true;
@@ -440,7 +441,6 @@ class Batch {
       confirmBody.appendChild(hint);
     }
     dialog.showDialog("批量下载", confirmBody, [
-      { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
       {
         text: "下载",
         primary: true,

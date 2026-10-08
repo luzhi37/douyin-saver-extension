@@ -1153,6 +1153,22 @@ body.batch-mode .following-checkbox {
   transform: scale(1.03);
 }
 
+/* footer 按钮内快捷键徽标（与键盘直达绑定一致，见 docs/11）：currentColor 跟随按钮
+   文字色（danger 红字即红徽标），半透明白底在填充/描边/ghost 三型按钮上均可读 */
+.dy-btn-kbd {
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+  opacity: 0.85;
+}
+
 .dy-btn-sm {
   padding: 4px 10px;
   font-size: 12px;
@@ -2048,39 +2064,6 @@ body.batch-mode .following-checkbox {
 
 .io-action {
   width: 100%;
-}
-
-/* ===== 导入结果 ===== */
-.import-result {
-  line-height: 1.8;
-}
-
-.import-result code {
-  background: var(--dy-bg);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: var(--dy-text-secondary);
-}
-
-.import-result .stat {
-  font-weight: 600;
-}
-
-.import-result .stat-ok {
-  color: #4ade80;
-}
-
-.import-result .stat-dup {
-  color: #60a5fa;
-}
-
-.import-result .stat-invalid {
-  color: var(--dy-primary);
-}
-
-.import-result .stat-total {
-  color: var(--dy-primary);
 }
 
 /* ===== 杂项 ===== */

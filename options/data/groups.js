@@ -153,7 +153,6 @@ class Groups {
         delBody.querySelector(".confirm-delete-group-name").textContent = g.name;
         // pushDialog 叠于分组管理之上：确认/删除后回到管理列表（父层原地保留，item 保持连接、移除即生效）
         dialog.pushDialog("确认删除", delBody, [
-          { text: "取消", ghost: true, callback: () => dialog.closeDialog() },
           {
             text: "删除",
             danger: true,
@@ -169,9 +168,8 @@ class Groups {
                 }
                 item.remove();
                 store.refreshGroups();
-                dom.dialogTitle.textContent = "删除完成";
-                dom.dialogBody.innerHTML = `<p>已删除"${g.name}"</p>`;
-                dialog.showOkDialog();
+                dialog.closeDialog();
+                dialog.showToast(`已删除"${g.name}"`, "success");
               } catch (err) {
                 dialog.closeDialog();
                 dialog.showToast("删除失败: " + (err.message || String(err)), "error");

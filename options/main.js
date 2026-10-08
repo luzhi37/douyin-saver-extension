@@ -21,6 +21,9 @@ const SHORTCUT_ROWS = [
   ["Ctrl+K", "展开并聚焦搜索栏"],
   ["?", "打开快捷键速查"],
   ["Esc", "关闭弹窗 / 详情 / 退出批量 / 收起搜索"],
+  ["B", "进入 / 退出批量模式"],
+  ["弹窗 · Enter", "执行主动作（移除 / 删除 / 下载等）"],
+  ["弹窗 · Ctrl+Enter", "执行次要动作（如批量取消的「直接移除」）"],
   ["详情 · ↑/↓ 或 滚轮", "切换上/下一个作品"],
   ["详情 · Space", "播放 / 暂停"],
   ["详情 · M", "静音 / 取消静音"],
@@ -29,6 +32,7 @@ const SHORTCUT_ROWS = [
   ["详情 · ←/→", "图集翻页（多图作品）"],
   ["详情 · Delete / Backspace", "移除当前作品（弹确认）"],
   ["批量 · Ctrl+A", "全选当前结果"],
+  ["批量 · Delete", "删除已勾选项（弹确认）"],
   ["批量 · Shift+点击", "范围选择"],
 ];
 
@@ -39,7 +43,7 @@ function showShortcutHelp() {
   const body = document.createElement("div");
   body.className = "shortcut-help";
   body.innerHTML = rows;
-  dialog.showDialog("快捷键", body, [{ text: "好的", primary: true, callback: () => dialog.closeDialog() }]);
+  dialog.showDialog("快捷键", body);
 }
 
 // ---------- STORE_CHANGED 合并处理 ----------
@@ -319,8 +323,8 @@ document.addEventListener("keydown", (e) => {
   search.closeSearchBar();
 });
 
-// 全局快捷键（P0-3/P1-7）：Ctrl+K 聚焦搜索、? 速查、批量模式 Ctrl+A 全选。
-// 输入框内一律不拦截；弹窗打开时跳过 ?/Ctrl+A，避免与弹窗交互重叠
+// 全局快捷键（P0-3/P1-7）：Ctrl+K 聚焦搜索、? 速查、B 进入/退出批量模式、批量模式 Ctrl+A 全选 /
+// Delete 删除已勾选。输入框内一律不拦截；弹窗打开时跳过 ?/B/Ctrl+A/Delete，避免与弹窗交互重叠
 const isTypingTarget = (el) =>
   el instanceof HTMLElement && !!el.closest("input, textarea, select, [contenteditable]");
 document.addEventListener("keydown", (e) => {
@@ -344,6 +348,34 @@ document.addEventListener("keydown", (e) => {
     if (typing || !dom.dialogOverlay.classList.contains("hidden")) return;
     e.preventDefault();
     batch.handleBatchSelectAll();
+  }
+  // 批量态 Delete：已勾选条目时直开删除确认弹窗（与批量按钮组的删除按钮同入口，
+  // Enter 随后命中 danger 主按钮）。详情层的 Delete/Backspace（移除当前作品）让位——
+  // 详情打开时本分支跳过，不叠加两套确认
+  if (state.batchMode && e.key === "Delete") {
+    if (
+      typing ||
+      !dom.dialogOverlay.classList.contains("hidden") ||
+      !dom.detailOverlay.classList.contains("hidden")
+    ) {
+      return;
+    }
+    if (state.selectedIds.size === 0) return;
+    e.preventDefault();
+    batch.handleBatchDelete();
+  }
+  // B 进入/退出批量模式（与「批量」按钮同入口，退出时同按钮语义清空选区）；弹窗/详情
+  // 打开时不切换——避免在覆盖层背后改变底层网格的交互模式
+  if ((e.key === "b" || e.key === "B") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (
+      typing ||
+      !dom.dialogOverlay.classList.contains("hidden") ||
+      !dom.detailOverlay.classList.contains("hidden")
+    ) {
+      return;
+    }
+    e.preventDefault();
+    batch.handleBatchToggle();
   }
 });
 
