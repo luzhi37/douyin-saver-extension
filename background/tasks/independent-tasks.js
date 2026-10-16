@@ -52,24 +52,6 @@ class IndependentTasks {
           await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
         }
       }
-      if (!guard.isCancelled() && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
-        await scanTasks.calibrateStats(
-          all,
-          async (secUid) => {
-            const data = await independentClient.request(
-              CONFIG.API.PROFILE_OTHER,
-              await credentials.buildBaseParams({ sec_user_id: secUid }),
-            );
-            if (!data.user) throw new Error("PROFILE_FETCH_FAILED");
-            return {
-              awemeCount: data.user.aweme_count || 0,
-              followerCount: data.user.follower_count || 0,
-            };
-          },
-          () => guard.isCancelled(),
-          requestId,
-        );
-      }
       guard.dispose();
       sendResponse({ ok: true, requestId, followings: all, total: all.length });
     } catch (e) {

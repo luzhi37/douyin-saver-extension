@@ -42,7 +42,7 @@ chrome.runtime.onMessage (background/main.js App.route switch)
   │                            GET_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / RELOAD_CONFIG
   │     （作品型三域 GET_* 分页：page:0 经复合索引 savedAt_id / groupId_savedAt_id
-  │       （DB v5，无改名迁移；升级回填缺失 savedAt/groupId）keyset 游标直出首页 + hasMore/nextCursor；
+  │       （DB v6，无改名迁移；升级回填缺失 savedAt/groupId）keyset 游标直出首页 + hasMore/nextCursor；
   │       cursor 以上页末条索引键（含主键，全序唯一）为开区间上界续页，免疫并发增删位移；
   │       省略 page/cursor = 一次性全量。每次只物化 PAGE.GRID 条，无全量读取）
   │
@@ -58,7 +58,8 @@ chrome.runtime.onMessage (background/main.js App.route switch)
   │     CANCEL_FAVORITES         → scanTasks.runCancelBatch(CANCEL_ONE_FAVORITES)
   │     GET_SECURITY_STATUS → tabBridge.getSecurityStatus（恒走 Tab，需检查 Hook 注入）
   │
-  ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → scanTasks.calibrateOne
+  ├─ 校准（内部按模式二次分支）──→ CALIBRATE_FOLLOWING → scanTasks.calibrateOne（单用户）
+  │                                CALIBRATE_FOLLOWINGS → scanTasks.calibrateAll（批量，工具弹窗入口）
   │
   └─ 凭据/配置管理 ──→ SET_MODE / CAPTURE_BROWSER_FEATURES / GET_COOKIE_INFO / REFRESH_COOKIE
                        GET_BROWSER_FEATURES / REFRESH_BROWSER_FEATURES / GET_CACHE_TIMES
@@ -144,7 +145,8 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 |----------|------|
 | `SYNC_PROGRESS` | `{ requestId, index, total, status:"ok"\|"error", awemeId }` |
 | `SYNC_DONE` | `{ requestId, ok, refreshed?, failed?, failedAwemeIds?, error? }` |
-| `FOLLOWING_PROGRESS` | `{ collected, hasMore, total, requestId, phase?: "calibrate" }` |
+| `FOLLOWING_PROGRESS` | `{ collected, hasMore, total, requestId }` |
+| `CALIBRATE_PROGRESS` | `{ phase:"calibrate", collected, total, hasMore:false, requestId }`（工具弹窗批量校准逐条回报） |
 | `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` | `{ collected, unfollowedCount, hasMore, total, requestId }` |
 | `CANCEL_PROGRESS` | `{ requestId, index, total, status, awemeId }` |
 | `CANCEL_DONE` | `{ requestId, ok, cancelled, refreshed, failed, failedAwemeIds, deletedIds }` |
@@ -156,16 +158,16 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见本册「接口 / 方法签名」） |
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道 + 侧边栏作品域存在性批量判据，见 docs/11）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 支持分页（`page:0` / `cursor` keyset / 缺省全量，机制见本册「接口 / 方法签名」） |
 | 分组管理                   | `GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
-| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准，见 docs/04） / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
-| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options 触发 background 循环扫描、逐页透传进度；`FETCH_FOLLOWING` 收集完成后自动校准（门控与细节见 docs/04）                              |
-| 入库                       | `IMPORT_USER_WORKS` / `IMPORT_FOLLOWING` — 作者作品分页入作品域 + 作者档案入关注域，均双模支持（分组/去重语义见 docs/07）；过程消息 `IMPORT_WORKS_PROGRESS`。入口为菜单「入库」弹窗（`AuthorImport`） |
+| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（单用户校准，见 docs/04）/ `CALIBRATE_FOLLOWINGS`（工具弹窗批量校准，见 docs/04）/ `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
+| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options 触发 background 循环扫描、逐页透传进度（同步与校准已分离，`FETCH_FOLLOWING` 收集后不再自动校准，见 docs/04）                              |
+| 入库                       | `IMPORT_USER_WORKS` / `IMPORT_FOLLOWING` — 作者作品分页入作品域 + 作者档案入关注域，均双模支持（分组/去重语义见 docs/07）；过程消息 `IMPORT_WORKS_PROGRESS`。入口为菜单「工具」弹窗（`AuthorImport`） |
 | 存储广播                   | `STORE_CHANGED { domain, upserts?, addedIds?, changedIds? }` — 落库成功后 background 广播（发送方可能是抖音标签页等外部上下文），**仅在 `changed>0` 时发**（no-op 不广播）。两种载荷：**point**（works 域单发保存，`changed ≤ BROADCAST.UPSERTS_MAX`=8 时附带合并后记录 `upserts` 与新增 id 集 `addedIds`）；**bulk**（入库循环收尾等批量变化，附带轻量 id 集 `changedIds`/`addedIds`——禁止改回全量记录载荷防消息膨胀；关注域无载荷）。载荷语义见 [docs/10](./10-storage-write-and-import.md)；options 侧去抖/flush/头插收口管线与红线见 [docs/11](./11-options-ui.md)「STORE_CHANGED 增量收口」 |
 | 取消入口                   | `CANCEL_FAVORITES` / `CANCEL_COLLECTION` — options 触发 background 批量取消：tab 模式逐条派发 `CANCEL_ONE_*` 到 inject；独立模式仅 `CANCEL_COLLECTION` 在 background 循环 POST（细节见 docs/06）                                                                                                     |
 | 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环；仅在长操作弹窗关闭时发送（无 `state.activeDialog` 时不发送）                                                                                              |
 | Tab 转发（background→tab） | `FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`（tab 模式经 content→inject；独立模式由 background 直接 POST，见 docs/07） |
-| 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE`（载荷含 `deletedIds`：取消成功条目已同步删除该域本地记录）/ `IMPORT_PROGRESS`（IMPORT_DATA 分块落库逐块回报） — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发（`FOLLOWING_PROGRESS` 带 `phase:"calibrate"` 表示关注校准阶段）                                                                                                |
+| 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `CALIBRATE_PROGRESS`（工具弹窗批量校准逐条回报，见 docs/04）/ `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE`（载荷含 `deletedIds`：取消成功条目已同步删除该域本地记录）/ `IMPORT_PROGRESS`（IMPORT_DATA 分块落库逐块回报） — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发                                                                                                |
 
 > 长任务链路原语（`tabBridge.send`/`sendAsync`/`requestResponse`）与同步/扫描/取消的完整链路、时序差异、分页参数见本册「接口 / 方法签名」与 docs/02–09 各分册。
 
@@ -220,7 +222,7 @@ if (BATCH_SIZE > 0 && (i + 1) % BATCH_SIZE === 0) {
 
 ## 四域存储模型
 
-### IndexedDB（data/storage.js 封装，库名 `douyin-saver`，DB_VERSION = 5；无改名迁移——低版本旧库升级前须先在旧版导出备份）
+### IndexedDB（data/storage.js 封装，库名 `douyin-saver`，DB_VERSION = 6；无改名迁移——低版本旧库升级前须先在旧版导出备份）
 
 | store | keyPath | 索引 | 内容 |
 |-------|---------|------|------|
@@ -248,8 +250,8 @@ DOMAIN_CONFIG = {
 
 ### Work 记录字段（formatWork / normalizeWork 共同产出）
 
-`awemeId, type("video"|"note"), desc, nickname, uid, authorHomeUrl, cover, video, videoExpireAt, images[], music, createTime（抖音发布时间，秒级 Unix 时间戳；卡片作者行右侧与详情底栏标题右侧展示。fiber 捕获路径的原始对象缺 create_time，采集与落库均按 aweme_id 高 32 位推导兜底，mergeWork 恒保证非零）, authorFollowed(bool|null)`
-视频直链三级取链语义见 [02](./02-independent-sync-works.md) / [09](./09-inject-tab-mode.md)。落库合并规则（groupId/savedAt 保护、长效链降级防护、导入分组对账等**全部写入路径语义**）统一见 [10](./10-storage-write-and-import.md)，本文只维护字段模型。
+`awemeId, type("video"|"note"), desc, nickname, uid, authorHomeUrl, cover, video, videoExpireAt, images[], imageVideos[]（与 images 逐位对位；图集实况小视频，无视频项空串）, music, createTime（抖音发布时间，秒级 Unix 时间戳；卡片作者行右侧与详情底栏标题右侧展示。fiber 捕获路径的原始对象缺 create_time，采集与落库均按 aweme_id 高 32 位推导兜底，mergeWork 恒保证非零）, authorFollowed(bool|null)`
+封面语义：视频 `cover`=封面档；图集 `cover`=平台封面（`video.cover`）优先、回退首图——卡片展示「取轻」与详情首帧占位链见 [02](./02-independent-sync-works.md) / [11](./11-options-ui.md)。内容项实况视频 `imageVideos[]` 与 `images[]` 逐位对位（图集每条可为静帧+小视频），详情切条自动单次播放见 [11](./11-options-ui.md)；注意 note 的 aweme 级 `video` 实为背景音乐（M4A，与 `music.play_url.uri` 同文件），不参与内容播放。视频直链三级取链语义见 [02](./02-independent-sync-works.md) / [09](./09-inject-tab-mode.md)。落库合并规则（groupId/savedAt 保护、长效链降级防护、导入分组对账等**全部写入路径语义**）统一见 [10](./10-storage-write-and-import.md)，本文只维护字段模型。
 
 ### Following 记录字段（7 个稳定字段）
 
@@ -260,9 +262,9 @@ DOMAIN_CONFIG = {
 
 | Key | 类型 | 写入者 | 说明 |
 |-----|------|--------|------|
-| `savedMsToken` + `savedMsTokenTime` | string + number | getMsToken / REFRESH_MSTOKEN | 独立模式 msToken 缓存，无过期逻辑 |
-| `savedWebId` + `savedWebIdTime` | string + number | getWebId / REFRESH_WEBID | 设备身份缓存 |
-| `savedCookie` + `savedCookieTime` | string + number | REFRESH_COOKIE | douyin.com cookie jar 全量字符串快照；门禁与 UIFID/uid 提取源 |
+| `savedMsToken` + `savedMsTokenTime` | string + number | getMsToken / REFRESH_MSTOKEN / 页面加载自动刷新 | 独立模式 msToken 缓存，无过期逻辑 |
+| `savedWebId` + `savedWebIdTime` | string + number | getWebId / REFRESH_WEBID / 页面加载自动刷新 | 设备身份缓存 |
+| `savedCookie` + `savedCookieTime` | string + number | REFRESH_COOKIE / 页面加载自动刷新 | douyin.com cookie jar 全量字符串快照；门禁与 UIFID/uid 提取源 |
 | `browserFeatures` + `browserFeaturesTime` | object + number | CAPTURE_BROWSER_FEATURES / REFRESH_BROWSER_FEATURES | 浏览器特征指纹（含 securityKey） |
 | `independentMode` | boolean | SET_MODE | 模式开关 |
 | `secUid` | string | options 设置面板 `saveBeforeClose` 关闭面板时一次性写入 | 独立模式目标用户 |
@@ -270,7 +272,7 @@ DOMAIN_CONFIG = {
 
 ### 设置面板与凭据缓存刷新链
 
-设置面板含 4 个 section：**运行参数**（独立模式开关 + 校准开关 + secUid 输入 + 缓存列表 + 延迟/超时参数）、**Cookie 配置**（键值对表格）、**浏览器特征**（只读表格）、**Tab 模式**（安全状态）。缓存列表各项的「刷新」按钮经 `TYPE_MAP = { cookie:"COOKIE", mstoken:"MSTOKEN", webid:"WEBID", browser_features:"BROWSER_FEATURES" }` 映射为消息：
+设置面板含 4 个 section：**运行参数**（独立模式开关 + secUid 输入 + 缓存列表 + 延迟/超时参数）、**Cookie 配置**（键值对表格）、**浏览器特征**（只读表格）、**Tab 模式**（安全状态）。缓存列表各项的「刷新」按钮经 `TYPE_MAP = { cookie:"COOKIE", mstoken:"MSTOKEN", webid:"WEBID", browser_features:"BROWSER_FEATURES" }` 映射为消息：
 
 | 面板项 | 消息 | 行为 |
 |--------|------|------|
@@ -278,6 +280,8 @@ DOMAIN_CONFIG = {
 | mstoken | `REFRESH_MSTOKEN` | 删缓存重走五级来源（jar 无值必触发一次 mssdk 兑换，见 05） |
 | webid | `REFRESH_WEBID` | 删缓存重兑换并回写 webid cookie |
 | browser_features | `REFRESH_BROWSER_FEATURES` | 需抖音标签页在线：`REQUEST_CAPTURE_BROWSER_FEATURES` 强制重采（链路见 09） |
+
+**自动刷新时机（页面加载驱动）**：每次抖音页面加载，inject 启动即采集浏览器特征经 `CAPTURE_BROWSER_FEATURES` 落库；`Credentials.captureBrowserFeatures` 重建 ABogus 后 fire-and-forget 调 `#autoRefreshCredentials()`——先刷 cookie 快照，再并行刷 msToken / webid，与上表手动刷新完全同链路（仅 sendResponse 缺省、静默执行）。不判断独立模式开关；cookie→msToken 的先后保证快照先落库（msToken 第二来源与 UIFID/odin_tt 兜底都读它）。
 
 另有两个非刷新入口：`GET_CACHE_TIMES`（四项时间戳展示）、`GET_COOKIE_INFO`（解析 savedCookie 为键值对 + sessionid 存在性检查）。
 
@@ -318,9 +322,9 @@ DOMAIN_CONFIG = {
 
 ### `runtimeConfig`（chrome.storage.local，设置面板可改，RELOAD_CONFIG 热加载进 CONFIG）
 
-键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / calibrateFollowings`（默认值同上表；`calibrateFollowings` 默认 true，控制同步关注后的批量校准开关）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数（含校准开关）随存随恢复，重开扩展（非重载）不回退编译期默认值；`IndependentClient.isCalibrateEnabled` 另有 storage 惰性加载兜底（首次调用才读，跨 SW 重建仍生效）。
+键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax`（默认值同上表）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数随存随恢复，重开扩展（非重载）不回退编译期默认值。
 
-### options/core.js 顶层 `config`（UI 侧，50 键，权威键表）
+### options/core.js 顶层 `config`（UI 侧，51 键，权威键表）
 
 | 分组       | 键（默认值）                                                                                                                                                  |
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -331,7 +335,7 @@ DOMAIN_CONFIG = {
 | UI 延迟    | `HOVER_PREVIEW_DELAY` `200` / `BLOB_REVOKE_DELAY` `10000` / `NOTE_AUTO_PLAY_INTERVAL` `3000` / `SEARCH_DEBOUNCE` `200`                                        |
 | 侧边栏     | `SIDEBAR_SNAP_POINTS` `[650,0]` / `SIDEBAR_SCROLL_THRESHOLD` `100` / `SIDEBAR_FILL_THRESHOLD` `50` / `SIDEBAR_IMG_PER_FRAME` `6` / `SIDEBAR_DRAG_THRESHOLD` `4` |
 | 网格项尺寸 | `CARD_SIZE_FALLBACK` `261` / `CARD_GAP` `11` / `CARD_HEIGHT_OFFSET` `44`                                                                                      |
-| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'1600px'`（≈4 行，须 < OBSERVE_CHUNK_SIZE 单圈行距） / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'`（≈6 行，与填充圈保持 800px 滞回间隙） / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_PREMOUNT_CAP_FILTER` `600`（筛选态封闭视图预铺降档） / `GRID_EXTEND_THRESHOLD` `1.5` / `GRID_EXTEND_STEP` `1000`（扩容单步新增槽位上限，防深域后段单步长任务） / `DEMOTE_FRAME_BUDGET_MS` `8`（停稳降级分帧预算） / `GRID_IMG_PER_FRAME` `10`（网格媒体探针每帧派发配额，sidebar 沿用 `SIDEBAR_IMG_PER_FRAME`） |
+| 分块渲染   | `RENDER_CHUNK_SIZE` `50` / `RENDER_BUILD_BUDGET_MS` `8` / `OBSERVER_ROOT_MARGIN` `'1600px'`（≈4 行，须 < OBSERVE_CHUNK_SIZE 单圈行距） / `OBSERVE_CHUNK_SIZE` `48` / `FILL_FRAME_BUDGET_MS` `8` / `UNLOAD_ROOT_MARGIN` `'2400px'`（≈6 行，与填充圈保持 800px 滞回间隙） / `FAST_SCROLL_THRESHOLD` `300` / `GRID_PREMOUNT_CAP` `1500` / `GRID_PREMOUNT_CAP_FILTER` `600`（筛选态封闭视图首帧同步预铺降档，余量行尾部占位预留） / `GRID_EXTEND_THRESHOLD` `1.5` / `GRID_EXTEND_STEP` `1000`（扩容单步新增槽位上限，防深域后段单步长任务） / `GRID_EXTEND_JUMP_STEP` `4000`（远跳带区追赶单步上限：拖拽跳进尾部占位区后逐帧直铺防长冻结） / `DEMOTE_FRAME_BUDGET_MS` `8`（停稳降级分帧预算） / `GRID_IMG_PER_FRAME` `10`（网格媒体探针每帧派发配额，sidebar 沿用 `SIDEBAR_IMG_PER_FRAME`） |
 | 分组/存储  | `GROUP_NAME_MAX_LEN` `20` / `STORAGE_MAX_BYTES` `10MB` / `TRASH_GROUP_NAME` `'稍后删除'`                                                                      |
 | Tab 滚动   | `TAB_SCROLL_THRESHOLD` `2`                                                                                                                                    |
 | 抖音 URL   | `URL_BASE` / `URL_USER_SELF` / `URL_FAVORITE_TAB` / `URL_COLLECTION_TAB` / `URL_FOLLOWING_TAB`                                                                    |

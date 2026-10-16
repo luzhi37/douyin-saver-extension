@@ -249,6 +249,8 @@ avatarLarger: https://p3-pc.douyinpic.com/aweme/1080x1080/aweme-avatar/tos-cn-av
 music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/7241916918263909179.mp3
 ```
 
+**图集首图变体档位（2026-10 实测）**：图集首图模板 `~tplv-dy-aweme-images-v2:W:H:q75.webp` 的 W 即短边档位——`:3000:3000` ≈ 不压缩即原图（实测下发 2160×2880~2160×4022，6-8.7MP，卡片 207px 显示超样本 10-20×），`:1440:W` 为压缩档（2.8-4.1MP）。**把 `~tplv` 段改写为小变体（720/1080，webp/jpeg）被 x-signature 拒绝（实测 403）**；url_list 三条仅 CDN 镜像与 webp/jpeg 格式差异、无小档。卡片展示「取轻」（平台 cover 与首图间）与详情首帧占位链见 [11](./11-options-ui.md)「卡片封面选源」。
+
 **边缘案例**：库内 4 条作品的 video 字段形如 `/aweme/v1/play/?video_id=https%3A%2F%2Fsf6-cdn-tos.douyinstatic.com%2Fobj%2Fies-music%2F….mp3&aid=6383&…`——上游数据的 `play_addr.uri` 本身就是完整音乐直链，被 `encodeURIComponent` 原样塞入所致，属源数据形态而非扩展缺陷。
 
 ## 异常场景及处理

@@ -102,6 +102,8 @@ function resolveSelfSecUid() -> string// favorite/post/following/collection 缓�
 function normalizeWork(raw, source: "api"|"fiber") -> Work|null
 function transformAwemeItem(aw, { includeAuthorFollowed }) -> Work|null
 function extractVideo(raw, source) -> { url, expireAt }   // 三级取链，fiber 分支特殊（见下）
+function extractCover(raw) -> string                      // 视频=封面档；图集=平台封面(video.cover)优先、回退首图（卡片取轻见 11）
+function extractImageVideos(raw) -> string[]              // 内容项实况小视频（与 extractImages 同过滤逐位对位；无视频空串）
 function extractWorkFromRaw(awemeData, { fromFiber }) -> Work|null
 async function extractWorksFromResponse(url, data, parsedUrl?) -> Work[]
 function getAwemeInfoFromButton(btn) -> awemeInfo|null     // React Fiber 两级搜索
@@ -227,6 +229,7 @@ function collectBrowserFeatures() {
     securityKey: getSecurityKey() };            // 独立模式取消操作的密钥来源（06 文档）
 }
 // DOMContentLoaded 自动 dispatch DY_CAPTURE_BROWSER_FEATURES → content → CAPTURE_BROWSER_FEATURES 消息落库
+//   落库后 background 顺带 fire-and-forget 自动刷新 cookie/msToken/webid（见 01「自动刷新时机」）
 // 设置面板「刷新」→ background REFRESH_BROWSER_FEATURES → sendToTabAsync(REQUEST_CAPTURE_BROWSER_FEATURES)
 //   → DY_REQUEST_BROWSER_FEATURES 事件 → inject 即时采集 → DY_CAPTURE_BROWSER_FEATURES_REFRESH 回传
 ```

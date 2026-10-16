@@ -54,13 +54,14 @@ DOMAIN_CONFIG = {
 
 - 数据操作：`SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`；作品型三域 `GET_*` 支持分页）
 - 分组管理：`GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`
-- 工具：`IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING` / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG`
+- 工具：`IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING` / `CALIBRATE_FOLLOWINGS` / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG`
 - 扫描入口：`FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION`
 - 入库：`IMPORT_USER_WORKS` / `IMPORT_FOLLOWING`（过程消息 `IMPORT_WORKS_PROGRESS`）
+- 校准：`CALIBRATE_FOLLOWING`（侧边栏单用户）/ `CALIBRATE_FOLLOWINGS`（工具弹窗批量，关注域全部作者）——同步流程不自动校准（进度消息 `CALIBRATE_PROGRESS`，见 docs/04）
 - 存储广播：`STORE_CHANGED`（**仅在 `changed>0` 时广播**，载荷两种形态见 docs/01）
 - 取消入口：`CANCEL_FAVORITES` / `CANCEL_COLLECTION`；取消信号 `CANCEL_ACTIVE_TASK`
 - Tab 转发：`FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`
-- 进度消息：`SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` / `IMPORT_PROGRESS`
+- 进度消息：`SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `CALIBRATE_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` / `IMPORT_PROGRESS`
 
 ## 响应式状态管理
 
@@ -98,6 +99,9 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 
 - **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案见 docs/02/09（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）。
 - **「已关注/未关注」归属判定走方案A：作品 `uid` 实时关联关注全集** — 全集 `state.followedUids`（init/域切换/`followings` 事件三处刷新）；记录无 `uid` 或全集未加载成功时**不归判**，避免把已关注作者作品误算为未关注引入误删；**禁止改用扫描快照 `authorFollowed` 做该判定的主判据**（细节见 docs/11「SearchBar」）。
+- **侧边栏作品卡三元素（发布日期 / 作品域存在徽标 / 「存入」按钮）判据按 awemeId** — 存在性经 `GET_WORKS_BY_IDS { domain:"works", ids }`（主键直取）批量查询，命中即「已在作品域」，失败降级按未入库保守展示；`SAVE_WORKS` 单作品落库后卡片原地更新（徽标转灰「已入库」+ 按钮禁用）。存入按钮在封面链接之外（信息条），点击不得触发外链跳转；`Sidebar.#pendingSaves` 防重入。见 docs/11「侧边栏作品卡」。（关注者卡不再有存入作品域按钮，2026-10-16 移除）
+- **图集（note）封面「取轻」：`cover` 存平台封面档，卡片展示统一走 `utils.pickCardCover(work)`** — Tab `#extractCover` 对 note 优先 `video.cover.url_list[0]`（`~noop.jpeg` 封面档）、回退首图；独立 `formatWork` 已同款（两模式语义就此一致）。平台给图集首图签发的 `:3000:3000` 模板 ≈ 原图（实测 6-8.7MP、解码 25-35MB/张，是侧边栏/网格滚动卡顿根因）；`~tplv` 改写小变体被签名拒绝（实测 403）、url_list 无更小档。选源规则：首图模板短边 <2000（如 `:1440:` 压缩档）保留首图，否则 cover 优先、缺失回退；**详情首帧 cover 占位后静默换 `images[0]` 高清**（`#imgProbeToken` + `#noteWork/#noteImgIndex` + overlay 三重守卫）。旧已存记录（cover===images[0]）无迁移、重采集自动升级。见 docs/02/11。
+- **note 内容项实况视频 `imageVideos[]` 与 `images[]` 逐位对位（红线）** — 图集每条内容项可为纯静帧或实况（静帧 + 1-8s 静音小视频 `images[i].video.play_addr`，实测 110-280KB）；两提取端同源映射保对位（inject `#extractImageVideos` 与 `#extractImages` 同过滤、formatWork imagePairs 双数组），**无静帧项两者同步丢弃、无视频项空串占位；旧记录字段缺失按全空语义，禁止在无对位保证下按索引读（`imageVideos?.[i]`）**。详情切条自动单次播放（muted、无控件、`pointer-events:none` 叠于 `#detailImage` 同槽位；`ended` 隐藏回静帧；`play()` 拒绝/媒体 error 静默隐藏；不调 markMediaOk/Fail、不写 `state.mediaMuted`、不设 `#setMediaAspect`），`#noteClipToken`/`#imgProbeToken` 代际守卫，`#releaseNoteClip` 挂 addCleanup（切作品/关闭释放）、`pauseOnHidden` 一并停播。见 docs/01/11。
 
 ### UI 交互与 CSS
 
@@ -109,7 +113,7 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 - **详情层双形态进度条**（视频连续轨道/图集分段音乐驱动，seek 统一 `#applySeek`）、`.media-view` 宽度随媒体宽高比自适应（`--media-aspect` 由 `Detail.#setMediaAspect` 写入，切作品复位 9:16）与模糊背景 `brightness(0.8)` 为既定视觉，定案细节见 docs/11（2026-09-29 修订：废弃横版 39.3vw 封顶）。
 - **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — `row.querySelector('.sec-truncate, .sec-expanded')`（见 docs/09）。
 - **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被后部组件规则覆盖，hidden 静默失效。
-- **搜索栏收起即重置，筛选不跨收起保留** — `closeSearchBar()` 必须先调 `clearSearchFilters()`；域切换**不**重置；筛选状态**不落 URL hash**（P1-8 的刷新恢复已移除：hash 残留会让搜索栏在从没打开过它的会话里被「自动展开」，main.js init 仅保留一次性残留清理，全仓无 hash 读写方）（见 docs/11「SearchBar」）。
+- **搜索栏收起即重置，筛选不跨收起保留** — `closeSearchBar()` 必须先调 `clearSearchFilters()`；域切换**不**重置；筛选状态**不落 URL hash**（P1-8 的刷新恢复已移除：hash 残留会让搜索栏在从没打开过它的会话里被「自动展开」，main.js init 仅保留一次性残留清理，全仓无 hash 读写方）（见 docs/11「SearchBar」）。**无激活筛选时收起是纯 UI 重置**（`clearSearchFilters` 以重置前的 `isFilterActive()` 判据，状态==默认则不动网格与滚动——数据变化已由各自增量通道同步，重渲只会因身份失配白闪一次，2026-10 定案）。**范围匹配口径与提示文案严格对齐**（作品型三域：作者=昵称子串、标题=desc 子串、ID=作者 uid 精确；作品 `awemeId` 不参与任何关键词匹配，2026-10-14 定案）——改文案必须同步改行为、反之亦然（见 docs/11「SearchBar」）。
 
 ### 渲染与虚拟化
 
@@ -118,16 +122,16 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 - **快滚门控** — 快滚判定在 scroll 事件时刻做（scrollTop 帧间差超 `FAST_SCROLL_THRESHOLD`），rAF 侧（catchUp/drain 轮询两个读取者）不推进判定基准、drain 轮询经 epoch 计数检测停稳：快滚态挂起填充 drain、跳过 `#demote`；停稳后 `#refillBand` 丢弃沿路积压（**丢弃前必须全量重新 observe**）只补落点带区；滚轮级滚动帧间位移低于阈值、scrollFast 恒 false，由 `#scheduleSettleCheck` 在滚动静止一帧后补同款收口（幂等），勿让滚轮路径失去停稳收口。容器级事件委托（click/pointerover/out/input）一律绑 `#mainGrid` 而非容器——清场换壳后零重绑。
 - **网格卡片层禁用 `content-visibility: auto`** — `.work-card`/`.work-skeleton`/`.following-card` 一律不加（屏外跳过渲染会让远跳落点骨架延迟出现）；sidebar 的 CV 禁令是另一条理由，互不影响。
 - **侧边栏虚拟化** — 条目只挂 meta、进视口限量发探针、整页 fragment 追加（禁止创建即全量急切加载）；observer root 必须显式传 `dom.sidebarBody`；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；不用 `content-visibility:auto`。
-- **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换）** — 分圈观察哨兵链推进填充（哨兵被删须立刻续接）；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`：原位整刷前后内容等高时无 scroll 事件，哨兵链够不着视口，视口骨架将永久滞留灰卡）；填充/卸载 IO 的 root 必须显式传 `#mainGrid`（同 sidebar 的 `dom.sidebarBody` 规则）；两段式铺设（首段同步 + 余量游离态拼装一次挂载，禁止逐帧向容器追加）；预铺有上限（`GRID_PREMOUNT_CAP`）+ 滚近底部扩容（`#extendIfNeeded`，倍增 + 单步上限 `GRID_EXTEND_STEP`）；`fillSlots` 落点按键前缀自锚定回填，占位卡在 fill IO 回调中**不得 unobserve**；`removeItems` 必须同步收缩 `#slots` 与 `#totalSlots`；`insertItems` 位插与 `removeItems` 对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载降级经 `#pendingDemotes` 队列按 `DEMOTE_FRAME_BUDGET_MS` 预算分帧（快滚期保持冻结、让位于填充队列），勿改回 IO 回调内同步成批降级；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`。
+- **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换）** — 分圈观察哨兵链推进填充（哨兵被删须立刻续接）；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`：原位整刷前后内容等高时无 scroll 事件，哨兵链够不着视口，视口骨架将永久滞留灰卡）；填充/卸载 IO 的 root 必须显式传 `#mainGrid`（同 sidebar 的 `dom.sidebarBody` 规则）；两段式铺设（首段同步 + 余量游离态拼装一次挂载，**禁止逐帧向容器追加**）；预铺有上限（`GRID_PREMOUNT_CAP`）+ 封闭视图**尾部占位**（`#syncTailReserve`：容器 padding-bottom 按「总行数 − 已挂行数」预留，滚动条总长渲染首帧即终值，纯 style 写入零追加——**禁止改回「预挂/后台补铺余量卡」**：大 M 下每次容器追加都是全网格重排，实测 2 万卡单次约 130ms、4 万约 1s，曾致排序切换连帧卡顿）+ 滚近按需铺卡（`#extendIfNeeded`：真实内容底 = 容器底 − 占位，铺卡后占位等量收缩、净高恒定；倍增 + 单步上限 `GRID_EXTEND_STEP`）+ 远跳带区追赶（视口拖进占位区时 `#scheduleRush` 逐帧直铺，单步 ≤ `GRID_EXTEND_JUMP_STEP`）；`fillSlots` 落点按键前缀自锚定回填，占位卡在 fill IO 回调中**不得 unobserve**；`removeItems` 必须同步收缩 `#slots` 与 `#totalSlots`；`insertItems` 位插与 `removeItems` 对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载降级经 `#pendingDemotes` 队列按 `DEMOTE_FRAME_BUDGET_MS` 预算分帧（快滚期保持冻结、让位于填充队列），勿改回 IO 回调内同步成批降级；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`（含清尾部占位 inline style）。
 - **STORE_CHANGED 收口优先增量、整刷仅作兜底** — 新增落当前视图走 `tryHeadInsert` 头插，禁止改回「视图内新增→`loadDomainData` 整刷」；头插与在途分页的交错窗口守卫（`services.isGridLoading()`/`grid.isScrollFrozen()`/`state.gridSlots` 等）不过必须整刷兜底、不得绕过；增量路径的规模守卫在 `applyBulkChanged` 入口（bulk 补拉 id 数 > `GRID_PREMOUNT_CAP` 直接整刷兜底；点载荷 ≤ UPSERTS_MAX、头插输入随之有界，`tryHeadInsert` 不重复设防）；落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引 prev 遍历同序；bulk 载荷只带 id 集、记录经 `GET_WORKS_BY_IDS` 补拉（管线全景与红线见 docs/11「STORE_CHANGED 增量收口」）。
 - **分组与域切换同序列清场（点击即清空）** — 切换瞬间 `appShell.clearActiveGrid()`：abortRender×4 + 样式塌缩（height:0/overflow:hidden/visibility:hidden）+ 旧子树空闲期一次性销毁；「冻结-定格」与「不清场保无闪烁」均已定案否决/禁止。数据侧配套 `loadDomainData` 分页渐进（followings 单发全量）。
-- **`state.dataVersion` 是视图缓存的失效判据（红线）** — store 域数据变更方法与 `loadFollowedUids` 自动自增；绕过 store 封装的原地写入（main.js `tryHeadInsert`/`applyStoreUpserts`、detail.js `removeWork`）必须手动自增。`getWorksView`/`getFollowingsView` 返回共享缓存数组，调用方一律只读。筛选态（封闭视图）预铺恒为 `GRID_PREMOUNT_CAP_FILTER`、扩容必须带真实键（封闭态无 fillSlots 回填方，无键占位卡永久灰卡）；机制与红线见 docs/11「视图阶段缓存与筛选切换性能」。
+- **`state.dataVersion` 是视图缓存的失效判据（红线）** — store 域数据变更方法与 `loadFollowedUids` 自动自增；绕过 store 封装的原地写入（main.js `tryHeadInsert`/`applyStoreUpserts`、detail.js `removeWork`）必须手动自增。`getWorksView`/`getFollowingsView` 返回共享缓存数组，调用方一律只读。筛选态（封闭视图）首帧同步预铺恒为 `GRID_PREMOUNT_CAP_FILTER`、余量行由尾部占位（`#syncTailReserve`）预留、滚近按需铺卡并等量收缩占位、铺卡/扩容必须带真实键（封闭态无 fillSlots 回填方，无键占位卡永久灰卡）；机制与红线见 docs/11「视图阶段缓存与筛选切换性能」。
 - **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断。
 
 ### 媒体体系
 
 - **媒体加载有全局熔断** — 失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`。
-- **卡片预览静音是全局联动，详情播放器独立** — 三域卡片静音走 `WorksGrid.#togglePreviewMute()`（共享 `#previewMuted`），填充与悬停起播读该标志保证继承；详情层静音偏好 `Detail.#detailMuted` 为视频/图集音乐共享的单一事实源（渲染路径统一施加，勿读元素 `muted` 回写偏好），勿与卡片联动。
+- **静音偏好全页单一共享（`state.mediaMuted`）** — 网格卡片与详情播放器两处静音按钮双向同步：网格走 `WorksGrid.#toggleMediaMute()`（翻转标志 + `syncMediaMute()` 同步全部卡片），详情走 `Detail.#toggleMediaMute(el)`（视频/图集音乐共用，回写网格卡片元素态）；填充/悬停起播与详情渲染路径统一施加该标志，勿读元素 `muted` 回写偏好。禁止改回两套独立标志（历史「详情独立」实现进详情即丢静音状态）。依据见 docs/11「静音偏好全页单一共享」。
 - **离开扩展页面即暂停全部播放** — `visibilitychange`(hidden) 触发：卡片预览走 `WorksGrid.stopAllMedia`，详情走 `Detail.pauseOnHidden`；仅页面真正隐藏时暂停，窗口失焦不暂停。
 - **全站媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际；切换路径旧背景保持到新背景提交（零空档）。
 
@@ -145,7 +149,7 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 | [docs/01-project-architecture.md](./docs/01-project-architecture.md) | 项目架构：双模运行与路由隔离、代码布局约束、四域存储模型、消息类型总表、进度消息载荷、全局配置 |
 | [docs/02-independent-sync-works.md](./docs/02-independent-sync-works.md) | 独立模式同步作品（SYNC_WORKS / formatWork 三级取链） |
 | [docs/03-independent-sync-followings.md](./docs/03-independent-sync-followings.md) | 独立模式同步关注（FETCH_FOLLOWING 分页采集） |
-| [docs/04-independent-calibrate-followings.md](./docs/04-independent-calibrate-followings.md) | 关注计数校准（批量 calibrateStats + 侧边栏单用户 CALIBRATE_FOLLOWING）+ 最近更新日期 lastUpdateAt（作品第一页 max create_time 采集） |
+| [docs/04-independent-calibrate-followings.md](./docs/04-independent-calibrate-followings.md) | 关注计数校准（工具弹窗批量 CALIBRATE_FOLLOWINGS + 侧边栏单用户 CALIBRATE_FOLLOWING，与同步分离）+ 最近更新日期 lastUpdateAt（作品第一页 max create_time 采集） |
 | [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md) | 独立模式扫描收藏（listcollection 线格式 + Argus webSign 定案、绑定域实验、盐轮换处置） |
 | [docs/06-independent-cancel-collection.md](./docs/06-independent-cancel-collection.md) | 独立模式取消收藏（background 直连 POST 循环） |
 | [docs/07-independent-fetch-user-works.md](./docs/07-independent-fetch-user-works.md) | 作者主页作品分页（FETCH_WORKS_PAGE 双模分支） |

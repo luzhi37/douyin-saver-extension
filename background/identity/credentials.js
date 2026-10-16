@@ -266,6 +266,7 @@ class Credentials {
         message.features.platform || navigator.platform,
         message.features,
       );
+      this.#autoRefreshCredentials();
     }
     sendResponse({ ok: true });
   }
@@ -276,14 +277,14 @@ class Credentials {
     await chrome.storage.local.remove(["savedMsToken", "savedMsTokenTime"]);
     const msToken = await this.getMsToken();
     const { savedMsTokenTime } = await chrome.storage.local.get("savedMsTokenTime");
-    sendResponse({ ok: true, msToken, time: savedMsTokenTime || null });
+    sendResponse?.({ ok: true, msToken, time: savedMsTokenTime || null });
   }
 
   async refreshWebId(sendResponse) {
     await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
     const webId = await this.getWebId();
     const { savedWebIdTime } = await chrome.storage.local.get("savedWebIdTime");
-    sendResponse({ ok: true, webId, time: savedWebIdTime || null });
+    sendResponse?.({ ok: true, webId, time: savedWebIdTime || null });
   }
 
   // 重建 ABogus 需跨类经 TabBridge 向页面索取最新特性
@@ -343,7 +344,7 @@ class Credentials {
       const rawCookie = pairs.join("; ");
       const time = Date.now();
       await chrome.storage.local.set({ savedCookie: rawCookie, savedCookieTime: time });
-      sendResponse({
+      sendResponse?.({
         ok: true,
         pairs: cookies.map((c) => ({ key: c.name, value: c.value })),
         rawCookie,
@@ -351,8 +352,16 @@ class Credentials {
         time,
       });
     } catch (e) {
-      sendResponse({ ok: false, error: e.message });
+      sendResponse?.({ ok: false, error: e.message });
     }
+  }
+
+  // 抖音页面加载时机顺带自动刷新三项独立模式凭据（fire-and-forget，不阻塞 capture 响应）：
+  // cookie 快照先行（msToken 第二来源与 UIFID/odin_tt 兜底都读它），msToken/webid 并行兑换。
+  // 与设置面板手动刷新同链路，sendResponse 缺省即静默执行。
+  async #autoRefreshCredentials() {
+    await this.refreshCookie();
+    await Promise.allSettled([this.refreshMsToken(), this.refreshWebId()]);
   }
 }
 const credentials = new Credentials();

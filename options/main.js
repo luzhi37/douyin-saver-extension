@@ -28,7 +28,6 @@ const SHORTCUT_ROWS = [
   ["详情 · Space", "播放 / 暂停"],
   ["详情 · M", "静音 / 取消静音"],
   ["详情 · L", "循环模式（单作品 / 分组 / 关闭）"],
-  ["详情 · F", "全屏播放"],
   ["详情 · ←/→", "图集翻页（多图作品）"],
   ["详情 · Delete / Backspace", "移除当前作品（弹确认）"],
   ["批量 · Ctrl+A", "全选当前结果"],
@@ -257,6 +256,7 @@ chrome.runtime.onMessage.addListener((message) => {
       domainScanSync.onScanProgress(message);
       break;
     case "IMPORT_WORKS_PROGRESS":
+    case "CALIBRATE_PROGRESS":
       authorImport.onProgress(message);
       break;
     case "IMPORT_PROGRESS":
@@ -473,7 +473,7 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
       if (ok && search.isOwnerFilterActive()) search.refreshGridView();
     });
     await appShell.loadDomainDataSafe();
-    // 滚动已随 switchDomain 点击时刻的 wipe clamp 归零
+    // 滚动已在 switchDomain 显式归零（尾部占位使 wipe clamp 不再触发）
   });
 
   store.on("works", () => {
@@ -507,6 +507,10 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
   store.on("work-record-appended", ({ domain, groupId, items, start, done }) => {
     if (state.domain !== domain || state.currentGroupId !== groupId) return;
     if (search.isFilterActive()) {
+      // 筛选激活：页序与视图序不对齐（逆序/作者聚类破坏页序对齐），DOM 静默累积到
+      // 加载完成再整渲；K/N 计数逐页刷新（与非筛选分支同款渐进计数，避免 done 时刻
+      // 一次性跳变——用户按旧版直觉核对加载进度）
+      search.syncCount();
       if (done) search.refreshGridView();
       return;
     }

@@ -66,7 +66,9 @@ class FollowingsGrid extends VirtualGrid {
     card.querySelector(".following-nickname").textContent = following.nickname || "未知";
     card.querySelector(".stat-followers").textContent = utils.formatCount(following.followerCount) + " 粉丝";
     card.querySelector(".stat-works").textContent = utils.formatCount(following.awemeCount) + " 作品";
-    card.querySelector(".following-update").textContent = "最近更新 " + utils.formatUpdateTime(following.lastUpdateAt);
+    const updateEl = card.querySelector(".following-update");
+    updateEl.textContent = "最近更新 " + utils.formatUpdateTime(following.lastUpdateAt);
+    updateEl.title = following.lastUpdateAt ? new Date(following.lastUpdateAt).toLocaleString() : "";
   }
 
   // 头像不可用时的占位：灰底圆圈换为昵称首字，不再让头像凭空消失
@@ -103,7 +105,9 @@ class FollowingsGrid extends VirtualGrid {
     card.querySelector(".following-nickname").textContent = "";
     card.querySelector(".stat-followers").textContent = "";
     card.querySelector(".stat-works").textContent = "";
-    card.querySelector(".following-update").textContent = "";
+    const updateEl = card.querySelector(".following-update");
+    updateEl.textContent = "";
+    updateEl.title = "";
     // 降级即移除勾选框（同 works-grid.clearCard：防勾选框随浏览量无界累积，回填时重建）
     card.querySelector(".following-checkbox")?.remove();
   }

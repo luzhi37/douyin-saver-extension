@@ -311,7 +311,7 @@ const DOMAIN_CONFIG = {
 // 对标 options/core.js 的同名对象：从 chrome.storage.local 读取运行时配置并叠加进 CONFIG。
 const runtimeConfig = {
   KEY: "runtimeConfig",
-  // 默认运行配置：直接由 CONFIG 的 TIMEOUT/DELAY/SYNC 派生（单一事实来源），仅 calibrateFollowings 为运行时独占开关。
+  // 默认运行配置：直接由 CONFIG 的 TIMEOUT/DELAY/SYNC 派生（单一事实来源），全为可调数值参数。
   // 仅在首次安装时写入 chrome.storage.local 作为种子；后续 RELOAD_CONFIG 覆盖写入可变 CONFIG。
   DEFAULTS: {
     timeoutRequest: CONFIG.TIMEOUT.REQUEST,
@@ -335,7 +335,6 @@ const runtimeConfig = {
     syncBatchPauseMax: CONFIG.SYNC.BATCH_PAUSE_MAX,
     syncKeepaliveInterval: CONFIG.SYNC.KEEPALIVE_INTERVAL,
     syncRetryMax: CONFIG.SYNC.RETRY_MAX,
-    calibrateFollowings: true,
   },
   async load() {
     const stored = await chrome.storage.local.get(this.KEY);
@@ -346,7 +345,7 @@ const runtimeConfig = {
     }
     return { ...this.DEFAULTS, ...cfg };
   },
-  // 把一份配置对象叠加进可变 CONFIG（含校准开关写入 IndependentClient）
+  // 把一份配置对象叠加进可变 CONFIG
   apply(cfg) {
     CONFIG.TIMEOUT.REQUEST = cfg.timeoutRequest ?? CONFIG.TIMEOUT.REQUEST;
     CONFIG.TIMEOUT.SECURITY_STATUS = cfg.timeoutSecurityStatus ?? CONFIG.TIMEOUT.SECURITY_STATUS;
@@ -362,7 +361,6 @@ const runtimeConfig = {
     CONFIG.SYNC.BATCH_PAUSE_MAX = cfg.syncBatchPauseMax ?? CONFIG.SYNC.BATCH_PAUSE_MAX;
     CONFIG.SYNC.KEEPALIVE_INTERVAL = cfg.syncKeepaliveInterval ?? CONFIG.SYNC.KEEPALIVE_INTERVAL;
     CONFIG.SYNC.RETRY_MAX = cfg.syncRetryMax ?? CONFIG.SYNC.RETRY_MAX;
-    independentClient.setCalibrateEnabled(cfg.calibrateFollowings ?? true);
   },
   async reload() {
     const cfg = await this.load();
@@ -573,6 +571,17 @@ const formatters = {
         : "followStatus" in author
           ? author.followStatus === 1 || author.followStatus === 2
           : null;
+    // 内容项配对（静帧+实况视频）：同源一次映射保证 images/imageVideos 逐位对位——
+    // 图集每条可为纯静帧或实况（静帧+小视频），无静帧的项两者同步丢弃（视频无处可挂）
+    const imagePairs = (aw.images || [])
+      .map((i) => {
+        const v = (i.video || {}).play_addr || (i.video || {}).playAddr || {};
+        return {
+          url: utils.stripHttp((i.url_list || i.urlList || [])[0] || ""),
+          video: utils.stripHttp((v.url_list || v.urlList || [])[0] || ""),
+        };
+      })
+      .filter((p) => p.url);
     return {
       awemeId: String(aw.aweme_id),
       type: (aw.aweme_type || aw.awemeType) === CONFIG.AWEME_TYPE_NOTE ? "note" : "video",
@@ -583,9 +592,8 @@ const formatters = {
       cover: ((video.cover && video.cover.url_list) || [])[0] ? utils.stripHttp(video.cover.url_list[0]) : "",
       video: videoUrl,
       videoExpireAt,
-      images: (aw.images || [])
-        .map((i) => utils.stripHttp((i.url_list || i.urlList || [])[0] || ""))
-        .filter(Boolean),
+      images: imagePairs.map((p) => p.url),
+      imageVideos: imagePairs.map((p) => p.video),
       music: (aw.music && (aw.music.play_url || aw.music.playUrl || {}).uri) || "",
       createTime: aw.create_time || aw.createTime || utils.awemeIdCreateTime(aw.aweme_id) || 0,
       authorFollowed,

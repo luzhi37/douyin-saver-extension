@@ -2,6 +2,7 @@
 import { config, dom, state, utils, services } from '../core.js';
 import { followingsGrid } from '../grids/followings-grid.js';
 import { detail } from './detail.js';
+import { dialog } from './dialog.js';
 
 // ---------- Sidebar ----------
 class Sidebar {
@@ -19,6 +20,8 @@ class Sidebar {
   #sideFillObs = null;
   #sideUnloadObs = null;
   #workMeta = new WeakMap();
+  // 存入进行中的作品 id 集：防双击重入 + 滚动重建后按钮禁用态回填
+  #pendingSaves = new Set();
   #onResizeDown = (e) => {
     this.#dragStartX = e.clientX;
     this.#dragStartW = dom.sidebar.classList.contains("sidebar-zero") ? 0 : dom.sidebar.getBoundingClientRect().width;
@@ -99,6 +102,15 @@ class Sidebar {
         }
       });
     }, { passive: true });
+    // 存入按钮：容器级委托（一次绑定跨整个会话；卡片节点增删不重绑）。
+    // 按钮在 .sidebar-work-link 之外，命中即吞事件，绝不触发外链跳转
+    dom.sidebarWorksGrid.addEventListener("click", (e) => {
+      const btn = e.target.closest(".sidebar-work-save");
+      if (!btn) return;
+      e.stopPropagation();
+      e.preventDefault();
+      this.#saveWork(btn);
+    });
   }
 
   setSidebarWidth(w) {
@@ -190,12 +202,24 @@ class Sidebar {
       this.#sideUnloadObs = null;
     }
     dom.sidebarWorksGrid.innerHTML = "";
+    // 上一作者的「已全部加载」提示随之复位（新作者数据到达后在加载收尾重判）
+    dom.sidebarEndNotice.classList.add("hidden");
   }
 
   async loadSidebarWorks(secUid, cursor, reset) {
     if (state.sidebarLoading) return;
     state.sidebarLoading = true;
+    // 失败态兜底文案在上一轮曾被填入 loader：开新加载前还原纯 spinner
+    //（否则重试/续页期间加载态不可见，旧「加载失败」文案也会滞留到成功之后）
+    if (!dom.sidebarLoader.querySelector(".spinner")) {
+      dom.sidebarLoader.textContent = "";
+      const spinner = document.createElement("div");
+      spinner.className = "spinner";
+      dom.sidebarLoader.appendChild(spinner);
+    }
     dom.sidebarLoader.classList.remove("hidden");
+    // 触底加载触发时列表末端正处视口底部，先收起上一次的「已全部加载」提示（有新页则在收尾重判）
+    dom.sidebarEndNotice.classList.add("hidden");
 
     try {
       const res = await services.bgMsg({
@@ -207,10 +231,14 @@ class Sidebar {
       if (reset) dom.sidebarWorksGrid.innerHTML = "";
 
       if (res.ok && res.works) {
+        // 作品域存在性判据（逐作品）：一次批量主键直取当前页 id，命中即已在作品域；
+        // 查询失败降级为空集（按未入库保守展示，用户点存入时服务端合并去重兜底）
+        const ids = res.works.map((w) => String(w.awemeId));
+        const existing = await this.#fetchExistingIds(ids);
         const fragment = document.createDocumentFragment();
         const items = [];
         for (const w of res.works) {
-          const item = this.#createWorkItem(w);
+          const item = this.#createWorkItem(w, existing.has(String(w.awemeId)));
           fragment.appendChild(item);
           items.push(item);
         }
@@ -221,15 +249,24 @@ class Sidebar {
         for (const el of items) {
           if (this.#workMeta.has(el)) this.#sideFillObs.observe(el);
         }
+      } else {
+        // 失败/空响应（含 NO_SIGNATURE 等错误态）：终结算尽，否则侧边栏加载圈永挂
+        // （原实现只在成功分支收起 loader），底部提示兜底可视化收尾
+        state.sidebarCursor = null;
       }
-      dom.sidebarLoader.classList.add("hidden");
     } catch (_e) {
       console.error("[DY] sidebar load failed:", _e);
       dom.sidebarLoader.querySelector(".spinner")?.remove();
       dom.sidebarLoader.textContent = "加载失败" + (_e.message ? ": " + _e.message : "");
+      state.sidebarCursor = null;
+    } finally {
+      // 无论成功/失败/取消收敛在 finally 收起：加载圈只在请求在途期存在
+      dom.sidebarLoader.classList.add("hidden");
     }
 
     state.sidebarLoading = false;
+    // 「已全部加载」提示：全部页取完（无更多游标）且确有成列内容时驻底显示
+    dom.sidebarEndNotice.classList.toggle("hidden", !(!state.sidebarCursor && dom.sidebarWorksGrid.children.length > 0));
 
     if (
       state.sidebarCursor &&
@@ -364,9 +401,9 @@ class Sidebar {
     this.#imgQueue = [];
   }
 
-  #createWorkItem(work) {
+  #createWorkItem(work, exists) {
     const item = dom.sidebarWorkTemplate.content.cloneNode(true).firstElementChild;
-    const link = item.children[0];
+    const link = item.querySelector(".sidebar-work-link");
     const isNote = work.type === "note";
     const type = isNote ? "note" : "video";
     link.href = `${config.URL_BASE}/${type}/${work.awemeId}`;
@@ -374,10 +411,9 @@ class Sidebar {
     const badge = link.querySelector(".work-type-badge");
     if (badge) badge.classList.toggle("hidden", !isNote);
 
-    const img = link.children[0];
-    const placeholder = link.children[1];
-    const cover = isNote ? work.images?.[0] || work.cover : work.cover;
-    const url = cover ? utils.pickHttpsUrl(cover) : "";
+    const img = link.querySelector(".sidebar-work-cover");
+    const placeholder = link.querySelector(".sidebar-work-cover-placeholder");
+    const url = utils.pickCardCover(work);
     if (url) {
       // 元数据挂 WeakMap；探针推迟到条目进入视口（#promoteItem）才发，不再创建即全量急切加载
       this.#workMeta.set(item, { url, cover: img, placeholder });
@@ -386,7 +422,67 @@ class Sidebar {
       if (isNote) placeholder.textContent = "📰";
     }
 
+    // 三元素：发布日期 + 作品域存在徽标 + 「存入」按钮（work/元素引用挂元数据供点击回查）
+    const dateEl = item.querySelector(".sidebar-work-date");
+    dateEl.textContent = utils.formatPublishDate(work.createTime) || "-";
+    if (work.createTime) dateEl.title = new Date(work.createTime * 1000).toLocaleString();
+    const meta = this.#workMeta.get(item) || {};
+    meta.work = work;
+    meta.badgeEl = item.querySelector(".sidebar-work-badge");
+    meta.saveBtn = item.querySelector(".sidebar-work-save");
+    meta.inWorks = exists;
+    this.#workMeta.set(item, meta);
+    this.#syncSaveState(item);
     return item;
+  }
+
+  // 徽标两态 + 按钮禁用态按元数据回填（创建与存入成功两处共用；元素重建后不丢态）。
+  // 窄卡用短文案：未入库 / 已入库；按钮随态「存入 / 存入中… / 已入库」
+  #syncSaveState(item) {
+    const meta = this.#workMeta.get(item);
+    if (!meta || !meta.work) return;
+    const inWorks = Boolean(meta.inWorks);
+    const pending = this.#pendingSaves.has(String(meta.work.awemeId));
+    if (meta.badgeEl) {
+      meta.badgeEl.classList.toggle("in-works", inWorks);
+      meta.badgeEl.textContent = inWorks ? "已入库" : "未入库";
+    }
+    if (meta.saveBtn) {
+      meta.saveBtn.disabled = inWorks || pending;
+      meta.saveBtn.textContent = pending ? "存入中…" : inWorks ? "已入库" : "存入";
+    }
+  }
+
+  // 按 id 批量查作品域存在性（主键直取，命中即存在）；失败返回空集（保守按未入库展示）
+  async #fetchExistingIds(ids) {
+    if (!ids.length) return new Set();
+    const res = await services.bgMsg({ type: "GET_WORKS_BY_IDS", domain: "works", ids }).catch(() => null);
+    if (!res || !Array.isArray(res.items)) return new Set();
+    return new Set(res.items.map((w) => String(w.awemeId)));
+  }
+
+  // 单作品「存入作品域」：静默保存（无进度弹窗），toast 报告新增/更新 + 卡片原地更新。
+  // 已在作品域/进行中点按不可达（按钮已禁用）；重入靠 #pendingSaves 双保险
+  async #saveWork(btn) {
+    const item = btn.closest(".sidebar-work-item");
+    const meta = item && this.#workMeta.get(item);
+    if (!meta || !meta.work) return;
+    const awemeId = String(meta.work.awemeId);
+    if (meta.inWorks || this.#pendingSaves.has(awemeId)) return;
+    this.#pendingSaves.add(awemeId);
+    this.#syncSaveState(item);
+    try {
+      const res = await services.bgMsg({ type: "SAVE_WORKS", works: [meta.work] });
+      if (!res || res.ok !== true) {
+        dialog.showToast("存入作品域失败: " + (res?.error || "未知错误"), "error");
+        return;
+      }
+      meta.inWorks = true;
+      dialog.showToast(`已存入作品域（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`, "success");
+    } finally {
+      this.#pendingSaves.delete(awemeId);
+      this.#syncSaveState(item);
+    }
   }
 }
 

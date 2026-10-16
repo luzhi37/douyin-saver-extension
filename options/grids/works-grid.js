@@ -16,8 +16,6 @@ class WorksGrid extends VirtualGrid {
   #coverDrainRafId = 0;
   #videoStates = new WeakMap();
   #currentMediaCard = null;
-  // 预览音量全局联动标志：切换任意卡片的静音作用于三域全部卡片预览；详情覆盖层播放器独立不共享
-  #previewMuted = false;
   constructor({ emptyMsg, emptyHint } = {}) {
     super({
       container: dom.mainContainer,
@@ -105,13 +103,13 @@ class WorksGrid extends VirtualGrid {
         controls: controls,
       };
       this.#videoStates.set(video, st);
-      // 预览音量全局联动：新填充卡片继承当前共享静音标志（含按钮图标），
+      // 全页静音偏好（state.mediaMuted）：新填充卡片继承当前标志（含按钮图标），
       // 保证经「播放」按钮直启而非悬停起播的路径音量口径一致
-      video.muted = this.#previewMuted;
-      st.muteBtn.innerHTML = this.#previewMuted ? config.icons.mute : config.icons.unmute;
+      video.muted = state.mediaMuted;
+      st.muteBtn.innerHTML = state.mediaMuted ? config.icons.mute : config.icons.unmute;
       this.#bindVideoMediaEvents(video, st);
     } else if (work.type === "note") {
-      const imgUrl = utils.pickHttpsUrl(work.images?.[0] || work.cover || "");
+      const imgUrl = utils.pickCardCover(work);
       this.#stageThumb(thumb);
       if (imgUrl) this.#enqueueCover(thumb, imgUrl);
     }
@@ -148,12 +146,19 @@ class WorksGrid extends VirtualGrid {
     }
   }
 
-  #togglePreviewMute() {
-    this.#previewMuted = !this.#previewMuted;
+  #toggleMediaMute() {
+    state.mediaMuted = !state.mediaMuted;
+    this.syncMediaMute();
+  }
+
+  // 全页静音偏好在卡片侧的施加（网格切换与详情切换共用）：遍历当前容器全部已渲染视频卡，
+  // 同步 video.muted 与按钮图标。按钮经 DOM 定位而非本实例 #videoStates——详情层切换静音
+  // 时当前域卡片可能由另一个 WorksGrid 实例填充，WeakMap 查不到
+  syncMediaMute() {
     for (const video of this.#container.querySelectorAll(".work-video-player")) {
-      const st = this.#videoStates.get(video);
-      video.muted = this.#previewMuted;
-      if (st?.muteBtn) st.muteBtn.innerHTML = this.#previewMuted ? config.icons.mute : config.icons.unmute;
+      video.muted = state.mediaMuted;
+      const muteBtn = video.closest(".work-card")?.querySelector(".video-mute-btn");
+      if (muteBtn) muteBtn.innerHTML = state.mediaMuted ? config.icons.mute : config.icons.unmute;
     }
   }
 
@@ -237,7 +242,7 @@ class WorksGrid extends VirtualGrid {
     const videoUrl = utils.getVideoUrl(work);
     if (videoUrl) card.dataset.videoUrl = videoUrl;
     const thumb = card.querySelector(".work-thumb");
-    const coverUrl = work.cover ? utils.pickHttpsUrl(work.cover) : "";
+    const coverUrl = utils.pickCardCover(work);
     if (thumb && coverUrl) this.#enqueueCover(thumb, coverUrl);
     this.#applyInfo(card, work);
   }
@@ -259,8 +264,8 @@ class WorksGrid extends VirtualGrid {
     }
     if (event.target.closest(".video-mute-btn")) {
       event.stopPropagation();
-      // 预览音量全局联动：切换任意卡片的静音作用于三域全部卡片预览（详情覆盖层独立）
-      this.#togglePreviewMute();
+      // 全页静音偏好：切换任意卡片的静音作用于三域全部卡片预览与详情播放器
+      this.#toggleMediaMute();
       return;
     }
     if (event.target.closest(".video-play-btn")) {
@@ -339,8 +344,8 @@ class WorksGrid extends VirtualGrid {
         video.dataset.hovered = "1";
         video.src = card.dataset.videoUrl || "";
         video.currentTime = 0;
-        video.muted = this.#previewMuted;
-        st.muteBtn.innerHTML = this.#previewMuted ? config.icons.mute : config.icons.unmute;
+        video.muted = state.mediaMuted;
+        st.muteBtn.innerHTML = state.mediaMuted ? config.icons.mute : config.icons.unmute;
         video.load();
         const onCanPlay = () => {
           if (!video.dataset.hovered) return;

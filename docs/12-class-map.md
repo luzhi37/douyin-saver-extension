@@ -27,20 +27,20 @@
 
 | 类 / 对象              | 文件                         | 职责                                                                                                                                                  |
 |------------------------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `runtimeConfig` (对象) | `core.js`                    | 运行时配置：从 `chrome.storage.local` 读入叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`apply`/`reload`/`delayRange`）；校准开关写入 `IndependentClient`；SW 冷启动补 reload 恢复运行参数 |
+| `runtimeConfig` (对象) | `core.js`                    | 运行时配置：从 `chrome.storage.local` 读入叠加进 `CONFIG`（`KEY`/`DEFAULTS`/`load`/`apply`/`reload`/`delayRange`）；SW 冷启动补 reload 恢复运行参数 |
 | `utils` (对象)         | `core.js`                    | 纯函数集：`parseExpire` / `urlExpireAt` / `isLongLivedVideoUrl` / `extractMsTokenFromCookie` / `asyncHandler` / `sendSyncDone`                         |
 | `formatters` (对象)    | `core.js`                    | `formatWork` / `formatFollowing` / `formatFollowingFromProfile`                                                                                       |
 | `Crypto` (静态)        | `identity/crypto.js`        | 哈希/解析工具静态类：`md5Hex`（Argus webSign）/ `parseCookieToPairs` / `generateRandomMsToken`                                                        |
 | `ABogus`               | `identity/crypto.js`        | a_bogus 签名算法类（按 UA/浏览器特性实例化，`Credentials.ensureABogus` 使用）；同文件导出 `MSSDK_STR_DATA`（mssdk 兑换载荷）                          |
 | `Credentials`          | `identity/credentials.js`    | 客户端凭据/签名：`ensureABogus`/`getClockSkew`/`buildBaseParams`/`getMsToken`/`refreshWebIdChain`；吸收凭据类消息（见 [01](./01-project-architecture.md)「消息类型总表」工具行） |
-| `IndependentClient`    | `identity/independent-client.js` | 独立模式开关/校准开关 + 签名直连 `request` + `resolveSelfSecUid`（内含 `resolveSecUidById` 兑换）；`request` 经 `credentials` 跨类取签名/时钟/msToken |
-| `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`，DB v5：无改名迁移代码——低版本旧库升级前须先在旧版导出备份；作品型三域 `savedAt_id`/`groupId_savedAt_id` 复合索引 + 升级回填缺失 savedAt/groupId）；`readIndexPage` keyset 翻页（prev 取 limit+1 探测），API 全集见文件 |
+| `IndependentClient`    | `identity/independent-client.js` | 独立模式开关 + 签名直连 `request` + `resolveSelfSecUid`（内含 `resolveSecUidById` 兑换）；`request` 经 `credentials` 跨类取签名/时钟/msToken |
+| `Storage`              | `data/storage.js`           | IndexedDB 封装层（单例连接 `#db`，DB v6：无改名迁移代码——低版本旧库升级前须先在旧版导出备份；作品型三域 `savedAt_id`/`groupId_savedAt_id` 复合索引 + 升级回填缺失 savedAt/groupId）；`readIndexPage` keyset 翻页（prev 取 limit+1 探测），API 全集见文件 |
 | `DomainStore`          | `data/domain-store.js`       | 域存储封装：`storeName`/`groupsName`/`toStorageId`/`facade`；`mergeWork`；`mergeAndSave`（三作品型域通用）/ `mergeAndSaveFollowings`（计数保护）——两者均做**真实变更检测**：内容全等的重复入库不写库、不计入 `changed`（写入路径语义见 docs/10） |
 | `DomainHandlers`       | `data/domain-handlers.js`    | 域数据操作入口（4 实例 works/followings/favorites/collections）；`save` 仅 `changed>0` 广播 `STORE_CHANGED`（`changed ≤ BROADCAST.UPSERTS_MAX` 附 point 载荷，`#saveFollowings` 恒 bulk——followings 无单卡更新原语）、响应剔除 `written`/`addedIds` 防大批量保存响应膨胀；`get`（keyset 游标翻页，无参一次性全量）/`delete`/`move`/`getByIds`（bulk 收口补拉通道）；写入语义见 docs/10 |
 | `TabBridge`            | `identity/tab-bridge.js`     | 抖音标签页查找/转发（`find`/`send`/`sendAsync`）；吸收 `CANCEL_ACTIVE_TASK`/`GET_SECURITY_STATUS`/`FETCH_WORKS_PAGE` 非独立分支                    |
 | `Groups`               | `data/groups.js`             | 分组 tab + 管理（域感知）                                                                                                                            |
 | `DataTools`            | `data/data-tools.js`         | 导入导出/重置/统计（域感知）；`reconcileImportGroups`                                                                                                 |
-| `ScanTasks`            | `tasks/scan-tasks.js`        | Tab 模式长任务：同步/扫描/取消/校准循环（含 `persistScan` 落库）；`importUserWorks`（注入 Tab 取页器）/`importFollowing`（含 `#fetchProfileUser` 双模档案取数） |
+| `ScanTasks`            | `tasks/scan-tasks.js`        | Tab 模式长任务：同步/扫描/取消循环（含 `persistScan` 落库）；`calibrateOne`（单用户校准）/`calibrateAll`（工具弹窗批量校准，双模 `#fetchProfileUser` 取数）/`calibrateStats`（批量迭代器）；`importUserWorks`（注入 Tab 取页器）/`importFollowing` |
 | `IndependentTasks`     | `tasks/independent-tasks.js` | 独立模式长任务：`fetchFollowing`/`fetchCollection`/`syncWorks`/`fetchWorksPage`/`importUserWorks`（注入直连取页器）/`cancel`                                            |
 | `runAuthorWorksImport`（函数） | `tasks/author-works-import.js` | 作者作品入库双模共用循环壳：BAD_PARAMS 守卫、重叠页去重防死循环、逐页 `mergeAndSave` 落库、全部批次结束后统一广播一次 `STORE_CHANGED`（轻量 id 集，**禁止移回循环内逐页发**）、`IMPORT_WORKS_PROGRESS`、取消守卫；双模任务类各注入 `fetchPage(cursor)` 页取数器（细节见 docs/07） |
 | `App`                  | `main.js`                    | 初始化（注册 `onInstalled`/`onStartup`/`onClicked` + `setupDeclarativeNetRequest`）+ 消息路由 `route`（`SET_MODE` 调 `independentClient.setMode`）  |

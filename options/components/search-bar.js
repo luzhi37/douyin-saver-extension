@@ -12,7 +12,7 @@ import { batch } from '../data/batch.js';
 
 // ---------- 归一化字段侧表 ----------
 // 记录对象 → 小写匹配字段惰性缓存：关键词过滤每遍对每条记录做 toLowerCase 的成本
-// （10 万条 × 3 字段 ≈ 30 万次字符串分配/遍）收敛为每条一次。用 WeakMap 而非往记录
+// （10 万条 × 2 字段 ≈ 20 万次字符串分配/遍）收敛为每条一次。用 WeakMap 而非往记录
 // 上挂字段：记录会经 EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容
 // 更新一律整对象替换（applyStoreUpserts），旧对象连同缓存一并失效，无脏读
 const lcMemo = new WeakMap();
@@ -22,8 +22,6 @@ function lcFields(w) {
     m = {
       desc: (w.desc || "").toLowerCase(),
       nick: (w.nickname || "").toLowerCase(),
-      id: String(w.awemeId ?? "").toLowerCase(),
-      uidStr: w.uid == null ? "" : String(w.uid),
       uidLc: w.uid == null ? "" : String(w.uid).toLowerCase(),
       ak: w.uid || w.nickname || "", // 作者簇键（authorCount 排序口径，与 rank Map 同源）
     };
@@ -35,12 +33,13 @@ function lcFields(w) {
 class SearchBar {
   #searchState = {
     keyword: "",
-    scope: "all", // all 综合 | author 作者(昵称) | title 标题 | id 作品ID/UID
+    scope: "author", // author 作者昵称(默认) | title 标题(仅作品型三域) | id 作者UID精确（关注域=uid子串）
     sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品域）
     followingsSort: "followers", // followers 粉丝数 | works 作品数 | update 最近更新（仅关注域）
     followed: true, // 作者归属：已关注（默认勾选，双勾=全部）
     unfollowed: true, // 作者归属：未关注
-    workType: "all", // all 全部 | video 视频 | note 图集（仅作品型三域）
+    typeVideo: true, // 视频勾选（仅作品型三域）：双勾=全部；勾选即包含、全不勾=无结果
+    typeNote: true, // 图集勾选
     reverse: false, // 逆序（翻转最终顺序，两域共用）
   };
 
@@ -75,7 +74,7 @@ class SearchBar {
     // 否则搜索无结果的空态会误显示通用文案（P1-8）
     if (this.#searchState.keyword.trim()) return true;
     if (this.#searchState.reverse) return true;
-    if (this.#isWorkRecordDomain() && this.#searchState.workType !== "all") return true;
+    if (this.#isWorkRecordDomain() && !(this.#searchState.typeVideo && this.#searchState.typeNote)) return true;
     return this.#isWorkRecordDomain()
       ? this.#searchState.sort !== "saved"
       : this.#searchState.followingsSort !== "followers";
@@ -108,7 +107,7 @@ class SearchBar {
     const source = state[state.domain]; // 作品型三域：数据源即当前域数组
     const kw = s.keyword.trim().toLowerCase();
     const c = this.#viewCache;
-    const baseKey = `${state.domain}|${state.dataVersion}|${kw}|${s.scope}|${s.workType}|${s.followed}|${s.unfollowed}`;
+    const baseKey = `${state.domain}|${state.dataVersion}|${kw}|${s.scope}|${s.typeVideo}|${s.typeNote}|${s.followed}|${s.unfollowed}`;
     if (c.baseKey !== baseKey || c.baseSource !== source) {
       c.base = this.#filterWorkRecord(source, kw);
       c.baseKey = baseKey;
@@ -130,8 +129,8 @@ class SearchBar {
     return c.view;
   }
 
-  // base 段：关键词 + 类型 + 归属三层过滤（匹配字段走 lcFields 惰性缓存，语义与
-  // 历史实现逐字段一致）
+  // base 段：关键词 + 类型 + 归属三层过滤（匹配字段走 lcFields 惰性缓存；各范围匹配
+  // 字段与口径见 #searchState.scope 注释，行为与搜索栏提示文案严格对齐）
   #filterWorkRecord(source, kw) {
     const s = this.#searchState;
     let list = source;
@@ -141,21 +140,21 @@ class SearchBar {
         const m = lcFields(w);
         switch (s.scope) {
           case "author":
-            // 昵称子串匹配；UID 仅精确匹配——uid 是约 19 位纯数字，子串匹配会让任意数字关键词命中大量无关作者
-            return m.nick.includes(kw) || (w.uid && m.uidStr === kw);
+            // 昵称子串匹配；UID 查找归「ID」范围（2026-10-14 起行为严格对齐提示文案）
+            return m.nick.includes(kw);
           case "title":
             return m.desc.includes(kw);
           case "id":
-            return m.id.includes(kw);
-          default:
-            return m.desc.includes(kw) || m.nick.includes(kw) || m.id.includes(kw);
+            // 作者 UID 精确（uid 约 19 位纯数字，子串匹配会让任意数字关键词大面积误命中）；
+            // 作品 awemeId 不参与任何关键词匹配
+            return m.uidLc === kw;
         }
       });
     }
-    if (this.#isWorkRecordDomain() && s.workType !== "all") {
-      // 类型筛选（全部/视频/图集）：formatWork 保证 type 只有两值，等值比较即可
-      const wantNote = s.workType === "note";
-      list = list.filter((w) => (wantNote ? w.type === "note" : w.type === "video"));
+    if (this.#isWorkRecordDomain() && !(s.typeVideo && s.typeNote)) {
+      // 类型勾选（视频/图集，默认双勾=不筛）：formatWork 保证 type 只有两值；勾选即包含，
+      // 全不勾=无结果（与已关注/未关注勾选区同款包含语义）
+      list = list.filter((w) => (w.type === "note" ? s.typeNote : s.typeVideo));
     }
     if (this.#isWorkRecordDomain() && this.#ownerFilterActive()) {
       // 已关注/未关注勾选（默认双勾=不筛）：单边勾选仅保留对应归属，两边都未勾则无结果
@@ -218,8 +217,6 @@ class SearchBar {
                 return m.nick.includes(kw);
               case "id":
                 return m.uidLc.includes(kw);
-              default:
-                return m.nick.includes(kw) || m.uidLc.includes(kw);
             }
           })
         : [...source];
@@ -266,8 +263,11 @@ class SearchBar {
   // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数。
   // 视图全程只计算一次，同一结果贯穿渲染与计数（历史实现经 renderCards/syncCount 各算
   // 一遍，大库下重复付出整段过滤+排序成本）；结果数组与上次实际渲染恒等时跳过重渲
-  // （切了不改变结果集的筛选、重复点击同段），只刷新计数
-  refreshGridView() {
+  // （切了不改变结果集的筛选、重复点击同段），只刷新计数。
+  // resetScroll：用户重定义结果集（排序/关键词/范围/类型/归属/逆序/清除）时传 true——
+  // 重渲后显式回顶。尾部占位（#syncTailReserve）使「wipe clamp 天然回顶」失效（重渲任务内
+  // 总高即恢复终值、旧偏移合法存留），不显式归零会表现为「跟随锚点」停在深处
+  refreshGridView(resetScroll = false) {
     // 视图顺序可能已变（排序/关键词/归属/域/分组/同步）：旧 shift 锚点在新顺序中的
     // 索引与点击时不一致，先清空锚点，防止区间按错误索引圈选
     batch.resetRangeAnchor();
@@ -278,6 +278,7 @@ class SearchBar {
       if (isWorkRecord) grid.renderCards(view);
       else grid.renderFollowingCards(view);
       this.#lastRenderedView = view;
+      if (resetScroll) dom.mainGrid.scrollTop = 0;
     }
     this.syncCount(view.length);
   }
@@ -309,27 +310,26 @@ class SearchBar {
     dom.sbFollowSort.querySelectorAll(".sb-seg-btn").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.fsort === this.#searchState.followingsSort);
     });
-    dom.sbWorkType.querySelectorAll(".sb-seg-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.wtype === this.#searchState.workType);
-    });
+    dom.sbTypeVideo.checked = this.#searchState.typeVideo;
+    dom.sbTypeNote.checked = this.#searchState.typeNote;
     dom.sbFollowed.checked = this.#searchState.followed;
     dom.sbUnfollowed.checked = this.#searchState.unfollowed;
     dom.sbReverse.checked = this.#searchState.reverse;
   }
 
-  // 范围段的域差异：「标题」仅作品型三域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退综合
+  // 范围段的域差异：「标题」仅作品型三域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退「作者」
   syncScopeUIForDomain() {
     const isWorkRecord = this.#isWorkRecordDomain();
     dom.sbScopeTitle.classList.toggle("hidden", !isWorkRecord);
     dom.sbScopeAuthor.textContent = isWorkRecord ? "作者" : "昵称";
-    if (!isWorkRecord && this.#searchState.scope === "title") this.#searchState.scope = "all";
+    if (!isWorkRecord && this.#searchState.scope === "title") this.#searchState.scope = "author";
   }
 
   #updateSearchPlaceholder() {
     const placeholders = this.#isWorkRecordDomain()
-      ? { all: "搜索标题 / 作者 / ID", author: "输入作者昵称或 UID", title: "输入作品标题文案", id: "输入作品 ID" }
-      : { all: "搜索昵称 / UID", author: "输入昵称", title: "输入昵称", id: "输入 UID" };
-    dom.searchInput.placeholder = placeholders[this.#searchState.scope] || placeholders.all;
+      ? { author: "输入作者昵称", title: "输入作品标题文案", id: "输入作者 UID" }
+      : { author: "输入昵称", title: "输入昵称", id: "输入 UID" };
+    dom.searchInput.placeholder = placeholders[this.#searchState.scope] || placeholders.author;
   }
 
   #isSearchBarOpen() {
@@ -369,24 +369,30 @@ class SearchBar {
     clearTimeout(this.#debounceTimer);
     this.#debounceTimer = setTimeout(() => {
       this.#searchState.keyword = dom.searchInput.value;
-      this.refreshGridView();
+      this.refreshGridView(true);
     }, config.SEARCH_DEBOUNCE);
   }
 
   clearSearchFilters() {
+    // 无变化退出早退：状态已是默认（筛选从未激活、或改过又已回到默认）时网格无需任何
+    // 处理——数据侧每次变化（分页/自动捕获/头插）都已有各自的增量同步通道，DOM 即默认
+    // 视图的最新内容；此时若仍刷新，只会因视图缓存随 dataVersion 重建、数组身份失配而
+    // 白闪一次（wipe + cap 1500 重挂，视口封面清空再回填）。判据须在重置状态前捕获
+    const wasActive = this.isFilterActive();
     this.#searchState.keyword = "";
-    this.#searchState.scope = "all";
+    this.#searchState.scope = "author";
     this.#searchState.sort = "saved";
     this.#searchState.followingsSort = "followers";
     this.#searchState.followed = true;
     this.#searchState.unfollowed = true;
-    this.#searchState.workType = "all";
+    this.#searchState.typeVideo = true;
+    this.#searchState.typeNote = true;
     this.#searchState.reverse = false;
     dom.searchInput.value = "";
     this.syncScopeUIForDomain();
     this.#updateSearchPlaceholder();
     this.syncSegUI();
-    this.refreshGridView();
+    if (wasActive) this.refreshGridView(true);
   }
 
   // ---------- 事件绑定 ----------
@@ -398,43 +404,43 @@ class SearchBar {
       this.#searchState.scope = btn.dataset.scope;
       this.syncSegUI();
       this.#updateSearchPlaceholder();
-      this.refreshGridView();
+      this.refreshGridView(true);
     });
     dom.sbSort.addEventListener("click", (e) => {
       const btn = e.target.closest(".sb-seg-btn");
       if (!btn) return;
       this.#searchState.sort = btn.dataset.sort;
       this.syncSegUI();
-      this.refreshGridView();
+      this.refreshGridView(true);
     });
-    dom.sbWorkType.addEventListener("click", (e) => {
-      const btn = e.target.closest(".sb-seg-btn");
-      if (!btn) return;
-      this.#searchState.workType = btn.dataset.wtype;
-      this.syncSegUI();
-      this.refreshGridView();
+    dom.sbTypeVideo.addEventListener("change", () => {
+      this.#searchState.typeVideo = dom.sbTypeVideo.checked;
+      this.refreshGridView(true);
+    });
+    dom.sbTypeNote.addEventListener("change", () => {
+      this.#searchState.typeNote = dom.sbTypeNote.checked;
+      this.refreshGridView(true);
     });
     dom.sbFollowSort.addEventListener("click", (e) => {
       const btn = e.target.closest(".sb-seg-btn");
       if (!btn) return;
       this.#searchState.followingsSort = btn.dataset.fsort;
       this.syncSegUI();
-      this.refreshGridView();
+      this.refreshGridView(true);
     });
     dom.sbReverse.addEventListener("change", () => {
       this.#searchState.reverse = dom.sbReverse.checked;
-      this.refreshGridView();
+      this.refreshGridView(true);
     });
     dom.sbFollowed.addEventListener("change", () => {
       this.#searchState.followed = dom.sbFollowed.checked;
-      this.refreshGridView();
+      this.refreshGridView(true);
     });
     dom.sbUnfollowed.addEventListener("change", () => {
       this.#searchState.unfollowed = dom.sbUnfollowed.checked;
-      this.refreshGridView();
+      this.refreshGridView(true);
     });
     dom.btnClearInBar.addEventListener("click", () => this.clearSearchFilters());
-    dom.btnCloseSearch.addEventListener("click", () => this.closeSearchBar());
     dom.btnSearchMenu.addEventListener("click", () => this.toggleSearchBar());
   }
 }

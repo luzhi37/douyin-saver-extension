@@ -69,6 +69,10 @@ export const config = {
   // 占位卡克隆 + 整容器布局的长任务——超出部分留待后续滚动 rAF 继续扩，小槽位段
   // 倍增语义不变（2S < S+步长时仍按倍增）
   GRID_EXTEND_STEP: 1000,
+  // 远跳追赶单步上限：拖拽把视口丢进尾部占位区（封闭视图）后，按视口带区直铺追赶的
+  // 单步新增槽位上限——大 M 下每次容器追加都是全网格重排（实测 2 万卡单次追加约
+  // 130ms、4 万卡可达 1s），单步封顶防长冻结，未覆盖视口时下一帧续铺
+  GRID_EXTEND_JUMP_STEP: 4000,
   // 停稳降级分帧预算：快滚期冻结的降级在停稳后成批积压（沿途数千张），一次性执行
   // 是数百毫秒单任务——按帧预算分帧执行且让位于填充队列
   DEMOTE_FRAME_BUDGET_MS: 8,
@@ -170,6 +174,7 @@ export const dom = {
   sidebarBody: document.querySelector("#sidebarBody"),
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
   sidebarLoader: document.querySelector("#sidebarLoader"),
+  sidebarEndNotice: document.querySelector("#sidebarEndNotice"),
   sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
   sidebarWorkTemplate: document.querySelector("#sidebarWorkTemplate"),
   batchSaveToWorks: document.querySelector("#btnBatchSaveToWorks"),
@@ -183,13 +188,13 @@ export const dom = {
   sbScopeTitle: document.querySelector("#sbScopeTitle"),
   sbWorkFilters: document.querySelector("#sbWorkFilters"),
   sbSort: document.querySelector("#sbSort"),
-  sbWorkType: document.querySelector("#sbWorkType"),
+  sbTypeVideo: document.querySelector("#sbTypeVideo"),
+  sbTypeNote: document.querySelector("#sbTypeNote"),
   sbFollowFilters: document.querySelector("#sbFollowFilters"),
   sbFollowSort: document.querySelector("#sbFollowSort"),
   sbFollowed: document.querySelector("#sbFollowed"),
   sbUnfollowed: document.querySelector("#sbUnfollowed"),
   sbReverse: document.querySelector("#sbReverse"),
-  btnCloseSearch: document.querySelector("#btnCloseSearch"),
   btnClearInBar: document.querySelector("#btnClearInBar"),
   btnSearchMenu: document.querySelector("#btnSearch"),
 };
@@ -204,6 +209,9 @@ export const state = {
   currentGroupId: "all",
   batchMode: false,
   selectedIds: new Set(),
+  // 全页媒体静音偏好（网格卡片预览 + 详情播放器共用单一事实源）：两处静音按钮都读写
+  // 此标志，所有媒体渲染/起播路径统一施加；仅页面生命周期内保持，不落存储
+  mediaMuted: false,
   activeDialog: null,
   currentFollowingSecUid: null,
   sidebarCursor: null,
@@ -293,6 +301,18 @@ export const utils = {
     if (!url) return "";
     return url.startsWith("//") ? "https:" + url : url;
   },
+  // 卡片展示封面（四网格/侧边栏共用）：图集优先平台 cover（video.cover 小图），但首图
+  // URL 带压缩档标记（tplv 模板短边 < 2000，如 :1440:）时首图更轻，保留首图；视频与
+  // 模板不可解析一律 cover 优先、缺失回退。背景：平台给图集首图签发的 3000 档 ≈ 原图
+  //（实测 6-8.7MP），cover 是封面档（实测轻 1.4-4.6×）；tplv 改写小变体被签名拒绝（403）
+  pickCardCover(work) {
+    const cover = this.pickHttpsUrl(work?.cover || "");
+    if (!work || work.type !== "note") return cover;
+    const still = this.pickHttpsUrl(work.images?.[0] || "");
+    if (!cover || !still) return cover || still;
+    const m = still.match(/~tplv-[^/:]+:(\d+):/);
+    return m && Number(m[1]) < 2000 ? still : cover;
+  },
   formatCount(num) {
     if (!num && num !== 0) return "0";
     const n = Number(num);
@@ -380,7 +400,6 @@ export const runtimeConfig = {
     syncBatchPauseMax: 20000,
     syncKeepaliveInterval: 2000,
     syncRetryMax: 2,
-    calibrateFollowings: true,
   },
   _cache: null,
   async load() {

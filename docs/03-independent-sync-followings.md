@@ -1,6 +1,6 @@
 # 03 · 独立模式（逆向）— 同步关注
 
-> 职责边界：`FETCH_FOLLOWING` 在**独立模式**下的完整链路——background 直接翻页拉取目标用户的关注列表，收集完成后（可选）进入批量校准阶段。校准阶段细节见 [04](./04-independent-calibrate-followings.md)；落库与丢失检测见 [10](./10-storage-write-and-import.md)。
+> 职责边界：`FETCH_FOLLOWING` 在**独立模式**下的完整链路——background 直接翻页拉取目标用户的关注列表。**同步与校准已彻底分离**：收集完成后不再自动校准，校准入口见 [04](./04-independent-calibrate-followings.md)；落库与丢失检测见 [10](./10-storage-write-and-import.md)。
 
 ## 概述
 
@@ -9,7 +9,7 @@ options 关注域点击同步 → `services.findSecUid()` 解析目标 sec_uid �
 - **sec_uid 再解析**：入参为 `"self"` 或空时，依次尝试 storage 中的 `secUid` 设置值 → `resolveSelfSecUid()`（uid cookie + `im/user/info` 兑换）；两者皆空报 `NO_SEC_UID`。
 - **while 循环翻页**：GET `/aweme/v1/web/user/following/list`，`offset += PAGE.FOLLOWING` 推进；条目按 uid 去重（`seen` Set），连续整页重复即提前终止。
 - 每页经 `formatFollowing` 归一化为 7 字段记录（含 `lastUpdateAt` 占位 0），`followerCount/awemeCount` 占位 0。
-- 列表收集完成后、未被取消且非空时，受 `calibrateFollowings` 开关门控进入 `calibrateStats` 批量校准（详见 [04](./04-independent-calibrate-followings.md)）。
+- **同步与校准彻底分离**：列表收集完成后直接返回，不进入批量校准（校准改为工具弹窗手动触发，见 [04](./04-independent-calibrate-followings.md)）。
 - 结果一次性 `sendResponse({ ok, requestId, followings, total })` 返回，options 收到后自行发 `SAVE_FOLLOWINGS` 落库。
 
 ## 核心流程图（文字描述）
@@ -39,10 +39,7 @@ options: findSecUid() → bgMsg({ type:"FETCH_FOLLOWING", secUid })
              sendMessage(FOLLOWING_PROGRESS { collected, hasMore, total, requestId })
              页间延迟 syncFollowings MIN~MAX ms
         │
-        ├─ !cancelled && all.length>0 && _calibrateFollowings
-        │     → calibrateStats(all, fetchStats=独立直连 profile/other, ()=>cancelled, requestId)
-        │       （进度 phase:"calibrate"，详见 04 文档）
-        ├─ 移除 cancelHandler
+        ├─ 移除 cancelHandler（收集后不自动校准——同步与校准已分离，见 04 文档）
         └─ sendResponse({ ok:true, requestId, followings: all, total: all.length })
 
 options: res.ok → bgMsg({ type:"SAVE_FOLLOWINGS", followings: res.followings })
@@ -203,7 +200,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 }
 ```
 
-列表收集完成后若开启校准开关，逐用户走 profile/other 权威计数（链接拼装见 [04](./04-independent-calibrate-followings.md)）。
+列表收集完成后**不自动校准**（同步与校准已分离）；如需权威计数，在工具弹窗手动执行批量校准（链接拼装见 [04](./04-independent-calibrate-followings.md)）。
 
 ## 异常场景及处理
 
@@ -214,7 +211,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 | `savedCookie` 缺失 | 首次请求抛 `NO_COOKIE` | 设置面板刷新 Cookie |
 | 服务端返回非 0 status_code / HTTP 错误 | 抛 `API_ERROR` / `HTTP_*` | 外层 catch → `{ ok:false, error }`（此时 all 为空，无部分成功语义） |
 | 首页即失败但已收集部分数据 | Tab 模式分支特有 `lastError` 判定：`all.length===0 && lastError` 才报错，否则按部分结果返回 | 独立模式请求异常直接整体失败 |
-| 用户取消 | `CANCEL_ACTIVE_TASK` → cancelled | 已收集部分照常返回（`ok:true`），不进入校准 |
+| 用户取消 | `CANCEL_ACTIVE_TASK` → cancelled | 已收集部分照常返回（`ok:true`） |
 | 服务端重复推送同一页 | newItems 为空 | break 终止，防止死循环 |
 
 ## 配置项说明
@@ -222,9 +219,8 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 | 配置 | 默认 | 作用 |
 |------|------|------|
 | `CONFIG.PAGE.FOLLOWING` | 20 | 每页条数（offset 步长） |
-| `runtimeConfig.syncFollowingsDelayMin/Max` | 500/1000ms | 页间延迟；校准阶段条目间延迟复用同一档 |
+| `runtimeConfig.syncFollowingsDelayMin/Max` | 500/1000ms | 页间延迟；工具弹窗批量校准条目间延迟复用同一档 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 单请求超时 |
-| `runtimeConfig.calibrateFollowings` | true | 是否在收集完成后执行批量校准（04 文档） |
 | chrome.storage.local `secUid` | — | "self" 时的目标用户兜底 |
 | 固定 query 参数 | — | `min_time/max_time/source_type=4/gps_access/address_book_access/is_top=1`：对齐页面真实请求的列表过滤参数 |
 
@@ -234,6 +230,6 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | Following 六字段模型、SAVE_FOLLOWINGS 0 值保留与丢失检测 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 通用骨架与 NO_COOKIE 门禁（本文不重复展开） |
-| 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 收集后的批量校准阶段 + 单用户侧边栏校准 |
+| 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 工具弹窗批量校准 + 单用户侧边栏校准（与同步分离） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 注入 Referer / 剥离 Sec-Fetch-* |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式 FETCH_FOLLOWING_PAGE / fetchProfileOther 与签名多源 fallback |

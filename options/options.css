@@ -232,8 +232,17 @@ optgroup {
   gap: 2px;
   overflow-x: auto;
   padding: 2px 0;
+  /* 滚动条不得占用布局高度：全局 * 的 scrollbar-color 会让新 Chromium 忽略下方
+     ::-webkit-scrollbar{display:none}，横滚条回退为占位经典滚动条——条内横向滚动区
+     被压矮 ~15px，分组按钮居中基准上移、与顶栏右侧按钮不再对齐。scrollbar-width:none
+     跨新旧 Chromium 恒生效，滚动本身仍可（滚轮/触控板），溢出提示由 tab-overflow 遮罩承担 */
+  scrollbar-width: none;
   /* 滑块定位基准：offsetLeft/offsetWidth 相对条内测量 */
   position: relative;
+}
+
+.group-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 /* 分组切换滑块（对齐 .ds-slider 动效参数）：高亮职责整体移交滑块，
@@ -254,10 +263,6 @@ optgroup {
 
 .group-slider.no-anim {
   transition: none;
-}
-
-.group-tabs::-webkit-scrollbar {
-  display: none;
 }
 
 .group-tabs.tab-overflow {
@@ -984,9 +989,19 @@ body.batch-mode .following-checkbox {
   overflow: hidden;
   cursor: pointer;
   background: var(--dy-surface);
+  /* 纵向两段：封面链接占满余量、信息条固定高（三元素行） */
+  display: flex;
+  flex-direction: column;
   /* 不用 content-visibility:auto：媒体生命周期由 Sidebar 的显式升降级（IntersectionObserver）
      管理，降级后子树本就为空；CV 的相关状态切换在滚动期每帧触发 Layerize 抖动，
      实测占风暴期 CPU 约三成 */
+}
+
+.sidebar-work-link {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-height: 0;
 }
 
 .sidebar-work-cover {
@@ -1009,8 +1024,89 @@ body.batch-mode .following-checkbox {
   font-size: 24px;
 }
 
+/* 信息条：发布日期 + 作品域存在徽标 + 「存入」按钮（单行窄档，字号压到 10-11px） */
+.sidebar-work-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  font-size: 11px;
+  line-height: 1.2;
+  background: var(--dy-surface-elevated);
+}
+
+.sidebar-work-date {
+  flex-shrink: 0;
+  color: var(--dy-text-muted);
+  font-size: 10px;
+}
+
+/* 徽标两态：默认（未入库）亮态用琥珀色标出「待存入」（附弱底增强 pill 感），
+   .in-works 弱化为灰（已入库无需突出）。强调色刻意避开主色红——红语义归
+   destructive/主行动，状态提示用中性暖色 */
+.sidebar-work-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(255, 184, 77, 0.14);
+  color: #ffb84d;
+  font-size: 10px;
+}
+
+.sidebar-work-badge.in-works {
+  background: transparent;
+  color: var(--dy-text-muted);
+}
+
+.sidebar-work-save {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--dy-border-light);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dy-text-secondary);
+  font-size: 10px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background var(--dy-transition), color var(--dy-transition), border-color var(--dy-transition);
+}
+
+.sidebar-work-save:hover:not(:disabled) {
+  background: rgba(254, 44, 85, 0.12);
+  border-color: var(--dy-primary);
+  color: var(--dy-primary);
+}
+
+.sidebar-work-save:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .sidebar-loader {
   padding: 16px;
+}
+
+/* 骨架/加载态显隐成对声明：通用 .hidden 在文件前部，同特异性下会被 display 值原样覆盖
+   （.sidebar-loader 全文在 .hidden 之后、无 display 声明也按 UA 默认 block），不写这条
+   则「收起」只剩元素空置——加载圈随子节点残留永挂 */
+.sidebar-loader.hidden {
+  display: none;
+}
+
+/* 列表终点提示：全部页取完时驻底；克制的中性小字，不做成条状容器 */
+.sidebar-end-notice {
+  padding: 6px 8px 14px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--dy-text-muted);
+}
+
+.sidebar-end-notice.hidden {
+  display: none;
 }
 
 .sidebar-resize-handle {
@@ -1303,6 +1399,20 @@ body.batch-mode .following-checkbox {
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+/* 图集实况小视频：与 #detailImage 同槽位叠加（尺寸/contain 由 .detail-body video 提供）；
+   单次播放期间显示，播完由 JS 摘除 .on 回静帧。不用 .hidden 以免与组件 display 规则
+   同特异性互踩（.hidden 配对陷阱） */
+.note-live-video {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.note-live-video.on {
+  display: block;
 }
 
 /* 主图链接失效态：详情主图已清空，叠加「链接已失效」提示，绝不回退显示上一作品 */
@@ -2073,7 +2183,7 @@ body.batch-mode .following-checkbox {
   font-size: 14px;
 }
 
-/* 入库弹窗：两行 [输入框][域入库按钮] */
+/* 工具弹窗：两行 [输入框][域入库按钮] + 一行 [校准按钮][说明] */
 .import-rows {
   display: flex;
   flex-direction: column;
@@ -2084,6 +2194,13 @@ body.batch-mode .following-checkbox {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.import-calibrate-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--dy-font-size-sm);
+  color: var(--dy-text-secondary);
 }
 
 .import-row .import-input {
@@ -2206,13 +2323,6 @@ body.batch-mode .following-checkbox {
   height: 1px;
   background: var(--dy-border);
   margin: auto 8px 4px;
-}
-
-/* ====== 模板工具类 ====== */
-.sidebar-work-link {
-  display: block;
-  width: 100%;
-  height: 100%;
 }
 
 /* ====== 设置面板 ====== */
@@ -2663,15 +2773,6 @@ body.batch-mode .following-checkbox {
 .sb-seg-btn.active {
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
-}
-
-.sb-close {
-  width: 26px;
-  height: 26px;
-  border-radius: var(--dy-radius);
-  color: var(--dy-text-secondary);
-  font-size: 14px;
-  flex-shrink: 0;
 }
 /* ===== 快捷键速查弹窗 ===== */
 .shortcut-help {

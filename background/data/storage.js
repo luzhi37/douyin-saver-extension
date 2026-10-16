@@ -3,7 +3,7 @@
 import { CONFIG } from "../core.js";
 
 const DB_NAME = "douyin-saver";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 const STORES = {
   works: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
@@ -74,6 +74,12 @@ class Storage {
               store.createIndex(idx, INDEX_KEY_PATHS[idx] || idx, { unique: false });
             }
           }
+        }
+        // v6 历史版本曾引入 works.uid 索引（作者存在性集合查询），该方案已裁撤——现行
+        // STORES 不含 uid，自动补建循环不再覆盖；此处对曾升到 v6 的库幂等删净（新库无此索引）
+        if (db.objectStoreNames.contains("works")) {
+          const worksStore = tx.objectStore("works");
+          if (worksStore.indexNames.contains("uid")) worksStore.deleteIndex("uid");
         }
         backfillPagingKeys(tx, db);
       };

@@ -394,10 +394,12 @@
 
     #extractCover(raw) {
       const video = raw.video || {};
-      const images = this.#extractImages(raw);
+      const platform = this.#normalizeProtocol(video.cover?.url_list?.[0] || video.coverUrlList?.[0] || "");
       const isNote = (raw.awemeType || raw.aweme_type) === CONFIG.AWEME_TYPE_NOTE;
-      if (isNote && images.length > 0) return images[0];
-      return this.#normalizeProtocol(video.cover?.url_list?.[0] || video.coverUrlList?.[0] || "");
+      // 图集优先平台封面（video.cover 封面档，通常远轻于首图原图档），无封面回退首图；
+      // 展示侧仍由 options utils.pickCardCover 按变体档位取轻（3000 档 vs 1440 档）
+      if (isNote) return platform || this.#extractImages(raw)[0] || "";
+      return platform;
     }
 
     #extractImages(raw) {
@@ -410,6 +412,22 @@
         if (imgUrl) images.push(this.#normalizeProtocol(imgUrl));
       }
       return images;
+    }
+
+    // 内容项实况视频（图集每条可为纯静帧或实况=静帧+小视频）：与 #extractImages 同条件
+    // 过滤保逐位对位（无静帧的项两者同步丢弃），无视频项为空串——详情侧按索引读、缺位安全
+    #extractImageVideos(raw) {
+      const imgList = raw.images;
+      if (!Array.isArray(imgList)) return [];
+      const videos = [];
+      for (const img of imgList) {
+        const urlList = img.urlList || img.url_list || [];
+        if (!(urlList[0] || "")) continue; // 与 #extractImages 同条件跳过，保对位
+        const v = img.video?.play_addr || img.video?.playAddr || {};
+        const videoUrl = v.url_list?.[0] || v.urlList?.[0] || "";
+        videos.push(this.#normalizeProtocol(videoUrl));
+      }
+      return videos;
     }
 
     #extractMusic(raw) {
@@ -448,6 +466,7 @@
         video: vid.url,
         videoExpireAt: vid.expireAt || 0,
         images: this.#extractImages(raw),
+        imageVideos: this.#extractImageVideos(raw),
         music: this.#extractMusic(raw),
         createTime: raw.create_time || raw.createTime || this.#awemeIdCreateTime(awemeId) || 0,
       };

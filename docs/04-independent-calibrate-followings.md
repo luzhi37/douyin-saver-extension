@@ -1,13 +1,13 @@
 # 04 · 独立模式（逆向）— 校准关注
 
-> 职责边界：关注计数（`awemeCount`/`followerCount`）与**最近更新日期**（`lastUpdateAt`）的**校准写入机制**——批量校准（同步关注收集完成后逐用户请求 profile/other + 作品第一页）与单用户校准（打开作者侧边栏触发）。两流程均按模式分支取数，本文以独立模式为主线、Tab 模式对照。列表采集阶段为何占位 0 见 [03](./03-independent-sync-followings.md)。
+> 职责边界：关注计数（`awemeCount`/`followerCount`）与**最近更新日期**（`lastUpdateAt`）的**校准写入机制**——批量校准（工具弹窗手动触发，逐用户请求 profile/other + 作品第一页）与单用户校准（打开作者侧边栏触发）。两流程均按模式分支取数，本文以独立模式为主线、Tab 模式对照。列表采集阶段为何占位 0 见 [03](./03-independent-sync-followings.md)。**同步关注列表与校准已彻底分离**：`FETCH_FOLLOWING` 收集完成后不再自动校准，校准只能手动发起。
 
 ## 概述
 
 关注列表接口返回的粉丝/作品计数是**滞后快照**（与主页展示差异大），因此全仓约定：列表采集一律占位 0，权威计数只从 `GET /aweme/v1/web/user/profile/other/?sec_user_id=…` 的 `user.aweme_count / user.follower_count` 获取。`lastUpdateAt`（最近更新日期，毫秒时间戳）同样只在校准阶段写入——来源为**该关注者作品列表第一页全部作品 `create_time` 的最大值**（`GET /aweme/v1/web/aweme/post/`，`max_cursor=0`，秒 → 毫秒换算），未校准占位 0。校准有两条入口：
 
-1. **批量校准**（`calibrateStats`）：`FETCH_FOLLOWING` 列表收集完成后自动进入；受运行参数 `calibrateFollowings` 门控；进度以 `FOLLOWING_PROGRESS { phase:"calibrate" }` 透传。
-2. **单用户校准**（`scanTasks.calibrateOne`）：options 打开作者侧边栏时发 `CALIBRATE_FOLLOWING { uid, secUid }`；不受开关门控；background 取到计数后**直接落库**并返回，options 更新 state 与可见卡片 DOM。
+1. **批量校准**（`scanTasks.calibrateAll`）：options「工具」弹窗「校准作品/粉丝数」按钮手动发起，消息 `CALIBRATE_FOLLOWINGS`；对**关注域全部已存作者**逐个重取权威计数；进度以 `CALIBRATE_PROGRESS { phase:"calibrate" }` 透传；收尾整批 `mergeAndSaveFollowings` 落库（0 值保护）。
+2. **单用户校准**（`scanTasks.calibrateOne`）：options 打开作者侧边栏时发 `CALIBRATE_FOLLOWING { uid, secUid }`；background 取到计数后**直接落库**并返回，options 更新 state 与可见卡片 DOM。
 
 两条入口的 `fetchStats` 都按模式注入：
 
@@ -16,31 +16,38 @@
 
 ## 核心流程图（文字描述）
 
-### 批量校准（同步关注尾部阶段）
+### 批量校准（工具弹窗手动触发）
 
 ```
-independentTasks.fetchFollowing / scanTasks.fetchFollowing 收集完成
-  条件：!cancelled && all.length > 0 && _calibrateFollowings(运行参数)
-  → calibrateStats(list, fetchStats, isCancelled, requestId)
-      for entry of list（&& !isCancelled()）:
-        sec_uid ← String(entry.profileUrl).match(/\/user\/([^/?#]+)/)[1]
-        try: stats = await fetchStats(sec_uid)
-             entry.awemeCount = stats.awemeCount
-             entry.followerCount = stats.followerCount
-        catch: 静默跳过（保留占位 0）
-        try: t = await fetchLatestWorkTime(sec_uid)      // 作品第一页 max(create_time)
-             if (t) entry.lastUpdateAt = t               // 失败/全 0 静默跳过保留旧值
-        catch: 静默跳过
-        sendMessage(FOLLOWING_PROGRESS { phase:"calibrate", collected:++processed,
-                                          total:list.length, hasMore:false, requestId })
-        条目间延迟 syncFollowings MIN~MAX ms
-  → 返回调用方，随整体结果 sendResponse → options 发 SAVE_FOLLOWINGS 落库
-    （SAVE_FOLLOWINGS 对 >0 计数正常写入，对 0 值保留旧值——见 01 文档）
+options AuthorImport.startCalibrate（三链路互斥守卫 → CANCEL_ACTIVE_TASK 清残留 → 进度层）
+  → bgMsg({ type:"CALIBRATE_FOLLOWINGS" })
+    → background scanTasks.calibrateAll(sendResponse)
+        all ← storage.getAll(STORAGE_KEYS.FOLLOWINGS)
+        all.length === 0 → { ok:false, error:"EMPTY" }
+        guard ← utils.withCancelGuard()   // 进度层关闭联动的 CANCEL_ACTIVE_TASK 中断循环
+        → calibrateStats(list, fetchStats, isCancelled, requestId, "CALIBRATE_PROGRESS")
+            for entry of list（&& !isCancelled()）:
+              sec_uid ← String(entry.profileUrl).match(/\/user\/([^/?#]+)/)[1]
+              try: stats = await fetchStats(sec_uid)
+                   entry.awemeCount = stats.awemeCount
+                   entry.followerCount = stats.followerCount
+              catch: 静默跳过（保留旧值）
+              try: t = await fetchLatestWorkTime(sec_uid)      // 作品第一页 max(create_time)
+                   if (t) entry.lastUpdateAt = t               // 失败/全 0 静默跳过保留旧值
+              catch: 静默跳过
+              sendMessage(CALIBRATE_PROGRESS { phase:"calibrate", collected:++processed,
+                                                total:list.length, hasMore:false, requestId })
+              条目间延迟 syncFollowings MIN~MAX ms
+            返回 processed（取消时 < list.length）
+        guard.dispose()
+        → mergeAndSaveFollowings(FOLLOWINGS, all)   // 0 值保护：取数失败保留旧计数、分组保留
+        changed > 0 → 广播 STORE_CHANGED { domain:"followings" }
+        → sendResponse({ ok:true, requestId, cancelled, total, processed, updated, changed })
 
-fetchStats 注入：
-  独立模式：(sec_uid) => independentClient.request(API.PROFILE_OTHER, …)
+fetchStats 注入（scanTasks 私有 #fetchProfileUser，双模自治）：
+  独立模式：independentClient.request(API.PROFILE_OTHER, …)
             data.user 缺失 → throw "PROFILE_FETCH_FAILED"
-  Tab模式：  (sec_uid) => sendToTabAsync("FETCH_PROFILE_OTHER", { secUid })
+  Tab模式：  sendToTabAsync("FETCH_PROFILE_OTHER", { secUid })
             !resp.ok → throw resp.error || "PROFILE_FETCH_FAILED"
 
 fetchLatestWorkTime 注入（scanTasks 私有方法 #fetchLatestWorkTime，两模式分支取作品第一页）：
@@ -56,7 +63,7 @@ fetchLatestWorkTime 注入（scanTasks 私有方法 #fetchLatestWorkTime，两�
 ```
 options Sidebar.openSidebar(following)
   → #calibrateFollowing(following)：secUid = state.currentFollowingSecUid
-  → bgMsg({ type:"CALIBRATE_FOLLOWING", uid, secUid })     // 不受 calibrateFollowings 开关门控
+  → bgMsg({ type:"CALIBRATE_FOLLOWING", uid, secUid })
     → background scanTasks.calibrateOne(uid, secUid, sendResponse)
         ├─ 参数缺失 → { ok:false, error:"BAD_PARAMS" }
         ├─ independentClient.loadMode()
@@ -76,12 +83,19 @@ options Sidebar.openSidebar(following)
 ## 接口 / 方法签名
 
 ```js
-// background/tasks/scan-tasks.js —— 批量校准（纯迭代器，不落库；写回发生在调用方的整体落库路径上）
-async function scanTasks.calibrateStats(list, fetchStats, isCancelled, requestId)
+// background/tasks/scan-tasks.js —— 批量迭代器（纯内存改写，不落库；写回发生在调用方的落库路径上）
+async function scanTasks.calibrateStats(list, fetchStats, isCancelled, requestId, progressType = "FOLLOWING_PROGRESS")
 // list: Following[]（原地改写 awemeCount/followerCount/lastUpdateAt）
 // fetchStats: (secUid) => Promise<{ awemeCount, followerCount }>
 // isCancelled: () => boolean
-// 进度：FOLLOWING_PROGRESS { phase:"calibrate", collected, total, hasMore:false, requestId }
+// 返回：实际处理条数（取消时 < list.length）
+// 进度：type 由 progressType 决定（当前唯一调用方 calibrateAll 传 "CALIBRATE_PROGRESS"），
+//      载荷 { phase:"calibrate", collected, total, hasMore:false, requestId }
+
+async function scanTasks.calibrateAll(sendResponse)
+// 工具弹窗批量校准：getAll → calibrateStats → mergeAndSaveFollowings（0 值保护）→ changed>0 广播 STORE_CHANGED
+// 出参：{ ok:true, requestId, cancelled, total, processed, updated, changed }
+//     | { ok:false, error:"EMPTY"|其他 }
 
 async function scanTasks.calibrateOne(uid, secUid, sendResponse)
 // 出参：{ ok:true, awemeCount, followerCount, lastUpdateAt }
@@ -125,7 +139,7 @@ for (const entry of list) {
       if (t) entry.lastUpdateAt = t;             // 作品第一页 max(create_time)；失败/全 0 静默保留旧值
     } catch (_e) {}
   }
-  // FOLLOWING_PROGRESS phase:"calibrate" …（options 端文案切「正在校准作品数…」）
+  // CALIBRATE_PROGRESS { phase:"calibrate" } …（options 端工具弹窗进度层计数「已校准作者 X / Y」）
 }
 ```
 
@@ -200,14 +214,13 @@ Tab 模式对照：同一 URL 由 inject `fetchProfileOther` 以 DEVICE_PARAMS +
 | 作品第一页获取失败（网络/403/无作品/全 0 create_time） | #fetchLatestWorkTime 抛错或返回 0 | 批量：catch 静默跳过保留旧值；单用户：`record.lastUpdateAt` 保留旧值，响应仍返回当前值 |
 | profileUrl 缺失或无 sec_uid 段 | 正则不匹配 | 跳过该条（不发请求），进度照常推进 |
 | uid 不在库中（侧边栏场景数据已变） | `{ ok:false, error:"NOT_FOUND" }` | options 忽略 |
-| 校准期间用户取消/关弹窗 | `CANCEL_ACTIVE_TASK` | isCancelled() 在条目边界生效；在途请求由各自模式的取消链路中止 |
-| 开关门控 | — | 批量校准受 `calibrateFollowings` 控制；侧边栏单用户校准恒执行 |
+| 校准期间用户取消/关进度层 | `CANCEL_ACTIVE_TASK` | isCancelled() 在条目边界生效；在途请求由各自模式的取消链路中止；已校准部分随 mergeAndSaveFollowings 落库 |
+| 关注域为空 | `{ ok:false, error:"EMPTY" }` | 工具弹窗 toast 报错 |
 
 ## 配置项说明
 
 | 配置 | 默认 | 作用 |
 |------|------|------|
-| `runtimeConfig.calibrateFollowings` | true | 设置面板「运行参数 → 同步关注后校准作品/粉丝数」开关；仅门控批量校准 |
 | `runtimeConfig.syncFollowingsDelayMin/Max` | 500/1000ms | 校准条目间延迟 |
 | `runtimeConfig.timeoutRequest` | 30000ms | profile/other 与作品第一页单请求超时（独立模式）；Tab 模式经 FETCH_PROFILE_OTHER / FETCH_WORKS_PAGE 的 msg.timeout |
 | `CONFIG.API.PROFILE_OTHER` | `/aweme/v1/web/user/profile/other/` | 权威计数端点（逐用户、无分页） |

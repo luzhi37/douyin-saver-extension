@@ -4,6 +4,7 @@ import { CONFIG, formatters, utils, runtimeConfig } from "../core.js";
 import { credentials } from "../identity/credentials.js";
 import { independentClient } from "../identity/independent-client.js";
 import { tabBridge } from "../identity/tab-bridge.js";
+import { storage } from "../data/storage.js";
 import { domainStore } from "../data/domain-store.js";
 import { runAuthorWorksImport } from "./author-works-import.js";
 import { independentTasks } from "./independent-tasks.js";
@@ -12,9 +13,11 @@ import { independentTasks } from "./independent-tasks.js";
 // Tab 模式长任务（经 TabBridge 循环）
 class ScanTasks {
   // 关注列表接口返回的 aweme_count/follower_count 是滞后快照值（与主页展示差异大），
-  // 列表收集完成后逐用户请求 user/profile/other 用权威计数覆盖。
-  // fetchStats(secUid) 由调用方按模式提供（tab 转发 / 独立直连）；单条失败静默跳过保留旧值。
-  async calibrateStats(list, fetchStats, isCancelled, requestId) {
+  // 逐用户请求 user/profile/other 用权威计数覆盖。
+  // fetchStats(secUid) 由调用方按模式提供（tab 转发 / 独立直连 / 本类 #fetchProfileUser 双模）；
+  // 单条失败静默跳过保留旧值。progressType 缺省 FOLLOWING_PROGRESS（同步流程内联校准，
+  // 已裁撤）；工具弹窗批量校准传 CALIBRATE_PROGRESS。返回实际处理条数（取消时 < list.length）
+  async calibrateStats(list, fetchStats, isCancelled, requestId, progressType = "FOLLOWING_PROGRESS") {
     let processed = 0;
     for (const entry of list) {
       if (isCancelled()) break;
@@ -33,7 +36,7 @@ class ScanTasks {
         } catch (_e) {}
       }
       utils.sendMessageSafe({
-        type: "FOLLOWING_PROGRESS",
+        type: progressType,
         phase: "calibrate",
         collected: processed,
         total: list.length,
@@ -44,9 +47,10 @@ class ScanTasks {
         await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
       }
     }
+    return processed;
   }
 
-  // 单用户校准：打开侧边栏时触发（不受 calibrateFollowings 开关门控），取 profile/other
+  // 单用户校准：打开侧边栏时触发，取 profile/other
   // 权威计数后直接落库；options 端据返回值更新 state 与可见卡片
   async calibrateOne(uid, secUid, sendResponse) {
     try {
@@ -61,6 +65,45 @@ class ScanTasks {
       record.lastUpdateAt = (await this.#fetchLatestWorkTime(secUid).catch(() => 0)) || record.lastUpdateAt || 0;
       await ds.putBatch([record]);
       sendResponse({ ok: true, ...stats, lastUpdateAt: record.lastUpdateAt });
+    } catch (err) {
+      sendResponse({ ok: false, error: err.message });
+    }
+  }
+
+  // 关注域批量校准（工具弹窗手动触发，与同步流程彻底分离）：全部作者逐个取 profile/other
+  // 权威计数 + lastUpdateAt，复用 calibrateStats 迭代器（进度经 CALIBRATE_PROGRESS 上报，
+  // 进度层关闭联动的 CANCEL_ACTIVE_TASK 经 withCancelGuard 中断循环）；收尾整批
+  // mergeAndSaveFollowings 落库——0 值保护生效（取数失败/条目无 profileUrl 保留旧计数），
+  // changed>0 才广播 STORE_CHANGED
+  async calibrateAll(sendResponse) {
+    try {
+      // storage.getAll 返回 { [uid]: record } 映射（#toMap），取 values 得记录数组（export 同款）
+      const recordMap = await storage.getAll(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+      const all = Object.values(recordMap);
+      if (all.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
+      const requestId = crypto.randomUUID();
+      const guard = utils.withCancelGuard();
+      const processed = await this.calibrateStats(
+        all,
+        (secUid) => this.#fetchProfileUser(secUid),
+        () => guard.isCancelled(),
+        requestId,
+        "CALIBRATE_PROGRESS",
+      );
+      guard.dispose();
+      const result = await domainStore.mergeAndSaveFollowings(CONFIG.STORAGE_KEYS.FOLLOWINGS, all);
+      if (result.changed > 0) {
+        utils.sendMessageSafe({ type: "STORE_CHANGED", domain: CONFIG.STORAGE_KEYS.FOLLOWINGS });
+      }
+      sendResponse({
+        ok: true,
+        requestId,
+        cancelled: guard.isCancelled(),
+        total: all.length,
+        processed,
+        updated: result.updated,
+        changed: result.changed,
+      });
     } catch (err) {
       sendResponse({ ok: false, error: err.message });
     }
@@ -184,21 +227,6 @@ class ScanTasks {
         if (hasMore && !guard.isCancelled()) {
           await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
         }
-      }
-      if (!guard.isCancelled() && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
-        await this.calibrateStats(
-          all,
-          async (secUid) => {
-            const resp = await tabBridge.sendAsync("FETCH_PROFILE_OTHER", {
-              secUid,
-              timeout: CONFIG.TIMEOUT.REQUEST,
-            });
-            if (!resp?.ok) throw new Error(resp?.error || "PROFILE_FETCH_FAILED");
-            return resp;
-          },
-          () => guard.isCancelled(),
-          requestId,
-        );
       }
       guard.dispose();
       if (!guard.isCancelled() && all.length === 0 && lastError) {

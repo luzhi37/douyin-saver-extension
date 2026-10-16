@@ -39,6 +39,15 @@ export class VirtualGrid {
   // 视口带区直填」兜底。settle-checker 在滚动静止一帧后补同款收口
   #settleRaf = 0;
   #settleLastEpoch = 0;
+  // 尾部占位（封闭视图）：以容器 padding-bottom 预留「未挂载余量行」的高度，滚动条总长
+  // 在渲染首帧即收敛为终值——纯 style 写入、零卡片追加，滚动中内容零增长、滑块无回退；
+  // 未挂载区随滚近由 #extendIfNeeded 按需铺卡并同步收缩占位（净高恒定）
+  #tailReserve = 0;
+  // 占位高度推导出的列数/行高（#slotsToReach 远跳追赶复用；非封闭态清零）
+  #reserveCols = 0;
+  #reserveRowH = 0;
+  // 远跳追赶续铺 rAF id（拖拽跳进占位区后按视口带区连帧赶齐，覆盖即止）
+  #rushRaf = 0;
   #skeletonClass = "";
   #itemClass = "";
   #itemKey = "";
@@ -106,9 +115,12 @@ export class VirtualGrid {
     // 渐进加载的预铺：预铺数有上限（调用方按态传 GRID_PREMOUNT_CAP / GRID_PREMOUNT_CAP_FILTER），
     // 超出部分由滚近底部时倍增扩容（#extendIfNeeded）——活 DOM 规模封顶，切组拆卸/布局/
     // 绘制的 O(N) 成本以 N=已挂载数为分母。
-    // 封闭视图（筛选态/全量单发，totalSlots ≤ 已知条目数 = 无「未来分页」）只铺上限张
-    // 已知条目：渐进态「已知条目始终全量铺」是 fillSlots 按槽回填的前提，封闭态没有
-    // 回填方，全量铺设只会让每次筛选切换付出 O(结果数) 的克隆+布局成本
+    // 封闭视图（筛选态/全量单发，totalSlots ≤ 已知条目数 = 无「未来分页」）首帧只同步铺
+    // 上限张已知条目：渐进态「已知条目始终全量铺」是 fillSlots 按槽回填的前提；封闭态同步
+    // 全量铺设会让每次筛选切换付出 O(结果数) 的克隆+布局成本（大 M 下每次容器追加都是
+    // 全网格重排，实测单次可达数百 ms），余量行高改由**尾部占位**（#syncTailReserve：
+    // 容器 padding-bottom 预留，style 写入零追加）在渲染首帧把滚动条总长收敛为终值，
+    // 卡片在滚近时按需铺入、占位同步收缩——净高恒定，无「滚动中内容变长把滑块按比例打回」
     this.#totalSlots = Math.max(totalSlots, items.length);
     const closed = items.length >= this.#totalSlots;
     const slotCount = closed
@@ -413,6 +425,7 @@ export class VirtualGrid {
       pruned = true;
     }
     this.#totalSlots = this.#slots.length; // 收敛后不再扩容
+    this.#syncTailReserve();
     if (pruned && !this.#slots.length) this.#showEmpty(this.#emptyMsg, this.#emptyHint);
   }
 
@@ -474,6 +487,8 @@ export class VirtualGrid {
     }
     // 预铺目标与 #slots 同步收缩；clamp 防御异常态下减穿下界
     if (removed) this.#totalSlots = Math.max(this.#slots.length, this.#totalSlots - removed);
+    // 删除使余量行变化：尾部占位同步重算（封闭视图）
+    if (removed) this.#syncTailReserve();
     if (this.#container.children.length === 0) {
       this.#showEmpty(this.#emptyMsg, this.#emptyHint);
     }
@@ -507,6 +522,13 @@ export class VirtualGrid {
     cancelAnimationFrame(this.#settleRaf);
     this.#settleRaf = 0;
     this.#settleLastEpoch = 0;
+    cancelAnimationFrame(this.#rushRaf);
+    this.#rushRaf = 0;
+    // 尾部占位随 wipe 清除（inline style 不随 innerHTML/换壳重置，必须显式还原）
+    this.#tailReserve = 0;
+    this.#reserveCols = 0;
+    this.#reserveRowH = 0;
+    this.#container.style.paddingBottom = "";
     this.#slots = [];
     this.#totalSlots = 0;
     this.#viewItems = null;
@@ -692,30 +714,66 @@ export class VirtualGrid {
     if (this.#scrollRafId) return;
     this.#scrollRafId = requestAnimationFrame(() => {
       this.#scrollRafId = 0;
+      // 尾部占位随滚动重判：容器宽度变化（折叠侧栏/窗口拖宽）会改列数，占位高度须跟上
+      this.#syncTailReserve();
       this.#extendIfNeeded();
       this.#catchUpToViewport();
     });
   }
 
-  // 接近底部扩容：内容底距视口底不足 GRID_EXTEND_THRESHOLD 屏时，预铺槽位增长至
-  // totalSlots 上限（尾批对齐剩余量）。步长 = min(倍增, 单步上限 GRID_EXTEND_STEP)——
-  // 深域后段一次倍增会是数千上万张占位卡克隆 + 整容器布局的长任务，超出部分由后续
-  // 滚动 rAF 继续扩。槽位来源按视图形态分流：
-  // 封闭视图（totalSlots ≤ 视图快照长度 = 筛选态等无「未来分页」场景）扩容卡带真实键，
-  // 直接从快照锚接续取条目——本态没有 fillSlots 回填方，无键占位卡会永久灰卡；锚取
-  // 槽尾最后一张带键卡（DOM 实况推导，免维护游标不变量），在快照中定位后顺次取后继。
-  // 渐进态维持占位卡克隆，等 fillSlots 按槽回填（既有机制不变）
+  // 接近底部（按需铺卡）：内容底距视口底不足 GRID_EXTEND_THRESHOLD 屏时扩容槽位。
+  // 封闭视图的「真实内容底」= 容器底 − 尾部占位（#tailReserve）——余量行的滚动条总长
+  // 已由占位预留，扩容只是把占位换成真实卡（净高恒定、滑块不回退）。步长 = min(倍增,
+  // 单步上限 GRID_EXTEND_STEP)；视口带区已越过真实内容底（拖拽跳进占位区）时改为按
+  // 带区直铺追赶（单步上限 GRID_EXTEND_JUMP_STEP，未覆盖视口时下一帧续铺）
   #extendIfNeeded() {
     if (this.#chunkRaf) return; // 预铺拼装未完成时不扩容：文档尚短，且双路径写 #slots 会交错
     if (this.#slots.length >= this.#totalSlots) return;
     const rect = this.#container.getBoundingClientRect();
     const gridRect = dom.mainGrid.getBoundingClientRect();
-    if (rect.bottom - gridRect.bottom > dom.mainGrid.clientHeight * config.GRID_EXTEND_THRESHOLD) return;
-    const next = Math.min(this.#totalSlots, this.#slots.length * 2, this.#slots.length + config.GRID_EXTEND_STEP);
-    if (next <= this.#slots.length) return;
+    const margin = dom.mainGrid.clientHeight * config.GRID_EXTEND_THRESHOLD;
+    if (rect.bottom - this.#tailReserve - gridRect.bottom > margin) return;
+    let next = Math.min(this.#totalSlots, this.#slots.length * 2, this.#slots.length + config.GRID_EXTEND_STEP);
+    if (this.#tailReserve > 0) {
+      const need = this.#slotsToReach(gridRect.bottom + margin);
+      if (need > next) next = Math.min(this.#totalSlots, this.#slots.length + config.GRID_EXTEND_JUMP_STEP, need);
+    }
+    const added = this.#extendSlotsTo(next);
+    // 远跳单步封顶未赶齐：下一帧续铺，直到视口带区被真实内容覆盖（覆盖即止，非全量物化）
+    if (added > 0 && this.#slots.length < this.#totalSlots && this.#tailReserve > 0) {
+      const after = this.#container.getBoundingClientRect();
+      if (after.bottom - this.#tailReserve - gridRect.bottom <= margin) this.#scheduleRush();
+    }
+  }
+
+  // 远跳追赶续铺（幂等 rAF 链）：拖拽把视口丢进尾部占位区后按带区目标逐帧铺卡；
+  // 与常速滚动共用 #extendIfNeeded（覆盖判定同上，覆盖即停）；render/abort 经
+  // #resetRenderState 取消
+  #scheduleRush() {
+    if (this.#rushRaf) return;
+    this.#rushRaf = requestAnimationFrame(() => {
+      this.#rushRaf = 0;
+      this.#extendIfNeeded();
+    });
+  }
+
+  // 封闭视图判据（与键控扩容同源）：视图快照覆盖全量 = 无「未来分页」回填方。
+  // 筛选态与关注域网格恒为封闭视图；作品域渐进视图在加载期（totalSlots > 快照长度）为假
+  #isClosedView() {
+    return Boolean(this.#viewItems) && this.#totalSlots <= this.#viewItems.length;
+  }
+
+  // 槽位扩容核心（键控/占位两态），无几何读取——触发时机由调用方判定（滚近铺卡/远跳
+  // 追赶）。封闭视图扩容卡带真实键，直接从快照锚接续取条目——本态没有 fillSlots
+  // 回填方，无键占位卡会永久灰卡；锚取槽尾最后一张带键卡（DOM 实况推导，免维护游标
+  // 不变量），在快照中定位后顺次取后继，锚失配返回 0（不扩容，留待整刷自愈）。
+  // 渐进态维持占位卡克隆，等 fillSlots 按槽回填（既有机制不变）。返回实际新增槽位数
+  #extendSlotsTo(next) {
+    next = Math.min(next, this.#totalSlots);
+    if (next <= this.#slots.length) return 0;
     const skelTmpl = this.#getSkeletonTemplate();
     const snapshot = this.#viewItems;
-    const keyed = Boolean(snapshot) && this.#totalSlots <= snapshot.length;
+    const keyed = this.#isClosedView();
     let cursor = -1;
     if (keyed) {
       let anchorKey = null;
@@ -726,7 +784,7 @@ export class VirtualGrid {
       if (anchorKey) {
         cursor = snapshot.findIndex((w) => w[this.#itemKey] === anchorKey);
         // 锚不在快照（头插/移除维护窗口外的口径异常）：不扩容，留待整刷自愈
-        if (cursor < 0) return;
+        if (cursor < 0) return 0;
       }
       // 槽尾无带键卡（理论不该出现在键控态）：cursor 保持 -1，从快照头部续铺
     }
@@ -749,6 +807,69 @@ export class VirtualGrid {
     }
     this.#container.appendChild(frag);
     this.#observeNewSkeletons(nodes);
+    // 铺卡即等量收缩尾部占位：净高恒定，滑块位置不受影响
+    this.#syncTailReserve();
+    return nodes.length;
+  }
+
+  // 尾部占位同步（封闭视图）：按「总行数 − 已挂行数」写容器 padding-bottom，滚动条总长
+  // 在渲染首帧即收敛为终值——纯 style 写入、零卡片追加（大 M 下每次容器追加都是全网格
+  // 重排，实测单次可达数百 ms，禁用「预挂余量」路线）。扩容铺卡后占位等量收缩，净高
+  // 恒定。非封闭视图（渐进加载，分页回填方在场）不预留——未挂载区保持滚动不可达，
+  // 杜绝「远跳落进空白」。列数扫首行实测、行高跨行实测（域无关，兼容两域卡尺寸）；
+  // 单行未满不预留（closed 态此分支理论不可达：slots == total）
+  #syncTailReserve() {
+    const container = this.#container;
+    const slots = this.#slots.length;
+    const total = this.#totalSlots;
+    if (!this.#isClosedView() || slots === 0 || total <= slots) {
+      this.#reserveCols = 0;
+      this.#reserveRowH = 0;
+      if (this.#tailReserve !== 0) {
+        this.#tailReserve = 0;
+        container.style.paddingBottom = "";
+      }
+      return;
+    }
+    const children = container.children;
+    const first = children[0];
+    const firstTop = first.getBoundingClientRect().top;
+    let cols = 0;
+    const n = children.length;
+    for (let i = 1; i < n && i <= 64; i++) {
+      if (children[i].getBoundingClientRect().top > firstTop + 1) {
+        cols = i;
+        break;
+      }
+    }
+    if (!cols) return; // 单行未满：不预留（见上方注释）
+    let rowH = 0;
+    if (n > cols) rowH = children[cols].getBoundingClientRect().top - firstTop;
+    if (rowH <= 0) {
+      const gap = parseFloat(getComputedStyle(container).rowGap) || config.CARD_GAP;
+      rowH = first.getBoundingClientRect().height + gap;
+    }
+    const mountedRows = Math.ceil(slots / cols);
+    const totalRows = Math.ceil(total / cols);
+    const reserve = Math.max(0, Math.round((totalRows - mountedRows) * rowH));
+    this.#reserveCols = cols;
+    this.#reserveRowH = rowH;
+    if (reserve !== this.#tailReserve) {
+      this.#tailReserve = reserve;
+      container.style.paddingBottom = reserve > 0 ? reserve + "px" : "";
+    }
+  }
+
+  // 覆盖到视口底 + 裕量所需的槽位数（远跳追赶目标；复用 #syncTailReserve 实测的列数/
+  // 行高；缓存缺失时返回当前槽位 = 不追赶）
+  #slotsToReach(targetBottomPx) {
+    if (!this.#reserveCols || !this.#reserveRowH) return this.#slots.length;
+    const grid = dom.mainGrid;
+    const gridRect = grid.getBoundingClientRect();
+    const contentTopInScroll = this.#container.getBoundingClientRect().top - gridRect.top + grid.scrollTop;
+    const targetInScroll = targetBottomPx - gridRect.top + grid.scrollTop;
+    const rows = Math.ceil((targetInScroll - contentTopInScroll) / this.#reserveRowH) + 1;
+    return Math.max(0, rows) * this.#reserveCols;
   }
 
   // 快滚判定已前移到 scroll 事件侧（#onGridScroll，rAF 读取者不推进基准）：
@@ -850,6 +971,9 @@ export class VirtualGrid {
     // 带区骨架无人观察、永久停在灰卡态（手动滚一下才出封面）。整渲完成统一补一次追赶
     // （rAF 下一帧测量，届时全量挂载已完成），与 scroll 触发共用同一机制
     this.#scheduleCatchUp();
+    // 封闭视图：以尾部占位把滚动条总长在首帧收敛为终值（纯 style 写入、零追加）；
+    // 渐进视图由 #isClosedView 门控跳过（未挂载区保持滚动不可达）
+    this.#syncTailReserve();
   }
 
   #enqueueFill(card) {

@@ -81,8 +81,7 @@ class App {
 
     // SW 冷启动恢复运行参数：reload 此前仅挂在 onInstalled（装/更新）上，重开扩展
     // 时新 SW 实例按编译期默认值重建 CONFIG，面板已保存的时延/超时/批量/重试参数
-    // 会静默失效（校准开关另有 isCalibrateEnabled 惰性加载兜底，两者幂等无冲突）。
-    // 监听器已在上方同步注册，reload 在事件送达前完成，不阻塞消息路由。
+    // 会静默失效。监听器已在上方同步注册，reload 在事件送达前完成，不阻塞消息路由。
     runtimeConfig.reload().catch((e) => console.warn("[DY] runtimeConfig reload failed:", e.message));
   }
 
@@ -197,6 +196,8 @@ class App {
         }, sendResponse);
       case "CALIBRATE_FOLLOWING":
         return utils.asyncHandler(() => scanTasks.calibrateOne(message.uid, message.secUid, sendResponse), sendResponse);
+      case "CALIBRATE_FOLLOWINGS":
+        return utils.asyncHandler(() => scanTasks.calibrateAll(sendResponse), sendResponse);
       case "FETCH_FAVORITES":
         return utils.asyncHandler(async () => {
           // 点赞列表无独立模式分支（favorite 端点 Turing 风控，见 docs/05）

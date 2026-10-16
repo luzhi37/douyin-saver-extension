@@ -1,13 +1,14 @@
-// ---------- AuthorImport（入库） ----------
+// ---------- AuthorImport（工具） ----------
 import { config, dom, state, services } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { sync } from './sync.js';
 import { domainScanSync } from './domain-scan-sync.js';
 
-// ---------- 入库（作者 → 作品域 / 关注域） ----------
-// 菜单「入库」弹窗：两行输入各配一个域按钮。
+// ---------- 工具弹窗（作者入库 + 关注批量校准） ----------
+// 菜单「工具」弹窗：两行输入各配一个域入库按钮 + 一行批量校准按钮。
 // 作品域入库 = IMPORT_USER_WORKS 分页循环长任务（进度态复用 syncDialogBodyTemplate，关闭即取消）；
-// 关注域入库 = IMPORT_FOLLOWING 单请求收录作者档案（短操作，toast 反馈）。
+// 关注域入库 = IMPORT_FOLLOWING 单请求收录作者档案（短操作，toast 反馈）；
+// 校准作品/粉丝数 = CALIBRATE_FOLLOWINGS 批量长任务（关注域全部作者，进度层同款，关闭即取消）。
 // 分组语义与「添加作品/添加关注」一致：已在域的保留原分组、新条目落「未分组」
 // （由 background mergeWork/mergeAndSaveFollowings 内建，本模块不做任何加工）。
 class AuthorImport {
@@ -27,10 +28,10 @@ class AuthorImport {
     return this.#running;
   }
 
-  // ---------- 入库弹窗（配置态，两行输入） ----------
+  // ---------- 工具弹窗（配置态，两行输入 + 校准按钮） ----------
   openDialog() {
     if (this.#running) {
-      dialog.showToast("已有入库任务进行中", "info");
+      dialog.showToast("已有任务进行中", "info");
       return;
     }
     const body = document.createElement("div");
@@ -44,15 +45,20 @@ class AuthorImport {
         <input class="import-input followings-input" placeholder="作者主页链接（douyin.com/user/…）" spellcheck="false" aria-label="关注域入库作者">
         <button class="dy-btn flex-inline-center dy-btn-primary btn-import-followings">关注域入库</button>
       </div>
+      <div class="import-row">
+        <span class="import-calibrate-hint">对关注域全部作者重取主页权威计数与最近更新日期</span>
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-calibrate-followings" aria-label="校准关注域全部作者的作品/粉丝计数">校准作品/粉丝数</button>
+      </div>
     `;
     this.#worksInput = body.querySelector(".works-input");
     this.#followingsInput = body.querySelector(".followings-input");
     this.#btnWorks = body.querySelector(".btn-import-works");
     this.#btnFollowings = body.querySelector(".btn-import-followings");
-    dialog.showDialog("入库", body, [], () => this.closeDialog());
+    dialog.showDialog("工具", body, [], () => this.closeDialog());
 
     this.#btnWorks.addEventListener("click", () => this.startWorksImport());
     this.#btnFollowings.addEventListener("click", () => this.startFollowingImport());
+    body.querySelector(".btn-calibrate-followings").addEventListener("click", () => this.startCalibrate());
     // 输入框内回车触发本行按钮（键盘 a11y 约定）
     this.#worksInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") this.startWorksImport();
@@ -72,6 +78,7 @@ class AuthorImport {
   }
 
   // ---------- 作品域入库（长任务） ----------
+  // 工具弹窗入口：解析主页链接 → sec_uid 后交给 startWorksImportFor
   async startWorksImport() {
     if (this.#running || !this.#worksInput) return;
     // 三条 background 循环链路（sync / 域扫描 / 本入库）互斥，避免叠加请求频率
@@ -90,28 +97,106 @@ class AuthorImport {
       dialog.showToast("无法解析该主页对应的 sec_uid", "error");
       return;
     }
+    await this.startWorksImportFor(secUid);
+  }
 
+  // 作品域入库入口（工具弹窗路径）：解析主页链接 → sec_uid 后执行分页循环长任务。
+  // 互斥守卫拦截（已有同步/入库任务）与弹窗取消（#running 被 closeDialog 复位）都返回 null；
+  // 正常终态返回 `{ ok, ... }` 响应体，结果收口见 #showDone
+  async startWorksImportFor(secUid) {
+    if (this.#running) {
+      dialog.showToast("已有任务进行中", "info");
+      return null;
+    }
+    if (sync.isRunning() || domainScanSync.isRunning()) {
+      dialog.showToast("同步进行中，请等待完成后再入库", "error");
+      return null;
+    }
     this.#running = true;
     this.#currentSecUid = secUid;
     // 清残留任务再开新循环（DomainScanSync 同款）
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-    this.#openProgressDialog();
+    this.#openProgressDialog("导入作者作品", "已扫描作品 0", "正在获取作者作品…");
 
     try {
       const res = await services.bgMsg({ type: "IMPORT_USER_WORKS", secUid });
-      if (!this.#running) return; // 弹窗已关闭（取消）：迟到的终态静默吞掉，已落库部分保留
+      if (!this.#running) return null; // 弹窗已关闭（取消）：迟到的终态静默吞掉，已落库部分保留
       if (!res || res.ok !== true) {
         this.#showError(res?.error || "IMPORT_FAILED");
-        return;
+        return res || null;
       }
       this.#showDone(res);
+      return res;
     } catch (err) {
-      if (!this.#running) return;
+      if (!this.#running) return null;
       this.#showError(err.message || String(err));
+      return { ok: false, error: err.message || String(err) };
     } finally {
       // 终态复位与 closeDialog 的复位并存：finally 管完成/失败落地（允许原地再发起），closeDialog 管取消窗口期
       this.#running = false;
     }
+  }
+
+  // ---------- 关注批量校准（长任务） ----------
+  // 校准入口：对关注域全部作者批量重取权威计数（CALIBRATE_FOLLOWINGS）。
+  // 与作品域入库共用 #running 长任务锁（弹窗重入守卫 / btnSync 与域扫描互斥 /
+  // 关进度层联动 CANCEL_ACTIVE_TASK 均随之生效）
+  async startCalibrate() {
+    if (this.#running) {
+      dialog.showToast("已有任务进行中", "info");
+      return;
+    }
+    if (sync.isRunning() || domainScanSync.isRunning()) {
+      dialog.showToast("同步进行中，请等待完成后再校准", "error");
+      return;
+    }
+    this.#running = true;
+    // 清残留任务再开新循环（作品域入库同款）
+    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
+    this.#openProgressDialog("校准关注数据", "已校准作者 0", "正在校准作品/粉丝数…");
+
+    try {
+      const res = await services.bgMsg({ type: "CALIBRATE_FOLLOWINGS" });
+      if (!this.#running) return; // 弹窗已关闭（取消）：迟到终态静默吞掉，已校准部分已落库
+      if (!res || res.ok !== true) {
+        this.#showError(res?.error || "CALIBRATE_FAILED");
+        return;
+      }
+      this.#showCalibrateDone(res);
+    } catch (err) {
+      if (!this.#running) return;
+      this.#showError(err.message || String(err));
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  // 校准终态：完全成功走 toast 收口（关进度层回「工具」弹窗）；
+  // 中途取消保留弹窗确认已校准部分（就地改写进度层，作品域入库同款）
+  #showCalibrateDone(res) {
+    if (!res.cancelled) {
+      this.#closeProgressDialog();
+      dialog.showToast(
+        `校准完成：共 ${res.total ?? 0} 位作者，更新 ${res.updated ?? 0} 条计数`,
+        "success",
+      );
+      return;
+    }
+    const tmpl = document.getElementById("syncDialogBodyTemplate");
+    const body = tmpl.content.cloneNode(true);
+    this.#countEl = body.querySelector(".sync-count");
+    this.#summaryEl = body.querySelector(".sync-summary");
+    this.#statusEl = body.querySelector(".sync-status");
+    this.#countEl.textContent = `已校准作者 ${res.processed ?? res.total ?? 0}`;
+    this.#summaryEl.textContent = "已校准部分已落库，未校准作者保留原计数";
+    this.#statusEl.textContent = "PARTIAL";
+    const hint = document.createElement("p");
+    hint.className = "dy-text-danger sync-timeout-hint";
+    hint.textContent = "已中途取消，仅保留部分数据";
+    body.appendChild(hint);
+    dialog.updateDialog("校准关注数据");
+    dom.dialogBody.appendChild(body);
+    dialog.showOkDialog();
   }
 
   // ---------- 关注域入库（短操作） ----------
@@ -157,14 +242,17 @@ class AuthorImport {
   // 三链路互斥保证唯一（入口已挡并发发起），按 #running 门控全收即可（DomainScanSync 同款）
   onProgress(msg) {
     if (!this.#running) return;
-    if (msg.type !== "IMPORT_WORKS_PROGRESS") return;
-    const total = msg.total > 0 ? ` / 约 ${msg.total}` : "";
-    if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected ?? 0}${total} · 已入库 ${msg.saved ?? 0}`;
+    if (msg.type === "IMPORT_WORKS_PROGRESS") {
+      const total = msg.total > 0 ? ` / 约 ${msg.total}` : "";
+      if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected ?? 0}${total} · 已入库 ${msg.saved ?? 0}`;
+    } else if (msg.type === "CALIBRATE_PROGRESS") {
+      if (this.#countEl) this.#countEl.textContent = `已校准作者 ${msg.collected ?? 0} / ${msg.total ?? 0}`;
+    }
   }
 
   // ---------- 私有：弹窗三态 ----------
 
-  // 进度层专用关闭：只复位任务态与进度层元素引用。基层「入库」弹窗的输入/按钮引用
+  // 进度层专用关闭：只复位任务态与进度层元素引用。基层「工具」弹窗的输入/按钮引用
   // 必须保留（弹窗仍开着，原地可再次发起）——全量清空仅走 closeDialog（整窗关闭时）
   #closeProgressDialog() {
     dialog.closeDialog();
@@ -172,24 +260,24 @@ class AuthorImport {
     this.#countEl = this.#summaryEl = this.#statusEl = null;
   }
 
-  #openProgressDialog() {
+  #openProgressDialog(title, countText, summaryText) {
     const tmpl = document.getElementById("syncDialogBodyTemplate");
     const body = tmpl.content.cloneNode(true);
     this.#countEl = body.querySelector(".sync-count");
     this.#summaryEl = body.querySelector(".sync-summary");
     this.#statusEl = body.querySelector(".sync-status");
-    this.#countEl.textContent = "已扫描作品 0";
-    this.#summaryEl.textContent = "正在获取作者作品…";
+    this.#countEl.textContent = countText;
+    this.#summaryEl.textContent = summaryText;
     this.#statusEl.textContent = "SYNCING";
-    // 进度层叠于「入库」弹窗之上：关闭后回到弹窗继续操作（结果就地改写同层内容）
-    dialog.pushDialog("导入作者作品", body, [], () => this.#closeProgressDialog());
+    // 进度层叠于「工具」弹窗之上：关闭后回到弹窗继续操作（结果就地改写同层内容）
+    dialog.pushDialog(title, body, [], () => this.#closeProgressDialog());
   }
 
   #showDone(res) {
     // 网格/分组数字刷新由 background 收尾的 STORE_CHANGED 统一承担（全部批次落库完才
     // 发一次：refreshGroups 重算分组数字 + 当前域一致时 loadDomainData，含取消/部分失败）；
     // 此处不再手动 loadDomainData，避免与广播的双重整网格重载
-    // 完全成功走 toast 收口（关进度层回「入库」弹窗）；PARTIAL 保留弹窗确认部分落库结果
+    // 完全成功走 toast 收口（关进度层回「工具」弹窗）；PARTIAL 保留弹窗确认部分落库结果
     if (!res.timedOut) {
       this.#closeProgressDialog();
       dialog.showToast(
@@ -210,7 +298,7 @@ class AuthorImport {
     hint.className = "dy-text-danger sync-timeout-hint";
     hint.textContent = "已中途取消，仅保留部分数据";
     body.appendChild(hint);
-    // 结果就地改写进度层（showDialog 会清栈重建基层、摧毁「入库」弹窗，不可用）；
+    // 结果就地改写进度层（showDialog 会清栈重建基层、摧毁「工具」弹窗，不可用）；
     // 经 updateDialog 收口（footer 增清与键盘直达槽位同步），body 节点随后补挂
     dialog.updateDialog("导入作者作品");
     dom.dialogBody.appendChild(body);
@@ -218,7 +306,8 @@ class AuthorImport {
   }
 
   // 错误展示：进度弹窗内联（summary 清空 + status 显示错误，DomainScanSync 同款）；
-  // NO_SIGNATURE 关弹窗换签名引导（URL 指向作者主页，浏览作品列表即完成捕获）
+  // NO_SIGNATURE 关弹窗换签名引导（URL 指向作者主页，浏览作品列表即完成捕获）。
+  // 关闭进度层（✕/Esc）即取消并退出
   #showError(errorMsg) {
     const msg = errorMsg || "UNKNOWN";
     if (msg === "NO_SIGNATURE") {

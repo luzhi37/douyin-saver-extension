@@ -6,7 +6,6 @@ import { dialog } from './dialog.js';
 class Settings {
   #dialogBody = null;
   #pendingIndependent = null;
-  #pendingCalibrate = null;
 
   #$(id) {
     return this.#dialogBody.querySelector("#" + id);
@@ -47,9 +46,8 @@ class Settings {
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
     this.#dialogBody = dom.dialogBody;
-    // 两个开关的未保存选择：#refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
+    // 开关的未保存选择：#refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
     this.#pendingIndependent = null;
-    this.#pendingCalibrate = null;
     this.#bind();
     this.#bindStatus();
     state.preventDialogClose = true;
@@ -241,10 +239,6 @@ class Settings {
       const input = section.querySelector(`.config-input[data-key="${inputKey}"]`);
       if (input) input.value = cfg[key] ?? "";
     }
-    const calSwitch = section.querySelector("#settingsCalibrateSwitch");
-    if (calSwitch) {
-      this.#applySwitchUI(calSwitch, this.#pendingCalibrate ?? (cfg.calibrateFollowings !== false));
-    }
   }
 
   #renderCacheList(ci, ct) {
@@ -421,15 +415,6 @@ class Settings {
         this.#applySwitchUI(modeSwitch, this.#pendingIndependent);
       });
     }
-    const calibrateSwitch = this.#dialogBody.querySelector("#settingsCalibrateSwitch");
-    if (calibrateSwitch) {
-      calibrateSwitch.addEventListener("click", (e) => {
-        const btn = e.target.closest(".mode-btn");
-        if (!btn || btn.classList.contains("active")) return;
-        this.#pendingCalibrate = btn.dataset.mode === "on";
-        this.#applySwitchUI(calibrateSwitch, this.#pendingCalibrate);
-      });
-    }
     // 缓存刷新按钮
     const cacheList = this.#$("settingsCacheList");
     if (cacheList) {
@@ -535,7 +520,6 @@ class Settings {
         return false;
       }
     }
-    values.calibrateFollowings = this.#pendingCalibrate ?? (section.querySelector("#settingsCalibrateSwitch .mode-btn.active")?.dataset.mode === "on");
     if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
       dialog.showToast("批次暂停最小值不能大于最大值", "error");
       return false;

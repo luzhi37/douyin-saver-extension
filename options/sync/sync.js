@@ -109,7 +109,7 @@ class Sync {
     this.#doneCount = msg.collected || 0;
     this.#total = msg.total || 0;
     this.#updateCount();
-    this.#setSummary(msg.phase === "calibrate" ? "正在校准作品数…" : "正在获取关注…");
+    this.#setSummary("正在获取关注…");
   }
 
   async startSync(awemeIds) {

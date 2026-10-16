@@ -90,6 +90,9 @@ class AppShell {
     store.set("batchMode", false);
 
     detail.closeDetail();
+    // 域切换显式归零：尾部占位（#syncTailReserve）使 wipe clamp 不再触发（重渲任务内总高
+    // 即恢复终值、旧偏移合法存留）。置于 closeDetail 之后，防其滚动恢复覆盖归零
+    dom.mainGrid.scrollTop = 0;
     if (dom.sidebar) {
       const isExpanded = !dom.sidebar.classList.contains("sidebar-zero");
       if (isExpanded) {
