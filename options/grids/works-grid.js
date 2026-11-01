@@ -4,18 +4,20 @@ import { VirtualGrid } from './virtual-grid.js';
 import { search } from '../components/search-bar.js';
 import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
+import { sidebar } from '../components/sidebar.js';
 
 // ---------- WorksGrid ----------
 // 与 search-bar/batch/detail 存在循环 import（它们各自反向引用本模块）：单例引用全部发生在
 // 方法体内、模块图完全求值之后才被触达，靠 ES live binding 安全消解（AGENTS.md 设计例外）
 class WorksGrid extends VirtualGrid {
   #sliderRaf = 0;
-  #container = dom.mainContainer;
   #workCardTmpl = document.getElementById("workCardTemplate");
   #coverQueue = [];
   #coverDrainRafId = 0;
   #videoStates = new WeakMap();
   #currentMediaCard = null;
+  #pointer = { x: 0, y: 0 }; // 最近指针客户端坐标（pointerover/out/move 保鲜）：滚动重判悬停用
+  #hoverRecheckRaf = 0;
   constructor({ emptyMsg, emptyHint } = {}) {
     super({
       container: dom.mainContainer,
@@ -24,19 +26,22 @@ class WorksGrid extends VirtualGrid {
       itemKey: "awemeId",
       emptyMsg,
       emptyHint,
+      cardSizeVar: "--dy-card-size",
+      sizeBandMin: config.WORK_CARD_SIZE_BAND_MIN,
+      sizeBandMax: config.WORK_CARD_SIZE_BAND_MAX,
     });
     // 空态文案按实例区分（作品/点赞/收藏域文案不同），默认文案由基类单份持有（emptyText）
     this.#bindMediaEvents();
   }
 
-  // 清场换壳后重指向新容器（基类事件在 #mainGrid 上；本类媒体委托也已上移）
-  attachContainer(el) {
-    super.attachContainer(el);
-    this.#container = el;
+  // 行高解析钩子（.work-card 的 height calc 同式：卡宽 × 4/3 + 信息块 44 + 行距 11）：
+  // 改宽当帧头部占位按解析式落笔，免一次实测重排；返回 0 表示未落笔（走实测缓存）
+  rowHeightFor(cardW) {
+    return cardW > 0 ? (cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET + config.CARD_GAP : 0;
   }
 
-  renderCards(view = search.getWorksView()) {
-    // 渲染取过滤后的视图列表（建议5；refreshGridView 注入现成视图，独立调用经视图函数
+  renderCards(view) {
+    // 渲染取过滤后的视图列表（refreshGridView 注入现成视图，独立调用经视图函数
     // 取——内部有阶段缓存）。筛选生效时空态文案区分"无数据"与"无匹配"。
     // 渐进加载首页渲染一次性消费预铺额度（state.gridSlots.total）：全量骨架预铺 +
     // 余页按槽回填；筛选态（封闭视图）预铺降档至 GRID_PREMOUNT_CAP_FILTER——每次筛选
@@ -61,6 +66,8 @@ class WorksGrid extends VirtualGrid {
     const fresh = this.#workCardTmpl.content.cloneNode(true).firstElementChild;
     card.classList.remove(this.skeletonClass);
     card.dataset.awemeId = work.awemeId;
+    // 类型标记（video/note）：仅图集卡启用封面悬浮放大（CSS 按 data-type 选取）
+    card.dataset.type = work.type;
 
     const media = card.querySelector(".work-media");
     media.replaceChildren(...fresh.querySelector(".work-media").childNodes);
@@ -88,8 +95,8 @@ class WorksGrid extends VirtualGrid {
 
     batch.updateCheckboxDOM(checkbox, state.selectedIds.has(work.awemeId));
 
-    if (work.type === "video" && utils.getVideoUrl(work)) {
-      const videoSrc = utils.getVideoUrl(work);
+    const videoSrc = utils.getVideoUrl(work);
+    if (work.type === "video" && videoSrc) {
       card.dataset.videoUrl = videoSrc;
       const coverUrl = utils.pickHttpsUrl(work.cover || "");
       this.#stageThumb(thumb);
@@ -133,16 +140,61 @@ class WorksGrid extends VirtualGrid {
       createTimeEl.textContent = utils.formatPublishDate(work.createTime);
       createTimeEl.classList.toggle("hidden", !createTimeEl.textContent);
     }
+    this.#applyAuthorFlags(card, work);
     const author = card.querySelector(".work-author");
     if (!author) return;
     if (work.authorHomeUrl) {
       author.textContent = `@${work.nickname || "未知作者"}`;
       author.href = work.authorHomeUrl;
-      author.title = "打开作者主页";
+      author.title = "打开作者主页（Ctrl/Cmd+点击打开作品栏）";
     } else {
       author.textContent = "";
       author.removeAttribute("href");
       author.removeAttribute("title");
+    }
+  }
+
+  // 作者域状态 chip（关注/候选）：按 uid 主键集判定（跨分组），命中才显示。节点随填充
+  // 懒创建、降级移除（同勾选框，骨架卡不多带节点）；chip 不可点击（pointer-events:none），
+  // 不改变 .work-info 44px 高度数学（14px 行高嵌在 16px 作者行内）
+  #applyAuthorFlags(card, work) {
+    card.dataset.uid = String(work.uid || "");
+    const row = card.querySelector(".work-author-row");
+    if (!row) return;
+    const date = row.querySelector(".work-create-time");
+    let following = row.querySelector(".work-author-flag-following");
+    if (!following) {
+      following = document.createElement("span");
+      following.className = "work-author-flag work-author-flag-following hidden";
+      following.textContent = "关注";
+      following.title = "该作者在你的关注域中";
+      row.insertBefore(following, date);
+    }
+    let candidate = row.querySelector(".work-author-flag-candidate");
+    if (!candidate) {
+      candidate = document.createElement("span");
+      candidate.className = "work-author-flag work-author-flag-candidate hidden";
+      candidate.textContent = "候选";
+      candidate.title = "该作者在你的候选域中";
+      row.insertBefore(candidate, date);
+    }
+    const uid = card.dataset.uid;
+    following.classList.toggle("hidden", !uid || !state.followedUids.has(uid));
+    candidate.classList.toggle("hidden", !uid || !state.candidateUids.has(uid));
+  }
+
+  // 作者域主键集刷新后的挂载卡原地 patch（O(挂载卡)）：只 toggle chip 显隐，不整刷
+  //（零封面重探/零滚动跳位）；骨架卡无 chip 自然跳过
+  syncAuthorFlags() {
+    for (const card of dom.mainContainer.querySelectorAll(".work-card[data-uid]")) {
+      const uid = card.dataset.uid;
+      if (!uid) continue;
+      card
+        .querySelector(".work-author-flag-following")
+        ?.classList.toggle("hidden", !state.followedUids.has(uid));
+      card
+        .querySelector(".work-author-flag-candidate")
+        ?.classList.toggle("hidden", !state.candidateUids.has(uid));
     }
   }
 
@@ -155,11 +207,13 @@ class WorksGrid extends VirtualGrid {
   // 同步 video.muted 与按钮图标。按钮经 DOM 定位而非本实例 #videoStates——详情层切换静音
   // 时当前域卡片可能由另一个 WorksGrid 实例填充，WeakMap 查不到
   syncMediaMute() {
-    for (const video of this.#container.querySelectorAll(".work-video-player")) {
+    for (const video of dom.mainContainer.querySelectorAll(".work-video-player")) {
       video.muted = state.mediaMuted;
       const muteBtn = video.closest(".work-card")?.querySelector(".video-mute-btn");
       if (muteBtn) muteBtn.innerHTML = state.mediaMuted ? config.icons.mute : config.icons.unmute;
     }
+    // 侧栏悬停预览同属全页静音偏好（侧栏无静音按钮，起播时施加、此处同步在播预览）
+    sidebar.syncMediaMute();
   }
 
   // 停止某张卡的悬停预览并复位 UI。卡片任何摘除/降级路径必须先走这里：
@@ -173,6 +227,7 @@ class WorksGrid extends VirtualGrid {
     clearTimeout(video._retryTimer);
     clearTimeout(video._hoverTimeout);
     delete video.dataset.hovered;
+    delete video._seeking;
     video.pause();
     video.classList.remove("video-ready");
     st.controls.classList.remove("video-ready");
@@ -182,10 +237,28 @@ class WorksGrid extends VirtualGrid {
   }
 
   stopAllMedia() {
-    for (const video of this.#container.querySelectorAll(".work-video-player")) {
+    for (const video of dom.mainContainer.querySelectorAll(".work-video-player")) {
       this.#stopPreview(video);
     }
     this.#currentMediaCard = null;
+  }
+
+  // 滚动侧悬停重判（rAF 节流）：指针仍在当前预览卡的媒体框内则保留预览（轻微滚动卡未
+  // 移位时不该误停），否则停播。修复「滚动把卡从指针下移走、但无 pointerout 补发 → 预览
+  // 继续出声」的残留。仅在有活动预览卡时排程，无预览则零成本返回
+  #scheduleHoverRecheck() {
+    if (this.#hoverRecheckRaf || !this.#currentMediaCard) return;
+    this.#hoverRecheckRaf = requestAnimationFrame(() => {
+      this.#hoverRecheckRaf = 0;
+      const card = this.#currentMediaCard;
+      if (!card) return;
+      const el = card.querySelector(".work-media");
+      const r = el?.getBoundingClientRect();
+      const { x, y } = this.#pointer;
+      if (r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return; // 指针仍在卡上
+      const video = card.querySelector(".work-video-player");
+      if (video) this.#stopPreview(video);
+    });
   }
 
   // 原地还原骨架：清空媒体区与标题/作者，根节点与 .work-media/.work-info 容器保留
@@ -212,6 +285,10 @@ class WorksGrid extends VirtualGrid {
       createTimeEl.classList.add("hidden");
     }
     delete card.dataset.videoUrl;
+    delete card.dataset.type;
+    // 作者域 chip 与勾选框同款：降级即移除（回填时重建），骨架无作者语义
+    for (const flag of card.querySelectorAll(".work-author-flag")) flag.remove();
+    delete card.dataset.uid;
     // 降级即移除勾选框（骨架无勾选语义，回填时重建）：勾选框若常驻累积，批量模式的
     // 全量勾选框遍历（全选/清除/进出模式）会随浏览量无界增长至秒级卡顿
     card.querySelector(".work-checkbox")?.remove();
@@ -249,8 +326,24 @@ class WorksGrid extends VirtualGrid {
 
   handleClick(event, work, el) {
     // 标题/作者是详情页同款外链（新标签打开抖音页），非批量模式下点击不再触发进详情；
-    // 批量模式下链接让位于勾选：阻止默认导航，按普通卡片选中处理
-    if (event.target.closest(".work-title-text, .work-author")) {
+    // 批量模式下链接让位于勾选：阻止默认导航，按普通卡片选中处理（外链旁路已移除）。
+    // 作者名另有 Ctrl/Cmd 旁路：打开该作者作品栏（两模式均不切换勾选、不退出批量）
+    if (event.target.closest(".work-author")) {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        sidebar.openSidebar(
+          { uid: work.uid, nickname: work.nickname, profileUrl: work.authorHomeUrl },
+          el,
+        );
+        return;
+      }
+      if (!state.batchMode) {
+        event.stopPropagation();
+        return;
+      }
+      event.preventDefault();
+    } else if (event.target.closest(".work-title-text")) {
       if (!state.batchMode) {
         event.stopPropagation();
         return;
@@ -259,7 +352,11 @@ class WorksGrid extends VirtualGrid {
     }
     if (event.target.closest(".work-checkbox")) {
       event.stopPropagation();
-      batch.toggleBatchSelect(work.awemeId, event.target.closest(".work-checkbox"), event.shiftKey);
+      batch.toggleBatchSelect(
+        work.awemeId,
+        event.target.closest(".work-checkbox"),
+        event.shiftKey,
+      );
       return;
     }
     if (event.target.closest(".video-mute-btn")) {
@@ -274,6 +371,12 @@ class WorksGrid extends VirtualGrid {
       if (video) detail.toggleVideoPlay(video, el.querySelector(".video-play-btn"));
       return;
     }
+    // 进度条/控件条内点击不进入详情、也不在批量模式下切换勾选：进度拖拽依赖 input 的
+    // 默认行为（批量禁选 mousedown 已排除 input）；播放/静音按钮在上方各自处理后返回
+    if (event.target.closest(".work-video-controls")) {
+      event.stopPropagation();
+      return;
+    }
     if (state.batchMode) {
       batch.toggleBatchSelect(work.awemeId, el.querySelector(".work-checkbox"), event.shiftKey);
       return;
@@ -281,15 +384,18 @@ class WorksGrid extends VirtualGrid {
     detail.openDetail(work.awemeId);
   }
 
-  restoreGridScroll(idx = detail.getDetailIndex()) {
-    const view = search.getWorksView();
-    if (idx < 0 || idx >= view.length) return;
+  // 关详情后滚回原卡片：按 awemeId 定位（详情导航以网格已渲染顺序为准，期间网格可能
+  // 已重渲、下标不可信）。目标下标取已渲染快照（与挂载卡 DOM 同序），快照缺失才回退视图
+  restoreGridScroll(awemeId = null) {
+    if (awemeId == null) return;
+    const idStr = String(awemeId);
+    const view = this.renderedItems() || search.getWorksView();
+    const idx = view.findIndex((w) => String(w.awemeId) === idStr);
+    if (idx === -1) return;
     requestAnimationFrame(() => {
       const grid = dom.mainGrid;
-      if (!grid) return;
-      const awemeId = view[idx].awemeId;
       // 优先用 DOM 实测位置（全量布局无 CV 跳过，骨架态布局框即真实位置）
-      const card = dom.mainContainer.querySelector(`[data-aweme-id="${awemeId}"]`);
+      const card = dom.mainContainer.querySelector(`[data-aweme-id="${idStr}"]`);
       if (card) {
         const gridRect = grid.getBoundingClientRect();
         const cardRect = card.getBoundingClientRect();
@@ -299,11 +405,17 @@ class WorksGrid extends VirtualGrid {
         grid.scrollTo({ top: Math.max(0, target) });
         return;
       }
-      // 兜底：卡片尚未创建（分块渲染未完成），用数学估算
-      const root = getComputedStyle(document.documentElement);
-      const cardW = parseInt(root.getPropertyValue("--dy-card-size")) || config.CARD_SIZE_FALLBACK;
+      // 兜底：卡片尚未创建（分块渲染未完成），用数学估算（优先取自适应布局落笔值，
+      // 与 CSS 实际轨宽一致；未落笔时回退 CSS 变量旧估算）
       const gap = config.CARD_GAP;
-      const cols = Math.max(1, Math.floor((dom.mainContainer.clientWidth + gap) / (cardW + gap)));
+      const layout = this.getGridLayout();
+      const cardW = layout
+        ? layout.cardW
+        : parseInt(getComputedStyle(document.documentElement).getPropertyValue("--dy-card-size")) ||
+          config.CARD_SIZE_FALLBACK;
+      const cols = layout
+        ? layout.cols
+        : Math.max(1, Math.floor((dom.mainContainer.clientWidth + gap) / (cardW + gap)));
       const row = Math.floor(idx / cols);
       const cardH = (cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET;
       const cardTopInScroll = row * (cardH + gap);
@@ -317,6 +429,8 @@ class WorksGrid extends VirtualGrid {
     // relatedTarget 仍在同一 .work-media 内部时忽略，实现"跨界只触发一次"。
     // 事件委托绑在 #mainGrid（稳定节点）而非容器上：clearActiveGrid 换壳后无需重绑
     dom.mainGrid.addEventListener("pointerover", (e) => {
+      this.#pointer.x = e.clientX;
+      this.#pointer.y = e.clientY;
       const media = e.target.closest?.(".work-media");
       if (!media) return;
       if (e.relatedTarget && media.contains(e.relatedTarget)) return;
@@ -366,6 +480,8 @@ class WorksGrid extends VirtualGrid {
     });
 
     dom.mainGrid.addEventListener("pointerout", (e) => {
+      this.#pointer.x = e.clientX;
+      this.#pointer.y = e.clientY;
       const media = e.target.closest?.(".work-media");
       if (!media) return;
       if (e.relatedTarget && media.contains(e.relatedTarget)) return;
@@ -375,6 +491,20 @@ class WorksGrid extends VirtualGrid {
       const video = card.querySelector(".work-video-player");
       if (video) this.#stopPreview(video);
     });
+    // 指针坐标保鲜：同一张卡内的移动不跨越 over/out 边界（委托忽略），只有 pointermove
+    // 能持续更新——滚动重判悬停必须拿到最新坐标，否则会用入界点误判
+    dom.mainGrid.addEventListener(
+      "pointermove",
+      (e) => {
+        this.#pointer.x = e.clientX;
+        this.#pointer.y = e.clientY;
+      },
+      { passive: true },
+    );
+    // 滚动侧的悬停收口：滚动/布局变化会让卡片从指针下移走，但浏览器不重算 hover、也不补发
+    // pointerout（「hover 粘住」），预览就没人停——唯一停靠点是 demote/整窗重挂/页面隐藏。
+    // 滚动后按最新指针位置重判（指针已不在预览卡的媒体框内即停播，仍在其内则保留）
+    dom.mainGrid.addEventListener("scroll", () => this.#scheduleHoverRecheck(), { passive: true });
     // timeupdate/loadedmetadata/error/play/pause 是媒体事件，不冒泡，无法委托到容器，
     // 已在 fillCard 内经 #bindVideoMediaEvents 直绑到 video 元素（见该方法注释）。
     dom.mainGrid.addEventListener("input", (e) => {
@@ -383,10 +513,22 @@ class WorksGrid extends VirtualGrid {
       const card = slider.closest(".work-card");
       if (!card) return;
       const video = card.querySelector(".work-video-player");
+      // 拖拽/点击进度期间冻结 timeupdate 回写（见 #bindVideoMediaEvents），否则播放进度会
+      // 反复改写滑块、拖不准；change（松手提交）复位
+      if (video) video._seeking = true;
       if (this.#sliderRaf) cancelAnimationFrame(this.#sliderRaf);
       this.#sliderRaf = requestAnimationFrame(() => {
         if (video && video.duration) video.currentTime = (slider.value / 100) * video.duration;
       });
+    });
+    dom.mainGrid.addEventListener("change", (e) => {
+      const slider = e.target;
+      if (!slider.matches || !slider.matches(".video-progress")) return;
+      const card = slider.closest(".work-card");
+      const video = card?.querySelector(".work-video-player");
+      if (!video) return;
+      delete video._seeking;
+      if (video.duration) video.currentTime = (slider.value / 100) * video.duration;
     });
   }
 
@@ -395,6 +537,8 @@ class WorksGrid extends VirtualGrid {
   // 故随卡片填充绑定一次即可；旧元素脱离 DOM 后被 GC，不会重复绑定或泄漏。
   #bindVideoMediaEvents(video, st) {
     video.addEventListener("timeupdate", () => {
+      // 拖拽进度条期间不回写滑块（拖拽目标优先于播放进度）
+      if (video._seeking) return;
       if (video._lastProgressUpdate && Date.now() - video._lastProgressUpdate < 250) return;
       video._lastProgressUpdate = Date.now();
       detail.updateVideoProgress(video, st.progress, st.timeSpan, "0.3");

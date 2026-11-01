@@ -1,9 +1,7 @@
 // background/core.js — 共享基础：全局配置 + 四域映射 + 纯函数 + 格式化 + 运行时配置
 
 import { MSSDK_STR_DATA } from "./identity/crypto.js";
-// 与 identity/independent-client.js 循环 import（independent-client 反向 import 本文件的 CONFIG）：
-// 两模块顶层互不触碰对方绑定，靠 ES live binding 在调用时安全消解（AGENTS.md 设计例外）
-import { independentClient } from "./identity/independent-client.js";
+// identity/independent-client.js 单向依赖本文件的 CONFIG；本模块不反向引用，避免无意义的循环依赖。
 
 // ---------- config ----------
 const CONFIG = {
@@ -16,8 +14,13 @@ const CONFIG = {
     FAVORITES_GROUPS: "favorites_groups",
     COLLECTIONS: "collections",
     COLLECTIONS_GROUPS: "collections_groups",
+    CANDIDATES: "candidates",
+    CANDIDATES_GROUPS: "candidates_groups",
   },
-  // 四个域的默认分组结构一致（全部 → 未分组），共用同一份定义；消费处通过 .map 拷贝，避免原地改写污染共享引用
+  // 作者档案型域：复用同一 7 字段记录结构与合并语义；followings=账号原生关注镜像，
+  // candidates=扩展自建候选作者池（数据来源不同、生命周期独立）
+  AUTHOR_RECORD_DOMAINS: ["followings", "candidates"],
+  // 五个域的默认分组结构一致（全部 → 未分组），共用同一份定义；消费处通过 .map 拷贝，避免原地改写污染共享引用
   DEFAULT_GROUPS: [
     { id: "all", name: "全部", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
@@ -219,9 +222,15 @@ const CONFIG = {
     COLLECTION: 20,
     POST: 20,
     FOLLOWING: 20,
-    // 网格渐进加载页大小：keyset 游标串行依赖上一页末键，页间无法并行——吞吐提升
-    // 靠加大页体摊薄每页固定开销（事务建立 + 消息往返）。2000 条 ≈ 2-4MB/页
-    GRID: 2000,
+    // 网格渐进加载续页大小：keyset 游标串行依赖上一页末键，页间无法并行——吞吐靠加大
+    // 页体摊薄每页固定开销（事务建立 + 消息往返）。1000 条 ≈ 1-2MB/页：单页反序列化
+    // 主线程任务减半，配合 options 侧首屏错峰（首页渲染/填充先跑、续页后跟），避免续页
+    // 长任务把首屏填充与封面探针挤到后面；页数翻倍是有意取舍
+    GRID: 1000,
+    // 网格首屏页大小：首帧只等「铺满活动 DOM 上限」的条数（= options 侧 GRID_MOUNT_MAX 600），
+    // 余页继续按 GRID 续传。万级域切域的首屏等待从「整页千级条的游标读取 + MB 级消息克隆」
+    // 降到 600 条；keyset 游标 / hasMore / 首页 total 语义不变
+    GRID_FIRST: 600,
   },
   // 导入分块落库块大小：单事务 10 万级 put 会长时间独占 SW 的 IndexedDB——按块
   // mergeAndSave + IMPORT_PROGRESS 逐块回报（followings 域不分块，记录小单遍即可）
@@ -252,13 +261,14 @@ const CONFIG = {
   // 更新策略版本导致换盐，独立模式收藏扫描将重新出现 Signature Not Found）
   WEB_SIGN_SALT: "A96D855A08C0A9707F8BEF0D9A527E4E",
   CANCEL: {
-    // 独立模式仅取消收藏：点赞取消结构性不可行（Turing/XHR 签名限制——路由层显式拒绝
-    // UNSUPPORTED_INDEPENDENT，Tab 模式走 inject 侧 XHR 的 CANCEL.favorites，见 docs/06），
-    // 不设 favorites 配置位。键沿用 API 词 collection（与 CANCEL_COLLECTION 消息对齐）；
-    // url 值引用 collect 端点原文
+    // 独立模式点赞无配置位：点赞设置/取消结构性不可行（Turing/XHR 签名限制——路由层显式拒绝
+    // UNSUPPORTED_INDEPENDENT，Tab 模式走 inject 侧 XHR 的 CANCEL.favorites，见 docs/06）；
+    // 收藏 collect 端点双模均通（侧边栏卡片与批量取消共用）。键沿用 API 词 collection
+    //（与 CANCEL_COLLECTION 消息对齐）；body(id, active) 的 active=false 取消（action=0）、
+    // true 收藏（action=1）
     collection: {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
-      body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
+      body: (id, active = false) => "action=" + (active ? 1 : 0) + "&aweme_id=" + id + "&aweme_type=0",
       type: "application/x-www-form-urlencoded",
       referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
     },
@@ -304,6 +314,14 @@ const DOMAIN_CONFIG = {
     defaultGroups: CONFIG.DEFAULT_GROUPS,
     itemKey: CONFIG.STORAGE_KEYS.COLLECTIONS,
     idField: "awemeId",
+  },
+  [CONFIG.STORAGE_KEYS.CANDIDATES]: {
+    storeName: CONFIG.STORAGE_KEYS.CANDIDATES,
+    groupsName: CONFIG.STORAGE_KEYS.CANDIDATES_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.CANDIDATES,
+    idField: "uid",
+    idToString: true,
   },
 };
 
@@ -369,8 +387,8 @@ const runtimeConfig = {
   delayRange(type) {
     const d = CONFIG.DELAY[type];
     if (d) return d;
-    // fallback to syncWorks if type not found
-    return CONFIG.DELAY.syncWorks || { MIN: 500, MAX: 1000 };
+    console.warn("[DY] unknown delay kind:", type);
+    return CONFIG.DELAY.syncWorks;
   },
   randomDelay(type) {
     const d = this.delayRange(type);
@@ -381,16 +399,26 @@ const runtimeConfig = {
 // ---------- utils ----------
 // 纯函数集（无状态，对标 options/core.js 的 utils）
 const utils = {
+  // 分组排序唯一口径：固定分组按 DEFAULT_GROUPS 声明序钉前，其余按持久化 order 升序
+  //（缺失/非法 order 回退入参位置，sort 稳定）；返回副本并按索引重排 order。
+  // 注意：IDB getAll 返回的是主键(id)序，绝不能当作显示序——本地整理顺序只存于 order
+  normalizeGroups(list) {
+    const fixedIds = CONFIG.DEFAULT_GROUPS.map((g) => g.id);
+    const items = list || [];
+    const fixed = fixedIds.map((id) => items.find((g) => g.id === id)).filter(Boolean);
+    const rest = items
+      .filter((g) => !fixedIds.includes(g.id))
+      .map((g, i) => ({ g, o: Number.isFinite(g.order) ? g.order : i }))
+      .sort((a, b) => a.o - b.o)
+      .map((x) => x.g);
+    return [...fixed, ...rest].map((g, i) => ({ ...g, order: i }));
+  },
   // aweme_id 高 32 位 = 发布 Unix 秒（fiber 捕获等响应缺 create_time 时的兜底推导）；
   // 区间守卫：抖音上线(2016-09) ~ 明天，防畸形 ID 产出离谱时间
   awemeIdCreateTime(id) {
-    try {
-      if (!/^\d+$/.test(String(id))) return 0;
-      const sec = Number(BigInt(id) >> 32n);
-      return sec > 1475000000 && sec < Date.now() / 1000 + 86400 ? sec : 0;
-    } catch {
-      return 0;
-    }
+    if (!/^\d+$/.test(String(id))) return 0;
+    const sec = Number(BigInt(id) >> 32n);
+    return sec > 1475000000 && sec < Date.now() / 1000 + 86400 ? sec : 0;
   },
   parseExpire(value) {
     const n = Number(value);
@@ -438,10 +466,8 @@ const utils = {
     return "";
   },
   asyncHandler(fn, sendResponse) {
-    const result = fn();
-    if (result && typeof result.catch === "function") {
-      result.catch((err) => sendResponse({ error: err.message }));
-    }
+    // 调用方（main.js 路由）传入的恒为 async 方法调用，result 必为 Promise
+    fn().catch((err) => sendResponse({ error: err.message }));
     return true;
   },
   sendSyncDone(requestId, result) {
@@ -474,8 +500,11 @@ const utils = {
   sendMessageSafe(msg) {
     return chrome.runtime.sendMessage(msg).catch(() => {});
   },
-  // 长任务批量暂停 + SW keepalive 保活（syncWorks 共用；调用方已先判取消标志）
-  async pauseWithKeepalive(index, delayKind = "syncWorks") {
+  // 长任务批量暂停 + SW keepalive 保活（syncWorks 共用；调用方已先判取消标志）。
+  // index=已处理条目下标，total=本批总条数：末条之后没有下一次请求，批次暂停与
+  // 条间节流都无意义——直接返回，避免 total 恰为 BATCH_SIZE 整数倍时多空等一轮
+  async pauseWithKeepalive(index, total, delayKind) {
+    if (index >= total - 1) return;
     const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
     if (BATCH_SIZE > 0 && (index + 1) % BATCH_SIZE === 0) {
       const deadline = Date.now() + BATCH_PAUSE_MIN + Math.random() * (BATCH_PAUSE_MAX - BATCH_PAUSE_MIN);
@@ -612,11 +641,11 @@ const formatters = {
       profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
     };
   },
-  // profile/other 权威档案 → 关注域记录：入参是归一化 user 摘要（scanTasks.#fetchProfileUser
+  // profile/other 权威档案 → 作者域记录：入参是归一化 user 摘要（scanTasks.#fetchProfileUser
   // 独立分支与 inject FETCH_PROFILE_OTHER 做同款原始字段抽取）。与 formatFollowing 的差异：
   // 计数直接取 profile 权威值（profile/other 正是校准源，>0）。不设 groupId，分组由
-  // mergeAndSaveFollowings 分配（已在域的保留原分组、新作者落「未分组」）；lastUpdateAt 由调用方补采
-  formatFollowingFromProfile(user) {
+  // mergeAndSaveAuthors 分配（已在域的保留原分组、新作者落「未分组」）；lastUpdateAt 由调用方补采
+  formatAuthorFromProfile(user) {
     return {
       uid: String(user.uid || ""),
       nickname: user.nickname || "未知",

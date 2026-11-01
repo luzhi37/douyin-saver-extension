@@ -1,39 +1,60 @@
 // ---------- AuthorImport（工具） ----------
-import { config, dom, state, services } from '../core.js';
+import { config, dom, state, services, utils } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { sync } from './sync.js';
 import { domainScanSync } from './domain-scan-sync.js';
 
-// ---------- 工具弹窗（作者入库 + 关注批量校准） ----------
-// 菜单「工具」弹窗：两行输入各配一个域入库按钮 + 一行批量校准按钮。
+// ---------- 工具弹窗（作者入库 + 作者域批量校准 + 未关注清理 + uid 反查） ----------
+// 菜单「工具」弹窗：两行输入各配一个域入库按钮 + 一行两个批量校准按钮 + 一行两个清理按钮
+// + 底部 uid 反查区块。
+// 清理 = 本地短操作：关注全集比对后把点赞/收藏域未关注作者的作品移入「稍后删除」
+// （候选域同名逻辑归「同步」按钮，不在本弹窗重复提供）。
 // 作品域入库 = IMPORT_USER_WORKS 分页循环长任务（进度态复用 syncDialogBodyTemplate，关闭即取消）；
-// 关注域入库 = IMPORT_FOLLOWING 单请求收录作者档案（短操作，toast 反馈）；
-// 校准作品/粉丝数 = CALIBRATE_FOLLOWINGS 批量长任务（关注域全部作者，进度层同款，关闭即取消）。
+// 候选域入库 = IMPORT_CANDIDATE 单请求收录作者档案（短操作，toast 反馈）；
+// 校准作品/粉丝数 = CALIBRATE_FOLLOWINGS / CALIBRATE_CANDIDATES 批量长任务（按域全部作者，
+// 进度层同款，关闭即取消）。
+// uid 反查 = RESOLVE_USER_PROFILE 只读短请求：数字 uid 经 profile/other 的 user_id
+// 换取 sec_uid 并拼主页链接，不写任何域；错误统一 toast。
 // 分组语义与「添加作品/添加关注」一致：已在域的保留原分组、新条目落「未分组」
-// （由 background mergeWork/mergeAndSaveFollowings 内建，本模块不做任何加工）。
+// （由 background mergeWork/mergeAndSaveAuthors 内建，本模块不做任何加工）。
 class AuthorImport {
   #running = false;
   #currentSecUid = "";
   #countEl = null;
   #summaryEl = null;
   #statusEl = null;
+  #calibrateDomain = "followings";
   #worksInput = null;
-  #followingsInput = null;
-  #btnWorks = null;
-  #btnFollowings = null;
-  // 关注域入库单请求短锁：与 #running（作品域长任务）互不覆盖
-  #followingsBusy = false;
+  #candidatesInput = null;
+  #btnCandidates = null;
+  #uidInput = null;
+  #uidBtn = null;
+  #uidResult = null;
+  #uidLink = null;
+  #uidCopyBtn = null;
+  #uidProfileUrl = "";
+  #btnCleanupFavorites = null;
+  #btnCleanupCollections = null;
+  #cleanupBusy = false;
+  // 弹窗代际：关闭/重开自增，清理短操作在 await 后校验，防止已关闭会话的迟到结果
+  // 把确认层推进新的工具弹窗
+  #cleanupGen = 0;
+  // 候选域入库单请求短锁：与 #running（作品域长任务）互不覆盖
+  #candidatesBusy = false;
+  // uid 反查短锁：与 #running/#candidatesBusy 互不覆盖，查询结束即释放
+  #uidBusy = false;
 
   isRunning() {
     return this.#running;
   }
 
-  // ---------- 工具弹窗（配置态，两行输入 + 校准按钮） ----------
+  // ---------- 工具弹窗（配置态，两行输入 + 两行校准按钮） ----------
   openDialog() {
     if (this.#running) {
       dialog.showToast("已有任务进行中", "info");
       return;
     }
+    this.#cleanupGen++;
     const body = document.createElement("div");
     body.className = "import-rows";
     body.innerHTML = `
@@ -42,50 +63,188 @@ class AuthorImport {
         <button class="dy-btn flex-inline-center dy-btn-primary btn-import-works">作品域入库</button>
       </div>
       <div class="import-row">
-        <input class="import-input followings-input" placeholder="作者主页链接（douyin.com/user/…）" spellcheck="false" aria-label="关注域入库作者">
-        <button class="dy-btn flex-inline-center dy-btn-primary btn-import-followings">关注域入库</button>
+        <input class="import-input candidates-input" placeholder="作者主页链接（douyin.com/user/…）" spellcheck="false" aria-label="候选域入库作者">
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-import-candidates">候选域入库</button>
       </div>
       <div class="import-row">
-        <span class="import-calibrate-hint">对关注域全部作者重取主页权威计数与最近更新日期</span>
-        <button class="dy-btn flex-inline-center dy-btn-primary btn-calibrate-followings" aria-label="校准关注域全部作者的作品/粉丝计数">校准作品/粉丝数</button>
+        <span class="import-calibrate-hint">对关注/候选域全部作者重取主页权威计数、昵称/头像与最近更新日期</span>
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-calibrate-followings" aria-label="校准关注域全部作者的作品/粉丝计数、昵称/头像">校准关注域</button>
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-calibrate-candidates" aria-label="校准候选域全部作者的作品/粉丝计数、昵称/头像">校准候选域</button>
+      </div>
+      <div class="import-row">
+        <span class="import-calibrate-hint">将点赞/收藏域未关注作者的作品移入「稍后删除」分组</span>
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-cleanup-favorites" aria-label="清理点赞域未关注作者作品">清理点赞域</button>
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-cleanup-collections" aria-label="清理收藏域未关注作者作品">清理收藏域</button>
+      </div>
+      <div class="import-row">
+        <input class="import-input uid-input" placeholder="抖音用户 uid（纯数字）" inputmode="numeric" spellcheck="false" aria-label="抖音用户 uid">
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-resolve-uid">获取主页链接</button>
+      </div>
+      <div class="import-result hidden">
+        <div class="import-result-info">
+          <a class="import-result-link" target="_blank" rel="noopener"></a>
+        </div>
+        <div class="import-result-actions">
+          <button class="dy-btn flex-inline-center btn-copy-uid-link">复制</button>
+        </div>
       </div>
     `;
     this.#worksInput = body.querySelector(".works-input");
-    this.#followingsInput = body.querySelector(".followings-input");
-    this.#btnWorks = body.querySelector(".btn-import-works");
-    this.#btnFollowings = body.querySelector(".btn-import-followings");
-    dialog.showDialog("工具", body, [], () => this.closeDialog());
+    this.#candidatesInput = body.querySelector(".candidates-input");
+    const btnWorks = body.querySelector(".btn-import-works");
+    this.#btnCandidates = body.querySelector(".btn-import-candidates");
+    this.#uidInput = body.querySelector(".uid-input");
+    this.#uidBtn = body.querySelector(".btn-resolve-uid");
+    this.#uidResult = body.querySelector(".import-result");
+    this.#uidLink = body.querySelector(".import-result-link");
+    this.#uidCopyBtn = body.querySelector(".btn-copy-uid-link");
+    this.#btnCleanupFavorites = body.querySelector(".btn-cleanup-favorites");
+    this.#btnCleanupCollections = body.querySelector(".btn-cleanup-collections");
+    dialog.showDialog("工具", body, [], () => this.closeDialog(), { autoFocus: false });
 
-    this.#btnWorks.addEventListener("click", () => this.startWorksImport());
-    this.#btnFollowings.addEventListener("click", () => this.startFollowingImport());
-    body.querySelector(".btn-calibrate-followings").addEventListener("click", () => this.startCalibrate());
+    btnWorks.addEventListener("click", () => this.startWorksImport());
+    this.#btnCandidates.addEventListener("click", () => this.startCandidateImport());
+    body.querySelector(".btn-calibrate-followings").addEventListener("click", () => this.startCalibrate("followings"));
+    body.querySelector(".btn-calibrate-candidates").addEventListener("click", () => this.startCalibrate("candidates"));
+    this.#uidBtn.addEventListener("click", () => this.startResolveUid());
+    this.#uidCopyBtn.addEventListener("click", () => this.#copyUidLink());
     // 输入框内回车触发本行按钮（键盘 a11y 约定）
     this.#worksInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") this.startWorksImport();
     });
-    this.#followingsInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") this.startFollowingImport();
+    this.#candidatesInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.startCandidateImport();
     });
+    this.#uidInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.startResolveUid();
+    });
+    this.#btnCleanupFavorites.addEventListener("click", () => this.#cleanupUnfollowed("favorites"));
+    this.#btnCleanupCollections.addEventListener("click", () => this.#cleanupUnfollowed("collections"));
   }
 
   closeDialog() {
     dialog.closeDialog();
+    this.#cleanupGen++;
     this.#running = false;
     this.#currentSecUid = "";
     this.#countEl = this.#summaryEl = this.#statusEl = null;
-    this.#worksInput = this.#followingsInput = null;
-    this.#btnWorks = this.#btnFollowings = null;
+    this.#worksInput = this.#candidatesInput = null;
+    this.#btnCandidates = null;
+    this.#uidInput = this.#uidBtn = this.#uidResult = null;
+    this.#uidLink = null;
+    this.#uidCopyBtn = null;
+    this.#uidProfileUrl = "";
+    this.#uidBusy = false;
+    this.#btnCleanupFavorites = this.#btnCleanupCollections = null;
+  }
+
+  // ---------- 清理点赞/收藏域未关注作者作品 ----------
+  // 判定口径：作品 uid 不在关注全集（无 uid 的作品不参与判定，避免误移）；已位于
+  // 「稍后删除」分组的条目不重复计入；关注域为空时拒绝执行。
+  async #cleanupUnfollowed(domain) {
+    if (this.#cleanupBusy) {
+      dialog.showToast("正在处理中，请稍候", "info");
+      return;
+    }
+    this.#cleanupBusy = true;
+    this.#setCleanupButtonsDisabled(true);
+    const gen = this.#cleanupGen;
+    try {
+      const followedOk = await services.loadFollowedUids();
+      if (gen !== this.#cleanupGen) return; // 弹窗已关闭/重开：迟到的读取结果作废
+      if (!followedOk) {
+        dialog.showToast("读取关注域失败，请稍后重试", "error");
+        return;
+      }
+      if (state.followedUids.size === 0) {
+        dialog.showToast("关注域暂无数据，请先同步关注域后再清理", "info");
+        return;
+      }
+      const meta = config.DOMAINS_META[domain];
+      const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain });
+      if (gen !== this.#cleanupGen) return;
+      const trashGroup = (groupsRes.groups || []).find((g) => g.name === config.TRASH_GROUP_NAME);
+      // keyset 分页逐页比对、只留 awemeId（不做整域单发大载荷）；已位于「稍后删除」的条目跳过
+      const ids = [];
+      let res = await services.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId: "all", page: 0 });
+      for (;;) {
+        if (gen !== this.#cleanupGen) return;
+        if (res.error) {
+          dialog.showToast(`读取${meta.label}域失败：${res.error}`, "error");
+          return;
+        }
+        for (const w of res[meta.itemKey] || []) {
+          if (!w || !w.awemeId || !w.uid) continue; // 无 uid 不参与判定
+          if (trashGroup && w.groupId === trashGroup.id) continue;
+          if (!state.followedUids.has(String(w.uid))) ids.push(w.awemeId);
+        }
+        if (!res.hasMore || !res.nextCursor) break;
+        res = await services.bgMsg({
+          type: "GET_" + domain.toUpperCase(),
+          groupId: "all",
+          cursor: res.nextCursor,
+        });
+      }
+      if (ids.length === 0) {
+        dialog.showToast(`未发现${meta.label}域未关注作者的作品`, "info");
+        return;
+      }
+      this.#confirmTrash(
+        domain,
+        ids,
+        "清理未关注作者",
+        `发现 ${ids.length} 个${meta.label}域作品来自未关注作者，可将它们移入「${config.TRASH_GROUP_NAME}」分组（关注域记录不受影响）。`,
+        "个作品",
+        async (gid) => {
+          const res = await services.moveWorkRecord(domain, ids, gid);
+          if (res.error || res.ok !== true) throw new Error(res.error || "MOVE_FAILED");
+        },
+      );
+    } finally {
+      this.#cleanupBusy = false;
+      this.#setCleanupButtonsDisabled(false);
+    }
+  }
+
+  #confirmTrash(domain, ids, title, text, unit, moveFn) {
+    const body = document.createElement("p");
+    body.className = "confirm-delete-msg";
+    body.textContent = text;
+    dialog.pushDialog(
+      title,
+      body,
+      [{ text: "移入稍后删除", primary: true, callback: () => this.#moveTrash(domain, ids, unit, moveFn) }],
+      () => dialog.closeDialog(),
+    );
+  }
+
+  // 确认后的实际移动：进度态就地改写确认层；关闭期间锁 X/Esc，成功/失败均回工具弹窗
+  async #moveTrash(domain, ids, unit, moveFn) {
+    dialog.updateDialog("正在移入稍后删除…", `<p>正在移动 ${ids.length}${unit}…</p>`);
+    state.preventDialogClose = true;
+    try {
+      const group = await services.moveToTrashGroup(domain, ids, moveFn);
+      if (!group) throw new Error("创建「稍后删除」分组失败");
+      dialog.closeDialog();
+      dialog.showToast(`已移入「${config.TRASH_GROUP_NAME}」${ids.length}${unit}`, "success");
+    } catch (err) {
+      dialog.closeDialog();
+      dialog.showToast("移入失败：" + (err.message || String(err)), "error");
+    } finally {
+      state.preventDialogClose = false;
+    }
+  }
+
+  #setCleanupButtonsDisabled(disabled) {
+    for (const btn of [this.#btnCleanupFavorites, this.#btnCleanupCollections]) {
+      if (btn) btn.disabled = disabled;
+    }
   }
 
   // ---------- 作品域入库（长任务） ----------
   // 工具弹窗入口：解析主页链接 → sec_uid 后交给 startWorksImportFor
   async startWorksImport() {
-    if (this.#running || !this.#worksInput) return;
-    // 三条 background 循环链路（sync / 域扫描 / 本入库）互斥，避免叠加请求频率
-    if (sync.isRunning() || domainScanSync.isRunning()) {
-      dialog.showToast("同步进行中，请等待完成后再入库", "error");
-      return;
-    }
+    if (!this.#worksInput || !this.#checkIdle()) return;
     const parsed = this.#parseAuthorInput(this.#worksInput.value);
     if (!parsed) {
       dialog.showToast("请粘贴作者主页链接（douyin.com/user/…）", "error");
@@ -100,18 +259,24 @@ class AuthorImport {
     await this.startWorksImportFor(secUid);
   }
 
+  // 三条 background 循环链路（sync / 域扫描 / 本入库）互斥，避免叠加请求频率
+  #checkIdle() {
+    if (this.#running) {
+      dialog.showToast("已有任务进行中", "info");
+      return false;
+    }
+    if (sync.isRunning() || domainScanSync.isRunning()) {
+      dialog.showToast("同步进行中，请等待完成后再入库", "error");
+      return false;
+    }
+    return true;
+  }
+
   // 作品域入库入口（工具弹窗路径）：解析主页链接 → sec_uid 后执行分页循环长任务。
   // 互斥守卫拦截（已有同步/入库任务）与弹窗取消（#running 被 closeDialog 复位）都返回 null；
   // 正常终态返回 `{ ok, ... }` 响应体，结果收口见 #showDone
   async startWorksImportFor(secUid) {
-    if (this.#running) {
-      dialog.showToast("已有任务进行中", "info");
-      return null;
-    }
-    if (sync.isRunning() || domainScanSync.isRunning()) {
-      dialog.showToast("同步进行中，请等待完成后再入库", "error");
-      return null;
-    }
+    if (!this.#checkIdle()) return null;
     this.#running = true;
     this.#currentSecUid = secUid;
     // 清残留任务再开新循环（DomainScanSync 同款）
@@ -137,11 +302,11 @@ class AuthorImport {
     }
   }
 
-  // ---------- 关注批量校准（长任务） ----------
-  // 校准入口：对关注域全部作者批量重取权威计数（CALIBRATE_FOLLOWINGS）。
+  // ---------- 作者域批量校准（长任务） ----------
+  // 校准入口：对指定作者域全部作者批量重取权威计数（CALIBRATE_FOLLOWINGS / CALIBRATE_CANDIDATES）。
   // 与作品域入库共用 #running 长任务锁（弹窗重入守卫 / btnSync 与域扫描互斥 /
   // 关进度层联动 CANCEL_ACTIVE_TASK 均随之生效）
-  async startCalibrate() {
+  async startCalibrate(domain) {
     if (this.#running) {
       dialog.showToast("已有任务进行中", "info");
       return;
@@ -151,18 +316,21 @@ class AuthorImport {
       return;
     }
     this.#running = true;
+    this.#calibrateDomain = domain;
+    const label = domain === "candidates" ? "候选" : "关注";
     // 清残留任务再开新循环（作品域入库同款）
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-    this.#openProgressDialog("校准关注数据", "已校准作者 0", "正在校准作品/粉丝数…");
+    this.#openProgressDialog(`校准${label}数据`, `已校准${label}作者 0`, "正在校准作品/粉丝数…");
 
     try {
-      const res = await services.bgMsg({ type: "CALIBRATE_FOLLOWINGS" });
+      const type = domain === "candidates" ? "CALIBRATE_CANDIDATES" : "CALIBRATE_FOLLOWINGS";
+      const res = await services.bgMsg({ type });
       if (!this.#running) return; // 弹窗已关闭（取消）：迟到终态静默吞掉，已校准部分已落库
       if (!res || res.ok !== true) {
         this.#showError(res?.error || "CALIBRATE_FAILED");
         return;
       }
-      this.#showCalibrateDone(res);
+      this.#showCalibrateDone(res, domain);
     } catch (err) {
       if (!this.#running) return;
       this.#showError(err.message || String(err));
@@ -173,50 +341,41 @@ class AuthorImport {
 
   // 校准终态：完全成功走 toast 收口（关进度层回「工具」弹窗）；
   // 中途取消保留弹窗确认已校准部分（就地改写进度层，作品域入库同款）
-  #showCalibrateDone(res) {
+  #showCalibrateDone(res, domain) {
+    const label = domain === "candidates" ? "候选" : "关注";
     if (!res.cancelled) {
       this.#closeProgressDialog();
       dialog.showToast(
-        `校准完成：共 ${res.total ?? 0} 位作者，更新 ${res.updated ?? 0} 条计数`,
+        `校准完成：共 ${res.total ?? 0} 位${label}作者，更新 ${res.updated ?? 0} 条计数`,
         "success",
       );
       return;
     }
-    const tmpl = document.getElementById("syncDialogBodyTemplate");
-    const body = tmpl.content.cloneNode(true);
-    this.#countEl = body.querySelector(".sync-count");
-    this.#summaryEl = body.querySelector(".sync-summary");
-    this.#statusEl = body.querySelector(".sync-status");
-    this.#countEl.textContent = `已校准作者 ${res.processed ?? res.total ?? 0}`;
-    this.#summaryEl.textContent = "已校准部分已落库，未校准作者保留原计数";
-    this.#statusEl.textContent = "PARTIAL";
-    const hint = document.createElement("p");
-    hint.className = "dy-text-danger sync-timeout-hint";
-    hint.textContent = "已中途取消，仅保留部分数据";
-    body.appendChild(hint);
-    dialog.updateDialog("校准关注数据");
-    dom.dialogBody.appendChild(body);
-    dialog.showOkDialog();
+    this.#showPartialDone(
+      `校准${label}数据`,
+      `已校准${label}作者 ${res.processed ?? res.total ?? 0}`,
+      "已校准部分已落库，未校准作者保留原计数",
+    );
   }
 
-  // ---------- 关注域入库（短操作） ----------
-  async startFollowingImport() {
-    if (this.#followingsBusy || !this.#followingsInput) return;
-    const parsed = this.#parseAuthorInput(this.#followingsInput.value);
+  // ---------- 候选域入库（短操作） ----------
+  async startCandidateImport() {
+    if (this.#candidatesBusy || !this.#candidatesInput) return;
+    const parsed = this.#parseAuthorInput(this.#candidatesInput.value);
     if (!parsed) {
       dialog.showToast("请粘贴作者主页链接（douyin.com/user/…）", "error");
       return;
     }
-    this.#followingsBusy = true;
-    this.#setFollowingsBtn(true);
+    this.#candidatesBusy = true;
+    this.#setCandidatesBtn(true);
     try {
       const secUid = await this.#resolveSecUid(parsed);
-      if (!this.#followingsInput) return; // 解析期间弹窗已被关闭
+      if (!this.#candidatesInput) return; // 解析期间弹窗已被关闭
       if (!secUid) {
         dialog.showToast("无法解析该主页对应的 sec_uid", "error");
         return;
       }
-      const res = await services.bgMsg({ type: "IMPORT_FOLLOWING", secUid });
+      const res = await services.bgMsg({ type: "IMPORT_CANDIDATE", secUid });
       if (!res || res.ok !== true) {
         const msg = res?.error || "未知错误";
         if (msg === "NO_SIGNATURE") {
@@ -224,18 +383,107 @@ class AuthorImport {
           dialog.showNoSignatureDialog(config.URL_BASE + "/user/" + secUid, "作品", "收录作者档案");
           return;
         }
-        dialog.showToast(msg.includes("2096") ? "该账号因隐私设置不可见" : "关注域入库失败: " + msg, "error");
+        dialog.showToast(msg.includes("2096") ? "该账号因隐私设置不可见" : "候选域入库失败: " + msg, "error");
         return;
       }
-      const f = res.following || {};
-      const verb = res.added > 0 ? "新增" : "更新";
-      dialog.showToast(`已${verb}关注域：${f.nickname || "未知"}（新作者入「未分组」）`, "success");
-      this.#followingsInput.value = "";
-      if (state.domain === "followings") await services.loadDomainData();
+      const f = res.candidate || {};
+      const nick = f.nickname || "未知";
+      const groupName = res.groupName || "未分组";
+      // added>0 为新收录；否则作者已在候选域，按落库 groupId 解析的分组名提示所在组
+      dialog.showToast(
+        res.added > 0 ? `已新增候选作者：${nick}（入「${groupName}」）` : `作者已在候选域：${nick}（分组「${groupName}」）`,
+        "success",
+      );
+      this.#candidatesInput.value = "";
+      if (state.domain === "candidates") await services.loadDomainData();
     } finally {
-      this.#followingsBusy = false;
-      this.#setFollowingsBtn(false);
+      this.#candidatesBusy = false;
+      this.#setCandidatesBtn(false);
     }
+  }
+
+  // ---------- uid 反查主页链接（短操作，只读） ----------
+  async startResolveUid() {
+    if (!this.#uidInput || this.#uidBusy) return;
+    if (this.#running) {
+      dialog.showToast("已有任务进行中", "info");
+      return;
+    }
+    if (sync.isRunning() || domainScanSync.isRunning()) {
+      dialog.showToast("同步进行中，请等待完成后再查询", "error");
+      return;
+    }
+    const uid = this.#uidInput.value.trim();
+    if (!/^\d{5,20}$/.test(uid)) {
+      dialog.showToast("请输入纯数字抖音 uid", "error");
+      return;
+    }
+    this.#uidBusy = true;
+    this.#setUidBusy(true);
+    this.#hideUidResult();
+    try {
+      const res = await services.bgMsg({ type: "RESOLVE_USER_PROFILE", uid });
+      if (!this.#uidInput) return; // 查询期间弹窗已被关闭
+      if (!res || res.ok !== true) {
+        this.#showUidError(res?.error || "RESOLVE_FAILED");
+        return;
+      }
+      this.#renderUidResult(res);
+    } catch (err) {
+      if (!this.#uidInput) return;
+      this.#showUidError(err.message || String(err));
+    } finally {
+      this.#uidBusy = false;
+      this.#setUidBusy(false);
+    }
+  }
+
+  #setUidBusy(busy) {
+    if (this.#uidBtn?.isConnected) {
+      this.#uidBtn.disabled = busy;
+      this.#uidBtn.textContent = busy ? "查询中…" : "获取主页链接";
+    }
+    if (this.#uidInput?.isConnected) this.#uidInput.disabled = busy;
+  }
+
+  #renderUidResult(res) {
+    this.#uidProfileUrl = res.profileUrl || "";
+    this.#uidLink.textContent = this.#uidProfileUrl;
+    this.#uidLink.href = this.#uidProfileUrl;
+    this.#uidResult.classList.remove("hidden");
+  }
+
+  #hideUidResult() {
+    this.#uidProfileUrl = "";
+    this.#uidResult?.classList.add("hidden");
+  }
+
+  #copyUidLink() {
+    if (!this.#uidProfileUrl) return;
+    navigator.clipboard.writeText(this.#uidProfileUrl).then(() => dialog.showToast("已复制主页链接", "success"));
+  }
+
+  // uid 反查错误统一 toast（用户定案：不弹签名引导层）
+  #showUidError(error) {
+    const msg = error || "RESOLVE_FAILED";
+    const map = {
+      BAD_UID: "请输入纯数字抖音 uid",
+      NO_COOKIE: "未检测到登录 Cookie，请先在设置中刷新 Cookie",
+      LOGIN_REQUIRED: "登录状态失效，请刷新 Cookie 后重试",
+      NO_DOUYIN_TAB: "未找到抖音页面，请先打开 douyin.com 后重试",
+      NO_SIGNATURE: "Tab 模式需先在抖音打开作者主页，捕获签名后重试",
+      NO_LISTENER: "抖音页面未响应，请刷新页面后重试",
+      TIMEOUT: "请求超时，请稍后重试",
+      UID_NOT_FOUND: "未找到该 uid 对应的用户",
+      USER_PRIVATE: "该账号因隐私设置不可见",
+      RATE_LIMITED: "请求被限流，请稍后重试",
+      PROFILE_FETCH_FAILED: "未找到该 uid 对应的用户",
+    };
+    let text = map[msg];
+    if (!text && /2096/.test(msg)) text = map.USER_PRIVATE;
+    if (!text && /3170/.test(msg)) text = map.UID_NOT_FOUND;
+    if (!text && /HTTP\s*403/.test(msg)) text = map.RATE_LIMITED;
+    dialog.showToast(text || `查询失败：${msg}`, "error");
   }
 
   // 进度消息入口（options 全局 listener 分发）；进度载荷虽带 requestId，但任务由
@@ -246,7 +494,8 @@ class AuthorImport {
       const total = msg.total > 0 ? ` / 约 ${msg.total}` : "";
       if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected ?? 0}${total} · 已入库 ${msg.saved ?? 0}`;
     } else if (msg.type === "CALIBRATE_PROGRESS") {
-      if (this.#countEl) this.#countEl.textContent = `已校准作者 ${msg.collected ?? 0} / ${msg.total ?? 0}`;
+      const label = this.#calibrateDomain === "candidates" ? "候选" : "关注";
+      if (this.#countEl) this.#countEl.textContent = `已校准${label}作者 ${msg.collected ?? 0} / ${msg.total ?? 0}`;
     }
   }
 
@@ -261,14 +510,12 @@ class AuthorImport {
   }
 
   #openProgressDialog(title, countText, summaryText) {
-    const tmpl = document.getElementById("syncDialogBodyTemplate");
-    const body = tmpl.content.cloneNode(true);
-    this.#countEl = body.querySelector(".sync-count");
-    this.#summaryEl = body.querySelector(".sync-summary");
-    this.#statusEl = body.querySelector(".sync-status");
+    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
+    this.#countEl = countEl;
+    this.#summaryEl = summaryEl;
+    this.#statusEl = statusEl;
     this.#countEl.textContent = countText;
     this.#summaryEl.textContent = summaryText;
-    this.#statusEl.textContent = "SYNCING";
     // 进度层叠于「工具」弹窗之上：关闭后回到弹窗继续操作（结果就地改写同层内容）
     dialog.pushDialog(title, body, [], () => this.#closeProgressDialog());
   }
@@ -280,27 +527,36 @@ class AuthorImport {
     // 完全成功走 toast 收口（关进度层回「工具」弹窗）；PARTIAL 保留弹窗确认部分落库结果
     if (!res.timedOut) {
       this.#closeProgressDialog();
+      // 成功后清空输入（候选域入库同款）；timedOut/取消保留文本便于原地重试
+      if (this.#worksInput) this.#worksInput.value = "";
       dialog.showToast(
         `作品域入库完成：已扫描 ${res.collected ?? 0} 个作品，新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}`,
         "success",
       );
       return;
     }
-    const tmpl = document.getElementById("syncDialogBodyTemplate");
-    const body = tmpl.content.cloneNode(true);
-    this.#countEl = body.querySelector(".sync-count");
-    this.#summaryEl = body.querySelector(".sync-summary");
-    this.#statusEl = body.querySelector(".sync-status");
-    this.#countEl.textContent = `已扫描作品 ${res.collected ?? 0}`;
-    this.#summaryEl.textContent = `新增 ${res.added ?? 0}（入「未分组」）· 更新 ${res.updated ?? 0}（保留原分组）`;
-    this.#statusEl.textContent = "PARTIAL";
+    this.#showPartialDone(
+      "导入作者作品",
+      `已扫描作品 ${res.collected ?? 0}`,
+      `新增 ${res.added ?? 0}（入「未分组」）· 更新 ${res.updated ?? 0}（保留原分组）`,
+    );
+  }
+
+  // PARTIAL 终态共用装配：进度层就地改写为部分结果确认。showDialog 会清栈重建基层、
+  // 摧毁「工具」弹窗不可用；经 updateDialog 收口（footer 增清与键盘直达槽位同步），body 节点随后补挂
+  #showPartialDone(title, countText, summaryText) {
+    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
+    this.#countEl = countEl;
+    this.#summaryEl = summaryEl;
+    this.#statusEl = statusEl;
+    countEl.textContent = countText;
+    summaryEl.textContent = summaryText;
+    statusEl.textContent = "PARTIAL";
     const hint = document.createElement("p");
     hint.className = "dy-text-danger sync-timeout-hint";
     hint.textContent = "已中途取消，仅保留部分数据";
     body.appendChild(hint);
-    // 结果就地改写进度层（showDialog 会清栈重建基层、摧毁「工具」弹窗，不可用）；
-    // 经 updateDialog 收口（footer 增清与键盘直达槽位同步），body 节点随后补挂
-    dialog.updateDialog("导入作者作品");
+    dialog.updateDialog(title);
     dom.dialogBody.appendChild(body);
     dialog.showOkDialog();
   }
@@ -320,10 +576,10 @@ class AuthorImport {
     if (this.#summaryEl) this.#summaryEl.textContent = "";
   }
 
-  #setFollowingsBtn(busy) {
-    if (!this.#btnFollowings?.isConnected) return;
-    this.#btnFollowings.disabled = busy;
-    this.#btnFollowings.textContent = busy ? "入库中…" : "关注域入库";
+  #setCandidatesBtn(busy) {
+    if (!this.#btnCandidates?.isConnected) return;
+    this.#btnCandidates.disabled = busy;
+    this.#btnCandidates.textContent = busy ? "入库中…" : "候选域入库";
   }
 
   // ---------- 私有：输入解析与 secUid 提取 ----------

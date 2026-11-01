@@ -3,8 +3,7 @@
 import { CONFIG, formatters, utils, runtimeConfig } from "../core.js";
 import { credentials } from "../identity/credentials.js";
 import { independentClient } from "../identity/independent-client.js";
-import { domainStore } from "../data/domain-store.js";
-import { scanTasks } from "./scan-tasks.js";
+import { scanTasks, finishSyncWorks } from "./scan-tasks.js";
 import { runAuthorWorksImport } from "./author-works-import.js";
 
 // ---------- IndependentTasks ----------
@@ -93,11 +92,9 @@ class IndependentTasks {
           hasMore = utils.hasMoreFlag(data);
           cursor = data.cursor || data.max_cursor || cursor + CONFIG.PAGE.COLLECTION;
         } else break;
-        const un = all.filter((w) => w.authorFollowed === false).length;
         utils.sendMessageSafe({
           type: "COLLECTION_PROGRESS",
           collected: all.length,
-          unfollowedCount: un,
           hasMore,
           total: data.total || 0,
           requestId,
@@ -196,24 +193,11 @@ class IndependentTasks {
           awemeId: awemeIds[i],
         });
         if (!guard.isCancelled()) {
-          await utils.pauseWithKeepalive(i, "syncWorks");
+          await utils.pauseWithKeepalive(i, awemeIds.length, "syncWorks");
         }
       }
       guard.dispose();
-      if (allWorks.length > 0) {
-        const result = await domainStore.mergeAndSave(CONFIG.STORAGE_KEYS.WORKS, allWorks);
-        utils.sendSyncDone(requestId, {
-          ok: true,
-          refreshed: result.added + result.updated,
-          failed: errors.length,
-          failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
-        });
-      } else {
-        utils.sendSyncDone(requestId, {
-          ok: false,
-          error: errors[0]?.error || "NO_WORKS_COLLECTED",
-        });
-      }
+      await finishSyncWorks(requestId, allWorks, errors);
     } catch (e) {
       // ack 之后 sendResponse 通道已关闭，只能经 SYNC_DONE 消息收尾，避免弹窗卡在 SYNCING
       if (requestId) {
@@ -247,14 +231,40 @@ class IndependentTasks {
     }
   }
 
-  async cancel(awemeIds, kind, persistDomain, sendResponse) {
+  // 侧边栏卡片单作品收藏/取消收藏（独立模式）：与批量取消同一 collect 端点，
+  // action 由 active 决定；本地域落库/删除由路由层收口（点赞无独立分支，路由层拒绝）
+  async setReaction(awemeId, active) {
+    if (!awemeId) return { ok: false, error: "EMPTY" };
+    try {
+      const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
+      if (!savedCookie) return { ok: false, error: "NO_COOKIE" };
+      const key = (browserFeatures && browserFeatures.securityKey) || "";
+      const ep = CONFIG.CANCEL.collection;
+      const resp = await fetch(ep.url, {
+        method: "POST",
+        credentials: "include",
+        referrer: ep.referrer,
+        referrerPolicy: "unsafe-url",
+        headers: {
+          "content-type": ep.type,
+          ...(key ? { "bd-ticket-guard-ree-public-key": key } : {}),
+        },
+        body: ep.body(awemeId, active === true),
+      });
+      return resp.ok ? { ok: true } : { ok: false, error: "HTTP_" + resp.status };
+    } catch (e) {
+      return { ok: false, error: e.message || "NETWORK_ERROR" };
+    }
+  }
+
+  async cancel(awemeIds, persistDomain, sendResponse) {
     try {
       if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
       const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
       if (!savedCookie) return sendResponse({ ok: false, error: "NO_COOKIE" });
       const key = (browserFeatures && browserFeatures.securityKey) || "";
-      const ep = CONFIG.CANCEL[kind];
-      if (!ep) return sendResponse({ ok: false, error: "UNKNOWN_KIND" });
+      // 独立模式仅支持取消收藏；取消点赞在路由层已拒绝（UNSUPPORTED_INDEPENDENT）
+      const ep = CONFIG.CANCEL.collection;
 
       const requestId = crypto.randomUUID();
       const guard = utils.withCancelGuard();
@@ -287,8 +297,7 @@ class IndependentTasks {
           awemeId: awemeIds[i],
         });
         if (!guard.isCancelled() && i < awemeIds.length - 1) {
-          const delayKind = kind === "collection" ? "cancelCollection" : "cancelFavorites";
-          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
+          await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("cancelCollection")));
         }
       }
       guard.dispose();

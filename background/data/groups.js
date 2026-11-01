@@ -1,6 +1,6 @@
 // background/data/groups.js — 分组 tab + 管理（域感知）
 
-import { CONFIG } from "../core.js";
+import { CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
 
@@ -9,25 +9,12 @@ import { domainStore } from "./domain-store.js";
 class Groups {
   async get(domain, sendResponse) {
     try {
-      const groupsName = domainStore.groupsName(domain || CONFIG.STORAGE_KEYS.WORKS);
-      const def = domainStore.defaultGroups(domain || CONFIG.STORAGE_KEYS.WORKS);
+      const groupsName = domainStore.groupsName(domain);
+      const def = domainStore.defaultGroups(domain);
       const list = await storage.getGroups(groupsName);
-      const result = list.length ? list : def.map((g) => ({ ...g }));
-      result.forEach((g, i) => {
-        if (!("order" in g)) g.order = i;
-      });
-
-      // 固定分组钉在队首（全部 → 未分组），其余按 order 升序；与写路径(reorder/reconcileImportGroups)保持一致
-      const FIXED_FRONT = ["all", "uncategorized"];
-      const fixed = FIXED_FRONT.map((id) => result.find((g) => g.id === id)).filter(Boolean);
-      const rest = result
-        .filter((g) => !FIXED_FRONT.includes(g.id))
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
-      const normalized = [...fixed, ...rest];
-
-      normalized.forEach((g, i) => (g.order = i));
-
-      sendResponse({ groups: normalized });
+      // 排序唯一口径见 utils.normalizeGroups：固定分组钉前、其余按 order 升序
+      //（getGroups 的数组序是 IDB 主键 id 序，不是显示序）
+      sendResponse({ groups: utils.normalizeGroups(list.length ? list : def.map((g) => ({ ...g }))) });
     } catch (err) {
       sendResponse({ error: err.message });
     }
@@ -35,19 +22,15 @@ class Groups {
 
   async add(domain, name, sendResponse) {
     try {
-      const groupsName = domainStore.groupsName(domain || CONFIG.STORAGE_KEYS.WORKS);
-      const def = domainStore.defaultGroups(domain || CONFIG.STORAGE_KEYS.WORKS);
+      const groupsName = domainStore.groupsName(domain);
+      const def = domainStore.defaultGroups(domain);
       const list = await storage.getGroups(groupsName);
-      const current = list.length ? list : def.map((g) => ({ ...g }));
+      const current = utils.normalizeGroups(list.length ? list : def.map((g) => ({ ...g })));
       const id = CONFIG.GROUPS.ID_PREFIX + crypto.randomUUID();
-      current.push({
-        id,
-        name: name.trim(),
-        fixed: false,
-        order: current.length,
-      });
-      await storage.putGroups(groupsName, current);
-      sendResponse({ ok: true, group: current[current.length - 1] });
+      // 归一化后 order 连续，新组恒取尾部序号；直接以 current.length 会与删除留下的 order 断档撞号
+      const group = { id, name: name.trim(), fixed: false, order: current.length };
+      await storage.putGroups(groupsName, [...current, group]);
+      sendResponse({ ok: true, group });
     } catch (err) {
       sendResponse({ error: err.message });
     }
@@ -55,8 +38,8 @@ class Groups {
 
   async rename(domain, groupId, newName, sendResponse) {
     try {
-      const groupsName = domainStore.groupsName(domain || CONFIG.STORAGE_KEYS.WORKS);
-      const def = domainStore.defaultGroups(domain || CONFIG.STORAGE_KEYS.WORKS);
+      const groupsName = domainStore.groupsName(domain);
+      const def = domainStore.defaultGroups(domain);
       const list = await storage.getGroups(groupsName);
       const current = list.length ? list : def.map((g) => ({ ...g }));
       const g = current.find((x) => x.id === groupId);
@@ -72,15 +55,14 @@ class Groups {
 
   async reorder(domain, groupIds, sendResponse) {
     try {
-      const groupsName = domainStore.groupsName(domain || CONFIG.STORAGE_KEYS.WORKS);
-      const def = domainStore.defaultGroups(domain || CONFIG.STORAGE_KEYS.WORKS);
+      const groupsName = domainStore.groupsName(domain);
+      const def = domainStore.defaultGroups(domain);
       const list = await storage.getGroups(groupsName);
       const current = list.length ? list : def.map((g) => ({ ...g }));
       const fixed = current.filter((g) => g.fixed);
       const ordered = groupIds.map((id) => current.find((x) => x.id === id)).filter(Boolean);
-      for (const g of fixed) {
-        if (!ordered.some((x) => x.id === g.id)) ordered.unshift(g);
-      }
+      const missingFixed = fixed.filter((g) => !ordered.some((x) => x.id === g.id));
+      ordered.unshift(...missingFixed);
       ordered.forEach((g, i) => (g.order = i));
       await storage.putGroups(groupsName, ordered);
       sendResponse({ ok: true });
@@ -91,9 +73,9 @@ class Groups {
 
   async delete(domain, groupId, sendResponse) {
     try {
-      const groupsName = domainStore.groupsName(domain || CONFIG.STORAGE_KEYS.WORKS);
-      const storeName = domainStore.storeName(domain || CONFIG.STORAGE_KEYS.WORKS);
-      const def = domainStore.defaultGroups(domain || CONFIG.STORAGE_KEYS.WORKS);
+      const groupsName = domainStore.groupsName(domain);
+      const storeName = domainStore.storeName(domain);
+      const def = domainStore.defaultGroups(domain);
       const defaultGroupId = CONFIG.GROUPS.DEFAULT_ID;
 
       const list = await storage.getGroups(groupsName);

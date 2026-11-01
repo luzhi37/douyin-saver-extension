@@ -57,4 +57,8 @@ ChaCha20 + MD5 + 自定义 Base64（无 padding）。**本扩展已移除**（20
 | `/im/user/info/`                  | POST | body: `sec_user_ids=[...]`               | `data`         |
 | `/comment/list/`                  | GET  | `aweme_id, cursor, count`                | `comments`     |
 | `/general/search/single/`         | GET  | `keyword, cursor`                        | `data`         |
-| `/user/profile/other/`            | GET  | `sec_user_id`                            | `user`         |
+| `/user/profile/other/`            | GET  | `sec_user_id`（sec_uid）或 `user_id`（数字 uid） | `user`         |
+
+> `profile/other` 的 `user_id` 接受纯数字 uid，响应 `user.sec_uid` 即主页路径 `/user/<sec_uid>`；
+> `sec_user_id` 传数字 uid 会返回 `UserId不合法`。`/im/user/info/` 的 `sec_user_ids` 只认 sec_uid，
+> 数字 uid 返回空 `users`（2026-10-25 实测）。

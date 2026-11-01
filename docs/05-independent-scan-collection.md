@@ -34,8 +34,7 @@ options: domainScanSync.syncDomain("collections")
                  ├─ all.push(...aweme_list.map(formatWork).filter(Boolean))
                  ├─ hasMore = has_more===true|1
                  └─ cursor = data.cursor || data.max_cursor || cursor+20
-               un = all.filter(w => w.authorFollowed === false).length
-               sendMessage(COLLECTION_PROGRESS { collected, unfollowedCount, hasMore, total, requestId })
+               sendMessage(COLLECTION_PROGRESS { collected, hasMore, total, requestId })
                页间延迟 syncCollection MIN~MAX ms
           ├─ persistScan(persist, all, cancelled)：stamps 一遍式落库 + 丢失检测（见 10）
           └─ sendResponse({ ok:true, requestId, works: all, timedOut, saved, lostUids })
@@ -99,7 +98,7 @@ async function independentTasks.fetchCollection(persist, sendResponse)
 // 入参：persist = "favorites" | "collections"（persistScan 直写落库域）
 // 出参：{ ok:true, requestId, works: Work[], timedOut, saved, lostUids }
 //     | { ok:false, error }
-// 进度：COLLECTION_PROGRESS { collected, unfollowedCount, hasMore, total, requestId }
+// 进度：COLLECTION_PROGRESS { collected, hasMore, total, requestId }
 
 credentials.getMsToken() -> Promise<string>              // 五级来源，结果写回 savedMsToken
 credentials.mintMsToken() -> Promise<string>             // mssdk 兑换，失败返回 ""（getMsToken 内部步骤）
@@ -117,7 +116,7 @@ domainScanSync.syncDomain("collections")   // 进度弹窗驱动；落库由 bac
 lostUids 非空 → dialog.addTrashButton → moveLostToTrash（移入「稍后删除」分组）
 ```
 
-Tab 模式对照：同消息走 `scanTasks.fetchCollection`，逐页 `sendToTabAsync("FETCH_COLLECTION_PAGE")` → inject `fetchOneCollectionPage`——签名方式完全不同：剥离 SDK 注入键后直接 `window.fetch`，由抖音页面自己的 fetch 包装器注入新鲜签名（详见 [09](./09-inject-tab-mode.md)）。
+Tab 模式对照：同消息走 `scanTasks.fetchCollection`，逐页 `tabBridge.sendAsync("FETCH_COLLECTION_PAGE")` → inject `fetchOneCollectionPage`——签名方式完全不同：剥离 SDK 注入键后直接 `window.fetch`，由抖音页面自己的 fetch 包装器注入新鲜签名（详见 [09](./09-inject-tab-mode.md)）。
 
 ## 关键代码片段
 

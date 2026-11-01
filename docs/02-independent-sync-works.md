@@ -4,7 +4,7 @@
 
 ## 概述
 
-同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口有三：`sync.syncCurrentGroup()`（当前分组全量刷新）、关注卡片/侧边栏的按需同步、以及**详情页下载兜底**（视频直链失效时单条 `SYNC_WORKS` 重取，受 `runtimeConfig.timeoutRequest` 约束等待 `SYNC_DONE`）。background 按 `independentClient.loadMode()` 分流到 `independentTasks.syncWorks`。该 handler：
+同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口唯一：`sync.syncCurrentGroup()`（当前分组全量刷新，经 `syncAwemeIds` → `startSync` 发出；详情页直链失效走 `FETCH_DETAIL`/`FETCH_WORK_DETAIL` 族，不经本消息）。background 按 `independentClient.loadMode()` 分流到 `independentTasks.syncWorks`。该 handler：
 
 - 先**立即 ack** `{ ok, true, requestId, total }`（长任务协议：结果经进度消息异步回报）；
 - 循环逐条 `independentClient.request(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，a_bogus + webSign，后者由 request 默认叠加）；
@@ -31,11 +31,11 @@ options: services.bgMsg({ type:"SYNC_WORKS", awemeIds })
                  w = data.aweme_detail ? formatWork(data.aweme_detail) : null
                  w 为空且非末次尝试 → 页间延迟后重试；成功 → break
              w ? allWorks.push(w) : errors.push({ awemeId, error:"DELETED"|errMsg })
-             致命错误（NO_COOKIE / RATE_LIMITED / HTTP 401 / HTTP 429 / 超时 abort→CANCELLED）
+             致命错误（RATE_LIMITED / HTTP 401 / HTTP 429 / 超时 abort→CANCELLED；NO_COOKIE 不在 FATAL_ERRORS、非致命）
                → 早退 + 剩余条目记 BATCH_TERMINATED（与 tab 模式 scanTasks.syncWorks 同款分类）
              chrome.runtime.sendMessage(SYNC_PROGRESS { index, total, status, awemeId })
              延迟：
-               (i+1)%BATCH_SIZE==0 → 批间暂停 10–20s（KEEPALIVE_INTERVAL 分段保活 SW）
+               (i+1)%BATCH_SIZE==0 且非末条 → 批间暂停 10–20s（KEEPALIVE_INTERVAL 分段保活 SW）
                否则               → syncWorks 延迟 MIN~MAX ms
         │
         ├─ allWorks 非空 → domainStore.mergeAndSave(allWorks)
@@ -258,7 +258,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | `awemeIds` 为空/非数组 | 同步返回 `{ ok:false, error:"EMPTY" }` | options 侧提示 |
-| `savedCookie` 缺失 | 每条请求抛 `NO_COOKIE` | 属致命：首条命中即早退，剩余记 `BATCH_TERMINATED`；状态行显示 `NO_COOKIE`，引导刷新 Cookie |
+| `savedCookie` 缺失 | 每条请求抛 `NO_COOKIE` | 非致命（不在 `FATAL_ERRORS`）：逐条记入 `errors` 继续，无成功条目即整批为空；状态行显示 `NO_COOKIE`，引导刷新 Cookie |
 | 作品已被删除/不可见 | `data.aweme_detail` 缺失，重试耗尽 | 记 `DELETED`，继续下一批（非致命） |
 | 限流（空 body） | `independentClient.request` 抛 `RATE_LIMITED`（与 tab 模式 inject 同语义） | 致命：早退 + 剩余 `BATCH_TERMINATED`，状态行显示 `RATE_LIMITED` |
 | a_bogus 被拒（`web_id_sign_invalid` 403） | independentClient.request 内部识别 | 自动 `credentials.refreshWebIdChain()` 换新 webid 重试一次 |
@@ -276,7 +276,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 |------|------|------|
 | `runtimeConfig.timeoutRequest` → `CONFIG.TIMEOUT.REQUEST` | 30000ms | independentClient.request 单请求超时（AbortController） |
 | `runtimeConfig.syncWorksDelayMin/Max` → `CONFIG.DELAY.syncWorks` | 500/1000ms | 条间随机延迟 |
-| `runtimeConfig.syncBatchSize` → `CONFIG.SYNC.BATCH_SIZE` | 40 | 每 N 条触发批间暂停 |
+| `runtimeConfig.syncBatchSize` → `CONFIG.SYNC.BATCH_SIZE` | 40 | 每 N 条触发批间暂停（末条边界不触发） |
 | `runtimeConfig.syncBatchPauseMin/Max` | 10000/20000ms | 批间暂停时长区间 |
 | `runtimeConfig.syncKeepaliveInterval` | 2000ms | 保活分段粒度 |
 | `runtimeConfig.syncRetryMax` | 2 | 单条 detail 重试上限 |
@@ -286,7 +286,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、四域存储模型、FATAL_ERRORS 分类 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、五域存储模型、FATAL_ERRORS 分类 |
 | 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / domainStore.mergeAndSave 的合并语义（本册只讲调用时序） |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentClient.request 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |

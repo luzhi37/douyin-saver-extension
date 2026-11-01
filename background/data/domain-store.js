@@ -1,15 +1,15 @@
-// background/data/domain-store.js — 域存储封装（mergeWork / mergeAndSave / mergeAndSaveFollowings / facade）
+// background/data/domain-store.js — 域存储封装（mergeWork / mergeAndSave / mergeAndSaveAuthors / facade）
 
 import { CONFIG, DOMAIN_CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 
 // ---------- DomainStore ----------
-// 域存储的封装：store/group 名解析、合并落库（三作品型域通用 + 关注域专用计数保护）。
+// 域存储的封装：store/group 名解析、合并落库（三作品型域通用 + 作者域专用计数保护）。
 
 // 逐键浅比较（键取并集）：undefined 与缺失视为不同——旧格式记录缺新字段时判为有变化，
 // 借下一次合并一次性补写自愈。用于跳过「内容无变化的重复落库」
 function isSameRecord(a, b) {
-  if (!a || !b) return false;
+  // 两个调用点均已保证入参非空（mergeAndSave 经 Boolean(old) 短路；mergeAndSaveAuthors 位于 old 非空分支）
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   for (const k of keys) {
     if (a[k] !== b[k]) return false;
@@ -84,8 +84,8 @@ class DomainStore {
   // written = 本次实际写入的合并后记录（点变化广播的 upserts 载荷），addedIds = 其中属于
   // 新增的记录 id（options 区分「原地更新」与「新增插入」）。
   // stamps（persistScan 扫描落库专用）：Map<主键, savedAt> 覆盖戳——主页序 savedAt 重排要求
-  // 全部 valid 记录都写（含内容无变化者），写入集扩为全集；但 added/updated/changed 计数仍按
-  // 覆盖前的 isSameRecord 口径（isSameRecord 在戳覆盖前判定），汇报语义与常规路径一致。
+  // 全部 valid 记录都写（含内容无变化者），写入集扩为全集；changed 仍按覆盖前的
+  // isSameRecord 口径（在戳覆盖前判定），updated 则统计命中的存量条数（不做内容差异过滤）。
   // 缺省 null = 常规路径，仅写 changed 集
   async mergeAndSave(domain, works, { stamps = null } = {}) {
     const ds = this.facade(domain);
@@ -126,11 +126,14 @@ class DomainStore {
     return { added, updated, changed, total: totalCount, written: toWrite, addedIds };
   }
 
-  // 关注域专用合并落库：计数仅由校准更新，常规列表同步携带的 0 不覆盖已校准旧值。
-  // changed 同 mergeAndSave：内容全等的重复收录不写库、不计入 changed。
+  // 作者域（followings/candidates）专用合并落库：计数仅由校准更新，常规列表同步携带的 0
+  // 不覆盖已校准旧值。changed 同 mergeAndSave：内容全等的重复收录不写库、不计入 changed。
+  // 分组归属与作品型域同一口径：本地既有记录优先，采集/导入仅在新记录时采用来值——
+  // 用户手工整理不被同步或导入冲掉（旧 isImport 分支按文件分组覆盖本地，已定案移除）。
+  // lostUids 仅对原生 followings 有意义（candidates 调用方忽略，不据此自动删除）。
   // 旧记录经 getBatch 单事务按需读取（替代 getAll 全表物化——单条收录路径不再按全表付费），
   // 丢失检测经 getAllKeys 键集差（不反序列化记录值），total = 存量键数 + 新增
-  async mergeAndSaveFollowings(domain, items, isImport = false) {
+  async mergeAndSaveAuthors(domain, items) {
     const ds = this.facade(domain);
     // 同批重复 uid 取首次出现（列表接口不应产生重复，防御性收敛；与旧实现「putBatch 后写覆盖」
     // 相比仅重复条的 savedAt 毫秒差之别）
@@ -165,9 +168,8 @@ class DomainStore {
         awemeCount: f.awemeCount > 0 ? f.awemeCount : old?.awemeCount || 0,
         lastUpdateAt: f.lastUpdateAt > 0 ? f.lastUpdateAt : old?.lastUpdateAt || 0,
         uid,
-        groupId: isImport
-          ? f.groupId || CONFIG.GROUPS.DEFAULT_ID
-          : old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,
+        // 分组本地优先：既有记录保留原分组，仅新记录采用来值（缺省落「未分组」）
+        groupId: old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,
         savedAt: old?.savedAt ?? baseTime - i,
       };
       if (!old) {

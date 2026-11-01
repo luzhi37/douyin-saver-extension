@@ -1,5 +1,5 @@
 // ---------- DomainScanSync（点赞/收藏域同步） ----------
-import { config, dom, services } from '../core.js';
+import { config, dom, services, utils } from '../core.js';
 import { sync } from './sync.js';
 import { authorImport } from './author-import.js';
 import { dialog } from '../components/dialog.js';
@@ -9,7 +9,6 @@ import { groups } from '../data/groups.js';
 // 与 Sync 的差异：扫描结果由 background 直接合并落库 + 丢失检测，本类只驱动进度弹窗与 UI 刷新
 class DomainScanSync {
   #running = false;
-  #domain = null;
   #countEl = null;
   #summaryEl = null;
   #statusEl = null;
@@ -20,19 +19,15 @@ class DomainScanSync {
 
   async syncDomain(domain) {
     if (this.#running || sync.isRunning() || authorImport.isRunning()) return;
-    if (!config.WORK_RECORD_DOMAINS.includes(domain) || domain === "works") return;
+    // 入口约束：main.js 仅在 works/followings 之外的域（favorites/collections）调用本方法
 
     // 独立模式不支持点赞列表拉取（favorite 端点 Turing 风控），收藏不受限
-    if (domain === "favorites") {
-      const { independentMode } = await chrome.storage.local.get("independentMode");
-      if (independentMode) {
-        dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
-        return;
-      }
+    if (domain === "favorites" && (await services.isIndependentMode())) {
+      dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
+      return;
     }
 
     this.#running = true;
-    this.#domain = domain;
     this.#openDialog(domain);
 
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
@@ -78,27 +73,23 @@ class DomainScanSync {
       if (this.#statusEl) this.#statusEl.textContent = msg;
     } finally {
       this.#running = false;
-      this.#domain = null;
     }
   }
 
   #openDialog(domain) {
     const label = config.DOMAINS_META[domain].label;
-    const tmpl = document.getElementById("syncDialogBodyTemplate");
-    const body = tmpl.content.cloneNode(true);
-    this.#countEl = body.querySelector(".sync-count");
-    this.#summaryEl = body.querySelector(".sync-summary");
-    this.#statusEl = body.querySelector(".sync-status");
+    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
+    this.#countEl = countEl;
+    this.#summaryEl = summaryEl;
+    this.#statusEl = statusEl;
     this.#countEl.textContent = `已扫描作品 0`;
     this.#summaryEl.textContent = `正在获取${label}…`;
-    this.#statusEl.textContent = "SYNCING";
     dialog.showDialog(`同步${label}`, body, [], () => this.closeDialog());
   }
 
   closeDialog() {
     dialog.closeDialog();
     this.#running = false;
-    this.#domain = null;
   }
 
   // 进度消息入口（options 全局 listener 分发）；三链路互斥保证不串线，按 #running 门控全收

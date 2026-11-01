@@ -73,7 +73,7 @@ function formatFollowing(item) -> Following
 //   profileUrl: URL_BASE + "/user/" + sec_uid }
 ```
 
-Tab 模式对照：同消息走 `scanTasks.fetchFollowing`，逐页 `sendToTabAsync("FETCH_FOLLOWING_PAGE")` → inject `fetchFollowingPage`；签名复用 `signatureCapture.followingQuery`（缺失时 inject 直接回 `NO_SIGNATURE`）。两模式产出相同的 items 形状与进度消息。
+Tab 模式对照：同消息走 `scanTasks.fetchFollowing`，逐页 `tabBridge.sendAsync("FETCH_FOLLOWING_PAGE")` → inject `fetchFollowingPage`；签名复用 `signatureCapture.followingQuery`（缺失时 inject 直接回 `NO_SIGNATURE`）。两模式产出相同的 items 形状与进度消息。
 
 ## 关键代码片段
 
@@ -200,7 +200,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 }
 ```
 
-列表收集完成后**不自动校准**（同步与校准已分离）；如需权威计数，在工具弹窗手动执行批量校准（链接拼装见 [04](./04-independent-calibrate-followings.md)）。
+列表收集完成后**不自动校准**（同步与校准已分离）；如需权威计数**与最新昵称/头像**（`nickname`/`avatarLarger` 同步时写入的是列表快照，改名/换头像不会随同步刷新），在工具弹窗手动执行批量校准（链接拼装见 [04](./04-independent-calibrate-followings.md)）。
 
 ## 异常场景及处理
 
@@ -228,7 +228,7 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | Following 六字段模型、SAVE_FOLLOWINGS 0 值保留与丢失检测 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | Following 7 字段模型、SAVE_FOLLOWINGS 0 值保留与丢失检测 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 通用骨架与 NO_COOKIE 门禁（本文不重复展开） |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 工具弹窗批量校准 + 单用户侧边栏校准（与同步分离） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 注入 Referer / 剥离 Sec-Fetch-* |

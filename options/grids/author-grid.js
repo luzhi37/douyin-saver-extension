@@ -1,4 +1,4 @@
-// ---------- FollowingsGrid ----------
+// ---------- AuthorGrid ----------
 import { config, dom, state, utils } from '../core.js';
 import { VirtualGrid } from './virtual-grid.js';
 import { search } from '../components/search-bar.js';
@@ -6,39 +6,49 @@ import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
 import { sidebar } from '../components/sidebar.js';
 
-// ---------- FollowingsGrid ----------
+// ---------- AuthorGrid ----------
+// 作者档案型域（followings 原生关注 / candidates 扩展候选）共用同一套作者卡渲染与交互：
+// 卡片类名/骨架模板/勾选框/CSS 全部复用，仅域键、空态文案与筛选空态文案不同。
 // 与 search-bar/batch/detail/sidebar 存在循环 import（它们各自反向引用本模块）：单例引用全部
 // 发生在方法体内、模块图完全求值之后才被触达，靠 ES live binding 安全消解（AGENTS.md 设计例外）
-class FollowingsGrid extends VirtualGrid {
+class AuthorGrid extends VirtualGrid {
   // 头像分帧队列，避免同步赋 src 触发批量网络/解码调度
   #avatarQueue = [];
   #avatarDrainRafId = 0;
-  constructor() {
+  #domain = "";
+  #filteredEmptyMsg = "";
+  #checkboxLabel = "选择作者";
+
+  constructor({ domain, emptyMsg, emptyHint, filteredEmptyMsg, checkboxLabel }) {
     super({
       container: dom.mainContainer,
       itemClass: "following-card",
       skeletonClass: "following-skeleton",
       itemKey: "uid",
-      emptyMsg: "还没有保存的关注者",
-      emptyHint: "点击菜单「同步」获取你的关注列表",
+      emptyMsg,
+      emptyHint,
+      cardSizeVar: "--dy-following-card-size",
     });
+    this.#domain = domain;
+    this.#filteredEmptyMsg = filteredEmptyMsg;
+    this.#checkboxLabel = checkboxLabel || "选择作者";
   }
 
-  renderFollowingCards(view = search.getFollowingsView()) {
-    // 筛选态同作品域降档预铺（GRID_PREMOUNT_CAP_FILTER）：关注域虽单发全量加载，筛选
+  renderAuthorCards(view) {
+    // 筛选态同作品域降档预铺（GRID_PREMOUNT_CAP_FILTER）：作者域虽单发全量加载，筛选
     // 切换同样全量拆建，预铺数直接决定切换 DOM 成本；余量滚近底部键控扩容补齐
     const filtered = search.isFilterActive();
     const premountCap = filtered ? config.GRID_PREMOUNT_CAP_FILTER : config.GRID_PREMOUNT_CAP;
     if (filtered) {
-      this.render(view, "没有符合筛选条件的关注者", "调整搜索关键词后重试", 0, premountCap);
+      this.render(view, this.#filteredEmptyMsg, "调整搜索关键词后重试", 0, premountCap);
     } else {
       this.render(view, this.emptyText, this.emptyHintText, 0, premountCap);
     }
   }
 
-  fillCard(card, following) {
+  fillCard(card, author) {
     card.classList.remove(this.skeletonClass);
-    card.dataset.uid = following.uid;
+    card.dataset.uid = author.uid;
 
     let checkbox = card.querySelector(".following-checkbox");
     if (!checkbox) {
@@ -47,10 +57,10 @@ class FollowingsGrid extends VirtualGrid {
       checkbox.className = "following-checkbox";
       checkbox.setAttribute("role", "checkbox");
       checkbox.setAttribute("aria-checked", "false");
-      checkbox.setAttribute("aria-label", "选择关注者");
+      checkbox.setAttribute("aria-label", this.#checkboxLabel);
       card.prepend(checkbox);
     }
-    batch.updateCheckboxDOM(checkbox, state.selectedIds.has(following.uid));
+    batch.updateCheckboxDOM(checkbox, state.selectedIds.has(author.uid));
 
     const avatar = card.querySelector(".following-avatar");
     const fallback = card.querySelector(".following-avatar-fallback");
@@ -59,16 +69,16 @@ class FollowingsGrid extends VirtualGrid {
     avatar.style.display = "";
     fallback?.classList.add("hidden");
 
-    const avatarUrl = following.avatarLarger || following.avatar || "";
-    if (avatarUrl) this.#enqueueAvatar(avatar, avatarUrl, following.nickname, card.dataset.fillGen);
-    else this.#showAvatarFallback(avatar, fallback, following.nickname);
+    const avatarUrl = author.avatarLarger || author.avatar || "";
+    if (avatarUrl) this.#enqueueAvatar(avatar, avatarUrl, author.nickname, card.dataset.fillGen);
+    else this.#showAvatarFallback(avatar, fallback, author.nickname);
 
-    card.querySelector(".following-nickname").textContent = following.nickname || "未知";
-    card.querySelector(".stat-followers").textContent = utils.formatCount(following.followerCount) + " 粉丝";
-    card.querySelector(".stat-works").textContent = utils.formatCount(following.awemeCount) + " 作品";
+    card.querySelector(".following-nickname").textContent = author.nickname || "未知";
+    card.querySelector(".stat-followers").textContent = utils.formatCount(author.followerCount) + " 粉丝";
+    card.querySelector(".stat-works").textContent = utils.formatCount(author.awemeCount) + " 作品";
     const updateEl = card.querySelector(".following-update");
-    updateEl.textContent = "最近更新 " + utils.formatUpdateTime(following.lastUpdateAt);
-    updateEl.title = following.lastUpdateAt ? new Date(following.lastUpdateAt).toLocaleString() : "";
+    updateEl.textContent = "最近更新 " + utils.formatUpdateTime(author.lastUpdateAt);
+    updateEl.title = author.lastUpdateAt ? new Date(author.lastUpdateAt).toLocaleString() : "";
   }
 
   // 头像不可用时的占位：灰底圆圈换为昵称首字，不再让头像凭空消失
@@ -146,11 +156,21 @@ class FollowingsGrid extends VirtualGrid {
     });
   }
 
-  handleClick(event, following, el) {
+  handleClick(event, author, el) {
+    // 两个作者域共用卡片类名与 uid itemKey：非当前域的实例不得响应（同作者同时在两域时防双触发）
+    if (state.domain !== this.#domain) return;
+
+    // 批量模式临时旁路：Ctrl（macOS Cmd）+ 点击作者卡 → 与非批量模式点击一致，
+    // 直接打开/更新右侧作品栏，不切换勾选
+    if (state.batchMode && (event.ctrlKey || event.metaKey)) {
+      sidebar.openSidebar(author);
+      return;
+    }
+
     if (event.target.closest(".following-avatar, .following-avatar-fallback")) {
       if (state.batchMode) return;
       event.stopPropagation();
-      window.open(following.profileUrl || `${config.URL_BASE}/user/${following.uid}`, "_blank");
+      window.open(author.profileUrl || `${config.URL_BASE}/user/${author.uid}`, "_blank");
       return;
     }
 
@@ -158,16 +178,30 @@ class FollowingsGrid extends VirtualGrid {
 
     if (event.target.closest(".following-checkbox")) {
       event.stopPropagation();
-      batch.toggleBatchSelect(following.uid, checkbox, event.shiftKey);
+      batch.toggleBatchSelect(author.uid, checkbox, event.shiftKey);
       return;
     }
 
     if (state.batchMode) {
-      batch.toggleBatchSelect(following.uid, checkbox, event.shiftKey);
+      batch.toggleBatchSelect(author.uid, checkbox, event.shiftKey);
       return;
     }
-    sidebar.openSidebar(following);
+    sidebar.openSidebar(author);
   }
 }
 
-export const followingsGrid = new FollowingsGrid();
+export const followingsGrid = new AuthorGrid({
+  domain: "followings",
+  emptyMsg: "还没有保存的关注者",
+  emptyHint: "点击菜单「同步」获取你的关注列表",
+  filteredEmptyMsg: "没有符合筛选条件的关注者",
+  checkboxLabel: "选择关注者",
+});
+
+export const candidatesGrid = new AuthorGrid({
+  domain: "candidates",
+  emptyMsg: "还没有候选作者",
+  emptyHint: "从关注域批量入库，或在「工具」中粘贴作者主页链接",
+  filteredEmptyMsg: "没有符合筛选条件的候选作者",
+  checkboxLabel: "选择候选作者",
+});

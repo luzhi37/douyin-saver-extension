@@ -3,7 +3,7 @@
 import { CONFIG } from "../core.js";
 
 const DB_NAME = "douyin-saver";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 const STORES = {
   works: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
@@ -14,6 +14,8 @@ const STORES = {
   favorites_groups: { keyPath: "id" },
   collections: { keyPath: "awemeId", indexes: ["groupId", "savedAt_id", "groupId_savedAt_id"] },
   collections_groups: { keyPath: "id" },
+  candidates: { keyPath: "uid", indexes: ["groupId"] },
+  candidates_groups: { keyPath: "id" },
 };
 
 // 复合索引名 → keyPath（其余同名同路径）。尾部拼主键使索引键全序唯一：
@@ -96,7 +98,7 @@ class Storage {
   #toMap(items, keyField) {
     const map = {};
     for (const item of items) {
-      if (item?.[keyField]) map[item[keyField]] = item;
+      if (item[keyField]) map[item[keyField]] = item;
     }
     return map;
   }
@@ -207,14 +209,15 @@ class Storage {
     });
   }
 
-  // 索引 keyset 翻页：prev 方向迭代取 limit 条，多读 1 条探测 hasMore（不物化进结果）。
+  // 索引 keyset 翻页：direction 方向迭代取 limit 条，多读 1 条探测 hasMore（不物化进结果）。
+  // 默认 "prev"（索引键降序，即 savedAt 降序）；"next" 供升序保存时间（从最旧一端分页）。
   // 返回 { items, hasMore, lastKey }，lastKey 为末条索引键（复合键含主键，全序唯一），
-  // 调用方作下页开区间上界回传——并发增删不产生页间位移/重复
-  async readIndexPage(storeName, indexName, range, limit) {
+  // 调用方作下页开区间边界回传——并发增删不产生页间位移/重复
+  async readIndexPage(storeName, indexName, range, limit, direction = "prev") {
     const db = await this.#openDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, "readonly");
-      const req = tx.objectStore(storeName).index(indexName).openCursor(range, "prev");
+      const req = tx.objectStore(storeName).index(indexName).openCursor(range, direction);
       const items = [];
       let lastKey = null;
       req.onsuccess = () => {
@@ -269,10 +272,7 @@ class Storage {
   }
 
   async estimate() {
-    if (navigator.storage?.estimate) {
-      return navigator.storage.estimate();
-    }
-    return null;
+    return navigator.storage.estimate();
   }
 }
 const storage = new Storage();

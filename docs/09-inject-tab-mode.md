@@ -62,7 +62,7 @@ XHR Hook：包装 open 记录 _dyUrl，send 后 load 事件里 /aweme/ 预检 �
 | `fetchProfileOther` | `/user/profile/other/` | GET | 同上（代签；sigSource 五源 fallback：profile→following→post→favorite→collection，每环都经 stripSdkKeys） | 15s |
 | `fetchOneFavoritesPage` | `/aweme/favorite/` | GET | 同上（代签） | 15s |
 | `fetchOneCollectionPage` | `/aweme/listcollection/` | POST | 同上（代签），Content-Type urlencoded | 15s |
-| `cancelOne(Like/Collection)` | digg / collect | POST XHR | 页面 XHR 原生签名（不可用 fetch 替代） | 30s（BRIDGE 层） |
+| `cancelOneFavorites` / `cancelOneCollection` | digg / collect | POST XHR | 页面 XHR 原生签名（不可用 fetch 替代） | 30s（BRIDGE 层） |
 
 两种策略的原理：
 
@@ -73,7 +73,7 @@ XHR Hook：包装 open 记录 _dyUrl，send 后 load 事件里 /aweme/ 预检 �
 ### 请求—响应全链路（以 FETCH_WORK_DETAIL 为例）
 
 ```
-background sendToTab({type, requestId, …})
+background tabBridge.send({type, requestId, …})
   → content.js BRIDGE.FETCH_WORK_DETAIL 命中
       requestResponse("DY_FETCH_WORK_DETAIL_REQUEST", "DY_FETCH_WORK_DETAIL_RESULT",
                       msg.timeout, msg => ({awemeId}))
@@ -111,7 +111,7 @@ function getAwemeInfoFromButton(btn) -> awemeInfo|null     // React Fiber 两级
 // inject.js —— 六个 API 请求函数（均 window.fetch + credentials:include + Referer + _dyInternal）
 async function fetchOneDetail(awemeId, externalController?)
 async function fetchFollowingPage(secUid, offset, count, externalSignal?)
-async function fetchProfileOther(secUid, externalSignal?)
+async function fetchProfileOther({ secUid?, uid? }, externalSignal?)
 async function fetchOneFavoritesPage(secUid, cursor, count, signal?)
 async function fetchOneCollectionPage(cursor, count, signal?)
 async function fetchAuthorWorks(secUid, startCursor, count)
@@ -141,6 +141,7 @@ function saveWork(fullWork)                       // apiData LRU 合并 → SAVE
 | FETCH_FAVORITES_PAGE | DY_FETCH_FAVORITES_PAGE_REQUEST | …_RESULT | msg.timeout |
 | FETCH_COLLECTION_PAGE | DY_FETCH_COLLECTION_PAGE_REQUEST | …_RESULT | msg.timeout |
 | CANCEL_ONE_FAVORITES / CANCEL_ONE_COLLECTION | DY_CANCEL_ONE_*_REQUEST | …_RESULT | 固定 30000 |
+| SET_ONE_FAVORITES / SET_ONE_COLLECTION | DY_SET_ONE_*_REQUEST | …_RESULT | 固定 30000 |
 | GET_SECURITY_STATUS | DY_GET_SECURITY_STATUS_REQUEST | …_RESULT | 固定 5000 |
 | REQUEST_CAPTURE_BROWSER_FEATURES | DY_REQUEST_BROWSER_FEATURES | DY_CAPTURE_BROWSER_FEATURES_REFRESH | msg.timeout‖10000 |
 
@@ -172,20 +173,25 @@ window.__dyManagerFetchHooked = true;        // 安全状态面板读取的标�
 
 补充 rationale：六个 API 函数必须走 `window.fetch` 而非 `origFetch.call(window, …)`——抖音可能通过覆盖 `window.fetch` 注入签名参数，走 `origFetch` 绕过 Hook 的同时也绕过了页面包装器，会错过注入。`_dyInternal` 是"经 Hook 但不被 Hook 捕获"的正规通道。
 
-### 取消点赞 XHR（签名绑定的唯一例外路径）
+### 点赞/收藏状态 XHR（签名绑定的唯一例外路径）
 
 ```js
 const xhr = new XMLHttpRequest();
 xhr.open("POST", CONFIG.CANCEL.favorites.url);           // /commit/item/digg/?aid=6383
 xhr.withCredentials = true;
 xhr.setRequestHeader("content-type", "application/x-www-form-urlencoded; charset=UTF-8");
-xhr.setRequestHeader("Referer", "…/user/self?showTab=like");
+// Referer 属 forbidden header，JS/XHR 无法设置；页面上下文按页面 URL 自动携带
 if (key) xhr.setRequestHeader("bd-ticket-guard-ree-public-key", key);   // getSecurityKey()
 xhr.onload = () => xhr.status < 300 ? resolve()
   : (xhr.status === 401 || xhr.status === 403) ? reject(new Error("AUTH_FAILED"))
   : reject(new Error("HTTP_" + xhr.status));
-xhr.send(`aweme_id=${id}&item_type=0&type=0`);      // 收藏版 body: action=0&aweme_id=…&aweme_type=0
+xhr.send(`aweme_id=${id}&item_type=0&type=0`);      // active=true 点赞改 type=1
+// 收藏版 body: active=false `action=0&aweme_id=…&aweme_type=0`，true 改 action=1
 ```
+
+`ReactionHandler` 统一承载四个方向（`CANCEL_ONE_*` 走 cancelOne*、`SET_ONE_*` 走 setOne*），
+body 由 `CONFIG.CANCEL.*.body(id, active)` 生成：`active=false` 取消（`type/action=0`）、
+`true` 添加（`type/action=1`）。
 
 密钥每次 XHR 前重读 localStorage——批次中途密钥自动更新；key 为空则不带该头，服务器返回 401/403。
 
@@ -213,7 +219,7 @@ function getAwemeInfoFromButton(btn) {
   const container = btn.closest(".basePlayerContainer");       // 第二级：播放器容器 fiber
 }
 // 注入去重：querySelectorAll(".basePlayerContainer xg-right-grid:not(:has(.dy-saver-btn))")
-// MutationObserver 过滤相关新增节点后 100ms 防抖再注入
+// MutationObserver 无条件 100ms 防抖后重扫（:has 选择器幂等，已注入 grid 不再命中）
 // 点击 → extractWorkFromRaw(fiber源) → dispatch DY_BUTTON_CLICK → content.saveWork()
 ```
 
@@ -230,7 +236,7 @@ function collectBrowserFeatures() {
 }
 // DOMContentLoaded 自动 dispatch DY_CAPTURE_BROWSER_FEATURES → content → CAPTURE_BROWSER_FEATURES 消息落库
 //   落库后 background 顺带 fire-and-forget 自动刷新 cookie/msToken/webid（见 01「自动刷新时机」）
-// 设置面板「刷新」→ background REFRESH_BROWSER_FEATURES → sendToTabAsync(REQUEST_CAPTURE_BROWSER_FEATURES)
+// 设置面板「刷新」→ background REFRESH_BROWSER_FEATURES → tabBridge.sendAsync(REQUEST_CAPTURE_BROWSER_FEATURES)
 //   → DY_REQUEST_BROWSER_FEATURES 事件 → inject 即时采集 → DY_CAPTURE_BROWSER_FEATURES_REFRESH 回传
 ```
 
@@ -286,7 +292,7 @@ Tab 模式下 inject 回 `NO_SIGNATURE` 后，options 弹 `showNoSignatureDialog
 | `CONFIG.API_PATTERNS` | 13 条 pathname 前缀 | 捕获与数据提取的命中范围（feed/search/mix 等浏览流量也产出作品） |
 | `CONFIG.DEVICE_PARAMS` | aid=6383 等 9 键 | 构造请求的基础设备参数（注意 version_code 与 background buildBaseParams 不同步：170400 vs 290100，属历史差异） |
 | `CONFIG.TIMEOUT` | FETCH_PAGE:15000 / FETCH_DETAIL:8000 | inject 侧请求超时 |
-| `CONFIG.CANCEL.*` | digg/collect 四要素 | 取消端点（Tab模式 JS 可直接设 Referer，无需 DNR） |
+| `CONFIG.CANCEL.*` | digg/collect 端点定义（url + `body(id, active)`） | 点赞/收藏状态端点（active=false 取消、true 添加）；Referer 由页面上下文自动携带（JS 不可设），Tab 模式无需 DNR |
 | `CONFIG.SECURITY_KEY` | `security-sdk/s_sdk_cert_key` | ticket-guard 公钥的 localStorage 键 |
 | `CONFIG.BUTTON.*` | 选择器 / 防抖 100ms / `TEXT_SAVE:"保存"` | 按钮注入参数；hover tooltip 显示 `@昵称 · 描述前30字符`（截断长度 `TOOLTIP_DESC_MAX_LEN:30`，取不到作品信息时回落纯"保存"） |
 | `PAGE_KEYS` / `SDK_INJECT_KEYS` | 两个 Set | stripPageKeys / stripSdkKeys 的剥离清单 |

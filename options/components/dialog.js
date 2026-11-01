@@ -19,28 +19,39 @@ class Dialog {
     return this.#layers.length <= 1;
   }
 
-  showDialog(title, body, footerBtns, onClose) {
+  showDialog(title, body, footerBtns, onClose, { autoFocus = true } = {}) {
     // 基层语义：销毁全部上层实例后重置基层内容（无链式关系的调用点行为不变）
     while (this.#layers.length > 1) this.closeDialog();
     if (this.#layers.length === 0) this.#layers.push(this.#baseLayer());
-    this.#mountLayer(this.#layers[0], title, body, footerBtns, onClose);
+    this.#mountLayer(this.#layers[0], title, body, footerBtns, onClose, autoFocus);
   }
 
   // 叠加一层新弹窗：当前层原地保留为父层，关闭新层后自动回到父层继续操作
-  pushDialog(title, body, footerBtns, onClose) {
+  pushDialog(title, body, footerBtns, onClose, { autoFocus = true } = {}) {
     const layer = this.#createLayer();
     this.#layers.push(layer);
-    this.#mountLayer(layer, title, body, footerBtns, onClose);
+    this.#mountLayer(layer, title, body, footerBtns, onClose, autoFocus);
   }
 
   // 基层帧：容器即静态 #dialogOverlay，元素节点稳定（showDialog 只清空 body/footer 内部，不换节点）
   #baseLayer() {
+    return this.#makeLayerState(
+      dom.dialogOverlay,
+      dom.dialogOverlay.querySelector("#dialogTitle"),
+      dom.dialogOverlay.querySelector("#dialogBody"),
+      dom.dialogOverlay.querySelector("#dialogFooter"),
+    );
+  }
+
+  // 层状态对象单一构造点：基层与叠层字段完全一致
+  #makeLayerState(overlay, title, body, footer) {
     return {
-      overlay: dom.dialogOverlay,
-      title: dom.dialogOverlay.querySelector("#dialogTitle"),
-      body: dom.dialogOverlay.querySelector("#dialogBody"),
-      footer: dom.dialogOverlay.querySelector("#dialogFooter"),
+      overlay,
+      title,
+      body,
+      footer,
       onClose: null,
+      autoFocus: true,
       enterExplicit: null,
       dangerAction: null,
       primaryAction: null,
@@ -62,26 +73,22 @@ class Dialog {
       '<div class="dy-dialog-footer"></div>' +
       '</div>';
     document.body.appendChild(overlay);
-    return {
+    return this.#makeLayerState(
       overlay,
-      title: overlay.querySelector(".dialog-layer-title"),
-      body: overlay.querySelector(".dy-dialog-body"),
-      footer: overlay.querySelector(".dy-dialog-footer"),
-      onClose: null,
-      enterExplicit: null,
-      dangerAction: null,
-      primaryAction: null,
-      ctrlEnterAction: null,
-    };
+      overlay.querySelector(".dialog-layer-title"),
+      overlay.querySelector(".dy-dialog-body"),
+      overlay.querySelector(".dy-dialog-footer"),
+    );
   }
 
-  #mountLayer(layer, title, body, footerBtns, onClose) {
+  #mountLayer(layer, title, body, footerBtns, onClose, autoFocus = true) {
     layer.overlay.classList.remove("hidden");
     layer.title.textContent = title;
     layer.body.innerHTML = "";
     layer.footer.innerHTML = "";
     this.#resetFooterHotkeys(layer);
     layer.onClose = onClose || null;
+    layer.autoFocus = autoFocus;
     this.#syncTopDom();
     // 顶层 onClose 登记给 requestDialogClose：X/Esc 关闭时调用并联动 CANCEL_ACTIVE_TASK
     state.activeDialog = layer.onClose;
@@ -111,12 +118,14 @@ class Dialog {
       }
     }
 
-    // 焦点管理（建议3）：基层打开时记触发元素、最终关闭时还原；打开上层不覆盖该记录，
+    // 焦点管理：基层打开时记触发元素、最终关闭时还原；打开上层不覆盖该记录，
     // 关闭上层后焦点移入还原出的下层第一控件
     if (this.#layers.length === 1) {
       this.#lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
-    this.focusFirstControl();
+    // autoFocus=false（分组管理/工具弹窗，2026-10-28 定案）：初始焦点留在触发元素，
+    // 不让弹窗内容里的文本输入框抢占聚焦
+    if (autoFocus) this.focusFirstControl();
   }
 
   #syncTopDom() {
@@ -129,7 +138,7 @@ class Dialog {
 
   closeDialog() {
     const top = this.#layers[this.#layers.length - 1];
-    // 关键防御：防止重复关闭触发栈溢出或重复回调
+    // 关键防御：防止基层已隐藏时重复关闭触发重复回调/误写 activeDialog
     if (!top || (this.#layers.length === 1 && top.overlay.classList.contains("hidden"))) {
       state.activeDialog = null;
       return;
@@ -143,10 +152,12 @@ class Dialog {
       return;
     }
     // 上层关闭：实例销毁、露出下层（activeDialog 还原为父层回调），焦点移入还原层
-    state.activeDialog = this.#layers[this.#layers.length - 1].onClose;
+    const restored = this.#layers[this.#layers.length - 1];
+    state.activeDialog = restored.onClose;
     top.overlay.remove();
     this.#syncTopDom();
-    this.focusFirstControl();
+    // 还原层同样尊重 autoFocus：分组/工具弹窗从叠层返回时不重新聚焦输入框
+    if (restored.autoFocus) this.focusFirstControl();
   }
 
   // ---------- footer 按钮键盘直达（无焦点设计） ----------
@@ -258,7 +269,7 @@ class Dialog {
     this.addDialogBtn("好的", "primary", () => this.closeDialog());
   }
 
-  // 分型 toast（建议1）：info 默认；success/error 带左色条，error 加长驻留
+  // 分型 toast：info 默认；success/error 带左色条，error 加长驻留
   showToast(message, type = "info") {
     const toast = document.getElementById("dy-options-toast");
     toast.textContent = message;

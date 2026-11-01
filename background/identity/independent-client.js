@@ -120,6 +120,9 @@ class IndependentClient {
   // 任意 uid 未实测收录，兑换失败（未收录/风控）返回空串，由调用方降级提示
   async resolveSecUidById(id) {
     try {
+      // RESOLVE_SEC_UID 是唯一不经 ensureABogus 预热的独立模式请求链：SW 冷启动后
+      // 首个消息若是它，sign() 会因 #abOgus 未初始化抛 TypeError，此处先补热
+      await credentials.ensureABogus();
       const data = await this.request("/aweme/v1/web/im/user/info/", await credentials.buildBaseParams(), {
         method: "POST",
         body: JSON.stringify({ sec_user_ids: [String(id)] }),

@@ -1,5 +1,5 @@
 // ---------- Sync ----------
-import { config, state, services, store } from '../core.js';
+import { config, state, services, store, utils } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { groups } from '../data/groups.js';
 
@@ -45,18 +45,16 @@ class Sync {
     this.#initProgress(total);
     this.#currentDomain = domain;
 
-    const tmpl = document.getElementById("syncDialogBodyTemplate");
-    const body = tmpl.content.cloneNode(true);
-    this.#countEl = body.querySelector(".sync-count");
-    this.#summaryEl = body.querySelector(".sync-summary");
-    this.#statusEl = body.querySelector(".sync-status");
+    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
+    this.#countEl = countEl;
+    this.#summaryEl = summaryEl;
+    this.#statusEl = statusEl;
 
     const label = domain === "followings" ? "作者" : "作品";
     this.#countEl.textContent = `已同步${label} 0 / ${total}`;
     this.#summaryEl.textContent = domain === "followings" ? "正在获取关注…" : "同步失败作品 0 个";
-    this.#statusEl.textContent = "SYNCING";
 
-    dialog.showDialog("同步作品", body, [], () => this.closeSyncDialog());
+    dialog.showDialog(domain === "followings" ? "同步关注" : "同步作品", body, [], () => this.closeSyncDialog());
   }
 
   closeSyncDialog() {
@@ -113,8 +111,7 @@ class Sync {
   }
 
   async startSync(awemeIds) {
-    if (this.#running) return null;
-    if (!Array.isArray(awemeIds) || awemeIds.length === 0) return "EMPTY";
+    // 调用方 syncAwemeIds 已做 isRunning/空数组前置检查，此处不再重复守卫
     this.#running = true;
 
     chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
@@ -163,8 +160,7 @@ class Sync {
   }
 
   async vmSyncFollowings() {
-    if (this.#running) return null;
-    if (state.domain !== "followings") return null;
+    // 调用方 syncFollowings 已做同款前置检查（中间无异步点，守卫不可达）
     this.#running = true;
 
     // 两模式统一取完整本人 sec_uid（不用 "self" 哨兵）：优先配置面板填写的本地 secUid，
@@ -218,8 +214,6 @@ class Sync {
 
     const result = await this.vmSyncFollowings();
 
-    if (result === null) return;
-
     if (result === "NO_SEC_UID") {
       if (this.#statusEl) this.#statusEl.textContent = "NO_SEC_UID";
       return;
@@ -249,8 +243,7 @@ class Sync {
     }
 
     if (result && result.added !== undefined) {
-      const fresh = await services.loadFollowings(state.currentGroupId);
-      store.set("followings", fresh);
+      // 网格刷新已由 vmSyncFollowings 内 loadDomainData 完成，此处不再二次拉取重渲
       store.refreshGroups();
       this.#setSummary(`新增关注 ${result.added}，取消关注 ${result.lost}`);
       if (this.#statusEl) this.#statusEl.textContent = "DONE";
@@ -269,6 +262,66 @@ class Sync {
 
   async moveLostFollowings(lostUids) {
     return services.moveToTrashGroup("followings", lostUids, (gid) => services.moveFollowings(lostUids, gid));
+  }
+
+  // 候选域「同步」：候选域无账号同步数据源，改为与关注域做本地重叠比对（不发网络请求）。
+  // 重叠项沿用关注域同步取关的同一出口——弹窗汇总数量，footer 追加「稍后删除」按钮，
+  // 点击移入候选域同名分组（不自动删除，保留候选分组与 savedAt 台账）。
+  // 关注域为空时不给「零重叠」的假阳性结论，提示先同步关注域。
+  async checkCandidatesOverlap() {
+    if (this.isRunning()) return;
+    if (state.domain !== "candidates") return;
+
+    this.#running = true;
+    try {
+      const [candRes, followedOk] = await Promise.all([
+        services.bgMsg({ type: "GET_CANDIDATES", groupId: "all" }),
+        services.loadFollowedUids(),
+      ]);
+      if (!followedOk) {
+        dialog.showToast("读取关注域失败，请稍后重试", "error");
+        return;
+      }
+      if (candRes.error || !Array.isArray(candRes.candidates)) {
+        dialog.showToast("读取候选域失败: " + (candRes.error || "未知错误"), "error");
+        return;
+      }
+
+      const body = document.createElement("p");
+      if (state.followedUids.size === 0) {
+        body.textContent = "关注域暂无数据，请先在关注域完成同步后再进行比对。";
+        dialog.showDialog("同步候选", body, [
+          { text: "知道了", primary: true, callback: () => dialog.closeDialog() },
+        ]);
+        return;
+      }
+
+      const overlapUids = candRes.candidates
+        .filter((c) => c && c.uid && state.followedUids.has(String(c.uid)))
+        .map((c) => String(c.uid));
+      if (overlapUids.length === 0) {
+        body.textContent = "未发现与关注域重叠的候选作者。";
+        dialog.showDialog("同步候选", body, [
+          { text: "知道了", primary: true, callback: () => dialog.closeDialog() },
+        ]);
+        return;
+      }
+
+      body.textContent = `发现 ${overlapUids.length} 位候选作者已在关注域，可将它们移入候选域的「稍后删除」分组（关注域记录保留）。`;
+      dialog.showDialog("同步候选", body, [], () => dialog.closeDialog());
+      dialog.addTrashButton(
+        () => this.moveCandidatesToTrash(overlapUids),
+        () => dialog.closeDialog(),
+      );
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  async moveCandidatesToTrash(uids) {
+    return services.moveToTrashGroup("candidates", uids, (gid) =>
+      services.moveAuthorRecords("candidates", uids, gid),
+    );
   }
 }
 

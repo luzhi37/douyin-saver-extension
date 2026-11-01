@@ -123,11 +123,11 @@ class Credentials {
       const ua = this.userAgent;
       const resp = await fetch(CONFIG.WEBID_API + "?" + CONFIG.WEBID_QUERY, {
         method: "POST",
+        // Referer / User-Agent 属 forbidden header，fetch 设置会被浏览器静默丢弃；
+        // 需要的值随 body 上报（见下），不要在这里重复设置
         headers: {
           Accept: "*/*",
           "Content-Type": "text/plain;charset=UTF-8",
-          Referer: "https://www.douyin.com/?recommend=1",
-          "User-Agent": ua,
         },
         body: JSON.stringify({
           app_id: 6383,
@@ -178,20 +178,25 @@ class Credentials {
     const { savedWebId } = await chrome.storage.local.get("savedWebId");
     if (savedWebId) return savedWebId;
     const webid = await this.fetchWebIdFromApi();
-    if (webid) {
-      await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
-      await this.syncWebIdCookie(webid);
-    }
+    await this.#persistWebId(webid);
     return webid;
   }
 
-  async refreshWebIdChain() {
+  // webid 缓存清理（refreshWebIdChain / refreshWebId 共用）
+  async #resetWebIdCache() {
     await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+  }
+
+  async #persistWebId(webid) {
+    if (!webid) return;
+    await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
+    await this.syncWebIdCookie(webid);
+  }
+
+  async refreshWebIdChain() {
+    await this.#resetWebIdCache();
     const webid = await this.fetchWebIdFromApi();
-    if (webid) {
-      await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
-      await this.syncWebIdCookie(webid);
-    }
+    await this.#persistWebId(webid);
     return webid;
   }
 
@@ -281,7 +286,7 @@ class Credentials {
   }
 
   async refreshWebId(sendResponse) {
-    await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+    await this.#resetWebIdCache();
     const webId = await this.getWebId();
     const { savedWebIdTime } = await chrome.storage.local.get("savedWebIdTime");
     sendResponse?.({ ok: true, webId, time: savedWebIdTime || null });
