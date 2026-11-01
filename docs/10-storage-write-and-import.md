@@ -9,7 +9,7 @@
 | 函数 | 服务消息 | 域 |
 |------|----------|----|
 | `domainStore.mergeAndSave` | `SAVE_WORKS`（抖音标签页保存按钮、options 未关注作品入库）与 background 直调（SYNC_WORKS 收尾、persistScan 扫描落库） | 作品型三域 |
-| `domainStore.mergeAndSaveFollowings`（经 `followingsHandlers.save`） | `SAVE_FOLLOWINGS`（同步落库） | followings |
+| `domainStore.mergeAndSaveAuthors`（经 `followingsHandlers.save` / `candidatesHandlers.save`） | `SAVE_FOLLOWINGS`（同步落库）/ `SAVE_CANDIDATES`（关注域批量入库） | followings / candidates |
 | `reconcileImportGroups` | `IMPORT_DATA` 的前置步骤 | 两域通用 |
 
 共同设计原则：**用户手动整理的成果优先于新采集数据**——分组归属（groupId）、首次保存时间（savedAt）、已校准计数不被采集结果冲掉。
@@ -26,14 +26,16 @@
         putBatch(toWrite，仅真实变更集) → count() 得总数
         → 返回 { added, updated, changed, total, written, addedIds }
 
-关注域：
-  FETCH_FOLLOWING 结果返回 options → SAVE_FOLLOWINGS { followings }
-    → followingsHandlers.save（#saveFollowings）
-        旧记录 getBatch 按需读取 + getAllKeys 键集差做丢失检测（不物化全表）
+作者域（followings / candidates）：
+  关注同步：FETCH_FOLLOWING 结果返回 options → SAVE_FOLLOWINGS { followings }
+    → followingsHandlers.save（#saveAuthorRecords）
+  候选写入：关注域批量模式 → SAVE_CANDIDATES { candidates } → candidatesHandlers.save；
+            链接收录 → IMPORT_CANDIDATE → scanTasks.importCandidate
+        旧记录 getBatch 按需读取 + getAllKeys 键集差做丢失检测（候选域忽略 lostUids）
         ├─ followerCount/awemeCount：>0 才写入（0 值保留旧值——校准结果保护，见 04）
-        ├─ groupId：常规同步保留旧值；isImport 时取导入数据自带值（缺省落默认组）
+        ├─ groupId：一律保留旧值；仅新记录采用来值（缺省落默认组）
         └─ savedAt：保留旧值；新条目按 baseTime - i 保证同批列表顺序
-        丢失检测：旧 store 中不在本次集合的 uid 收集为 lostUids（不自动移动）
+        丢失检测：旧 store 中不在本次集合的 uid 收集为 lostUids（仅关注域消费，不自动移动）
         putBatch（仅变更集）→ 返回 { ok, added, updated, changed, lost, lostUids, total }
 
 导入：
@@ -51,7 +53,7 @@
     → 空数组 → { ok:false, error:"IMPORT_EMPTY" }  // 原 options 侧 isDomainData 前置校验职责移入
     → reconcileImportGroups(domain, data, items)  // 有 groups 时做三级对账（下节）
     → 二次校验：item.groupId 不在当前有效分组集合 → 回退 CONFIG.GROUPS.DEFAULT_ID("uncategorized")
-    → followings 域走 domainStore.mergeAndSaveFollowings(…, isImport=true)（导入信任数据自带分组）
+    → 作者域（followings/candidates）走 domainStore.mergeAndSaveAuthors(domain, items)（分组本地优先，与作品型域同口径）
     → 作品型三域按 CONFIG.IMPORT_CHUNK(2000) 分块逐块 mergeAndSave，IMPORT_PROGRESS 逐块
       回报（单事务 10 万级 put 长时间独占 SW 的 IDB）；计数跨块累计，响应只带计数——
       不再 spread 单次 mergeAndSave 的 written/addedIds 全记录（旧实现万级导入响应体
@@ -73,7 +75,9 @@ async function mergeAndSave(domain, works, { stamps = null } = {}) -> Promise<{ 
 // written = 本次实际写入的合并后记录（常规路径仅真实变更条目）；addedIds = written 中
 // 属于新增的记录 id——DomainHandlers.save 在 changed ≤ BROADCAST.UPSERTS_MAX 时把
 // 两者作为 STORE_CHANGED 的 upserts/addedIds 载荷发给 options 局部应用（原地替换 vs
-// 新增插入的区分依据），响应路径则剔除这两字段防大批量保存响应膨胀。
+// 新增插入的区分依据），响应路径则剔除这两字段防大批量保存响应膨胀；仅单作品保存
+// （items 有效条数=1）额外回读落库 groupId 并附 groupName（抖音标签页 toast 提示
+// 作品是否已存在、位于哪个组，批量无单一分组不回传）。
 // 批量变化（changed > UPSERTS_MAX，如作者入库收尾 runAuthorWorksImport）广播降为
 // 轻量 id 集 changedIds/addedIds（万级 ≈ 几十 KB），options flush 时经
 // GET_WORKS_BY_IDS（DomainHandlers.getByIds，IDB 主键直取）补拉合并后记录，走与点
@@ -81,11 +85,13 @@ async function mergeAndSave(domain, works, { stamps = null } = {}) -> Promise<{ 
 // 更新，不再整域重载（2026-09 定案：整刷 wipe→骨架→封面重探即「页面闪烁」）
 
 // background/data/domain-store.js —— 关注合并
-async function mergeAndSaveFollowings(domain, followings, isImport = false) -> Promise<{ added, updated, changed, lost, lostUids, total }>
-// 出参：{ ok:true, added, updated, changed, lost, lostUids: string[], total } | { ok:false, error:"EMPTY" }
+async function mergeAndSaveAuthors(domain, items) -> Promise<{ added, updated, changed, lost, lostUids, total }>
+// 出参：{ added, updated, changed, lost, lostUids: string[], total }（ok 包装在 followingsHandlers/candidatesHandlers.save）
+
+// background/data/domain-store.js —— 导入条目解析
+function extractImportItems(data, domain) -> any[]     // data[cfg.itemKey] 或空数组
 
 // background/data/data-tools.js —— 导入
-function extractImportItems(data, domain) -> any[]     // data[cfg.itemKey] 或空数组
 async function reconcileImportGroups(domain, data, items) -> void   // 就地改写 item.groupId
 async function dataTools.import(text, domain, sendResponse)
 async function dataTools.export(domain, sendResponse)  // { ok, text }——text 为 SW 侧序列化好的
@@ -124,9 +130,7 @@ stored[uid] = {
   followerCount: f.followerCount > 0 ? f.followerCount : old?.followerCount || 0,
   awemeCount:    f.awemeCount    > 0 ? f.awemeCount    : old?.awemeCount    || 0,
   uid,
-  groupId: isImport
-    ? f.groupId || CONFIG.GROUPS.DEFAULT_ID                              // 导入信任数据自带分组
-    : old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,
+  groupId: old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,  // 本地整理优先；仅新记录采用来值
   savedAt: old?.savedAt ?? baseTime - i,   // 新条目按批次内序号倒推毫秒 → 列表顺序稳定
 };
 …
@@ -147,21 +151,21 @@ saved   = mergeAndSave(domain, all, { stamps })   // 单次合并 + 单次 putBa
 lostUids = oldKeys \ stamps 键集
 ```
 
-旧实现「mergeAndSave 后逐条读回全部记录、重打 savedAt 再整批重写一遍」的三遍读写已由
-stamps 消解：戳覆盖发生在 mergeWork 合并之后、写入之前，无需读回；added/updated/changed
-计数仍按覆盖前 isSameRecord 口径，汇总汇报语义不变。取消扫描时跳过 stamps 全流程之外的
-丢失检测（部分拉取会产生假丢失），已收集部分照常落库（幂等）。
+旧实现「mergeAndSave 后逐条读回全部记录、重打 savedAt 再整批重写一遍」的三遍读写已由stamps 消解：戳覆盖发生在 mergeWork 合并之后、写入之前，无需读回；added/updated/changed计数仍按覆盖前 isSameRecord 口径，汇总汇报语义不变。取消扫描时跳过 stamps 全流程之外的丢失检测（部分拉取会产生假丢失），已收集部分照常落库（幂等）。
 
-### reconcileImportGroups：分组三级对账
+### reconcileImportGroups：分组三级对账（本地优先）
+
+本地既有分组（名称 + 用户拖拽顺序）是唯一权威；导入只做 id/名称映射与新组追加。
 
 ```js
-for (const g of importedGroups.filter((g) => !g.fixed)) {
+const existing = utils.normalizeGroups(await storage.getGroups(groupsName)); // 主键(id)序 → 本地 order 序
+for (const g of importedGroups.filter((g) => !FIXED_IDS.has(g.id))) {       // 固定分组由本地定义
   if (existingIds.has(g.id))         groupIdMap.set(g.id, g.id);                 // ① 按 ID 匹配
   else if (existingNames.has(g.name)) groupIdMap.set(g.id, existingNames.get(g.name)); // ② 按名称匹配
   else { newGroups.push(g);          groupIdMap.set(g.id, g.id); }               // ③ 新建
 }
-const merged = [...fixed, ...existing.filter((g) => !g.fixed), ...newGroups];
-merged.forEach((g, i) => (g.order = i));           // 固定分组恒居前，order 全量重排
+newGroups.forEach((g, i) => (g.order = existing.length + i));   // 新组一律追加末尾（忽略文件内 order）
+const merged = utils.normalizeGroups([...existing, ...newGroups]); // 既有顺序原样保留，固定分组钉前
 await storage.putGroups(groupsName, merged);       // 覆盖数组语义（clear + put）
 for (const item of items) {
   if (item.groupId && groupIdMap.has(item.groupId)) item.groupId = groupIdMap.get(item.groupId);
@@ -169,13 +173,16 @@ for (const item of items) {
 // dataTools.import 后续再兜一道：不在当前有效分组集合的 groupId → "uncategorized"
 ```
 
+> 顺序红线：`storage.getGroups` / IDB `getAll` 返回的是主键 `id` 序（自定义组即 `custom_+UUID` 随机序），**不是**用户整理顺序——任何写路径都不得按该数组下标重写 `order`，排序统一走 `utils.normalizeGroups`。
+
 ## 异常场景及处理
 
 | 场景 | 表现 | 处理 |
 |------|------|------|
 | 导入数据无该域条目数组 | `extractImportItems` 返回 `[]` | followings 域会因 EMPTY 报 `{ok:false}`；works 域静默零写入 |
 | 导入的 groupId 既对不上 ID 也对不上名称 | 映射到新建分组；若仍不在有效集合 | 兜底回退 `uncategorized` |
-| 固定分组（all/uncategorized）出现在导入数据 | 被 `!g.fixed` 过滤 | 当前库固定分组原样保留且排序居首 |
+| 固定分组（all/uncategorized）出现在导入数据 | 被固定分组 id 白名单过滤 | 当前库固定分组原样保留且排序居首 |
+| 导入文件的分组顺序与本地不同 | 既有分组按本地 order 原样保留 | 新组追加到末尾；文件内 `order` 不参与本地排序 |
 | 关注同步出现丢失 uid | 计入 `lost`/`lostUids` 返回 | **不自动移入"稍后删除"**——由用户在 UI 点击按钮触发 `Sync.moveLostFollowings(lostUids)` |
 | 历史数值主键 | uid/awemeId 统一 `String()` 归一 | options 读侧另有 number 主键拷贝归一化兜底 |
 | 作品被删除后重新入库 | 视为新条目（added） | groupId/savedAt 从默认值起步 |
@@ -188,7 +195,7 @@ for (const item of items) {
 | `CONFIG.GROUPS.ID_PREFIX` | `"custom_"` | ADD_GROUP 生成的自定义分组 id 前缀 |
 | `config.STORAGE_MAX_BYTES`（options/core.js） | 10MB | 导入体积门禁提示（UI 侧校验） |
 | `config.TRASH_GROUP_NAME`（options/core.js） | `'稍后删除'` | 丢失关注手动移入的目标分组名 |
-| 默认分组定义 | `CONFIG.DEFAULT_GROUPS`（四域共用一份） | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源；消费处 `.map` 拷贝避免污染共享引用 |
+| 默认分组定义 | `CONFIG.DEFAULT_GROUPS`（五域共用一份） | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源；消费处 `.map` 拷贝避免污染共享引用 |
 
 ## 相关文档
 
@@ -196,6 +203,6 @@ for (const item of items) {
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | IndexedDB 结构、DOMAIN_CONFIG、data/storage.js 封装 API、chrome.storage.local 键表 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | SYNC_WORKS 循环末尾调用 domainStore.mergeAndSave 的位置与时序 |
-| 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | 关注列表采集产出的 6 字段形状（本册负责怎么落） |
+| 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | 关注列表采集产出的 7 字段形状（本册负责怎么落） |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 计数 >0 才写入规则的上游：校准写入权威计数 |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 扫描落库经 persistScan 进入本册合并路径（stamps 一遍式） |

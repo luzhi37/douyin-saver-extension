@@ -1,9 +1,10 @@
-// background/tasks/scan-tasks.js — Tab 模式长任务（calibrateStats / calibrateOne / fetchFollowing / persistScan / fetchFavorites / fetchCollection / runCancelBatch / importUserWorks / syncWorks / importFollowing）
+// background/tasks/scan-tasks.js — Tab 模式长任务（calibrateStats / calibrateOne / fetchFollowing / persistScan / fetchFavorites / fetchCollection / runCancelBatch / importUserWorks / syncWorks / importCandidate）
 
 import { CONFIG, formatters, utils, runtimeConfig } from "../core.js";
 import { credentials } from "../identity/credentials.js";
 import { independentClient } from "../identity/independent-client.js";
 import { tabBridge } from "../identity/tab-bridge.js";
+import { storage } from "../data/storage.js";
 import { domainStore } from "../data/domain-store.js";
 import { runAuthorWorksImport } from "./author-works-import.js";
 import { independentTasks } from "./independent-tasks.js";
@@ -12,9 +13,12 @@ import { independentTasks } from "./independent-tasks.js";
 // Tab 模式长任务（经 TabBridge 循环）
 class ScanTasks {
   // 关注列表接口返回的 aweme_count/follower_count 是滞后快照值（与主页展示差异大），
-  // 列表收集完成后逐用户请求 user/profile/other 用权威计数覆盖。
-  // fetchStats(secUid) 由调用方按模式提供（tab 转发 / 独立直连）；单条失败静默跳过保留旧值。
-  async calibrateStats(list, fetchStats, isCancelled, requestId) {
+  // 逐用户请求 user/profile/other 用权威计数覆盖；列表接口的昵称/头像同样是列表快照，
+  // 一并按 profile 权威值刷新（空值保留旧值）——改名不走同步链路，靠校准收口。
+  // fetchStats(secUid) 由调用方按模式提供（tab 转发 / 独立直连 / 本类 #fetchProfileUser 双模）；
+  // 单条失败静默跳过保留旧值。progressType/domain 由调用方传入（当前仅 calibrateAll 传
+  // CALIBRATE_PROGRESS）。返回实际处理条数（取消时 < list.length）
+  async calibrateStats(list, fetchStats, isCancelled, requestId, progressType, domain) {
     let processed = 0;
     for (const entry of list) {
       if (isCancelled()) break;
@@ -25,6 +29,9 @@ class ScanTasks {
           const stats = await fetchStats(m[1]);
           entry.awemeCount = stats.awemeCount;
           entry.followerCount = stats.followerCount;
+          // 档案字段（昵称/头像）同 profile 权威值：仅在取到非空值时覆盖，失败/空值保留旧值
+          if (stats.nickname) entry.nickname = stats.nickname;
+          if (stats.avatarLarger) entry.avatarLarger = stats.avatarLarger;
         } catch (_e) {}
         // 最近更新日期：作品第一页 max(create_time)；失败静默保留旧值（含未校准 0）
         try {
@@ -33,7 +40,8 @@ class ScanTasks {
         } catch (_e) {}
       }
       utils.sendMessageSafe({
-        type: "FOLLOWING_PROGRESS",
+        type: progressType,
+        domain,
         phase: "calibrate",
         collected: processed,
         total: list.length,
@@ -44,19 +52,24 @@ class ScanTasks {
         await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
       }
     }
+    return processed;
   }
 
-  // 单用户校准：打开侧边栏时触发（不受 calibrateFollowings 开关门控），取 profile/other
-  // 权威计数后直接落库；options 端据返回值更新 state 与可见卡片
-  async calibrateOne(uid, secUid, sendResponse) {
+  // 单用户校准：打开侧边栏时触发，取 profile/other
+  // 权威计数与档案字段（昵称/头像）后直接落库；options 端据返回值更新 state 与可见卡片。
+  // domain 区分作者域：followings=原生关注域，candidates=候选域
+  async calibrateOne(uid, secUid, domain, sendResponse) {
     try {
-      if (!uid || !secUid) return sendResponse({ ok: false, error: "BAD_PARAMS" });
-      const stats = await this.#fetchProfileUser(secUid);
-      const ds = domainStore.facade(CONFIG.STORAGE_KEYS.FOLLOWINGS);
+      if (!uid || !secUid || !domain) return sendResponse({ ok: false, error: "BAD_PARAMS" });
+      const stats = await this.#fetchProfileUser({ secUid });
+      const ds = domainStore.facade(domain);
       const record = await ds.get(String(uid));
       if (!record) return sendResponse({ ok: false, error: "NOT_FOUND" });
       record.awemeCount = stats.awemeCount;
       record.followerCount = stats.followerCount;
+      // 档案字段（昵称/头像）同 profile 权威值：仅在取到非空值时覆盖，空值保留旧值
+      if (stats.nickname) record.nickname = stats.nickname;
+      if (stats.avatarLarger) record.avatarLarger = stats.avatarLarger;
       // 最近更新日期：作品第一页 max(create_time)；失败保留旧值
       record.lastUpdateAt = (await this.#fetchLatestWorkTime(secUid).catch(() => 0)) || record.lastUpdateAt || 0;
       await ds.putBatch([record]);
@@ -66,22 +79,68 @@ class ScanTasks {
     }
   }
 
-  // 关注域入库：单请求收录作者档案。与「添加关注」同一条 mergeAndSaveFollowings 非 import
-  // 分支——已在关注域的保留原分组，新作者落「未分组」（记录不预置 groupId）；
+  // 作者域批量校准（工具弹窗手动触发，与同步流程彻底分离）：全部作者逐个取 profile/other
+  // 权威计数 + 档案字段（昵称/头像）+ lastUpdateAt，复用 calibrateStats 迭代器（进度经 CALIBRATE_PROGRESS 上报，
+  // 进度层关闭联动的 CANCEL_ACTIVE_TASK 经 withCancelGuard 中断循环）；收尾整批
+  // mergeAndSaveAuthors 落库——0 值保护生效（取数失败/条目无 profileUrl 保留旧计数），
+  // changed>0 才广播 STORE_CHANGED
+  async calibrateAll(domain, sendResponse) {
+    try {
+      // storage.getAll 返回 { [uid]: record } 映射（#toMap），取 values 得记录数组（export 同款）
+      const recordMap = await storage.getAll(domain);
+      const all = Object.values(recordMap);
+      if (all.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
+      const requestId = crypto.randomUUID();
+      const guard = utils.withCancelGuard();
+      const processed = await this.calibrateStats(
+        all,
+        (secUid) => this.#fetchProfileUser({ secUid }),
+        () => guard.isCancelled(),
+        requestId,
+        "CALIBRATE_PROGRESS",
+        domain,
+      );
+      guard.dispose();
+      const result = await domainStore.mergeAndSaveAuthors(domain, all);
+      if (result.changed > 0) {
+        utils.sendMessageSafe({ type: "STORE_CHANGED", domain });
+      }
+      sendResponse({
+        ok: true,
+        requestId,
+        cancelled: guard.isCancelled(),
+        total: all.length,
+        processed,
+        updated: result.updated,
+        changed: result.changed,
+      });
+    } catch (err) {
+      sendResponse({ ok: false, error: err.message });
+    }
+  }
+
+  // 候选域入库：单请求收录作者档案。与批量入库同一条 mergeAndSaveAuthors 非 import
+  // 分支——已在候选域的保留原分组，新作者落「未分组」（记录不预置 groupId）；
   // lastUpdateAt 借校准同款作品第一页采集，失败容忍占位 0
-  async importFollowing(secUid, sendResponse) {
+  async importCandidate(secUid, sendResponse) {
     try {
       if (!secUid) return sendResponse({ ok: false, error: "BAD_PARAMS" });
-      const user = await this.#fetchProfileUser(secUid);
+      const user = await this.#fetchProfileUser({ secUid });
       if (!user.uid) throw new Error("PROFILE_FETCH_FAILED");
-      const record = formatters.formatFollowingFromProfile(user);
+      const record = formatters.formatAuthorFromProfile(user);
       record.lastUpdateAt = (await this.#fetchLatestWorkTime(secUid).catch(() => 0)) || 0;
-      const result = await domainStore.mergeAndSaveFollowings(CONFIG.STORAGE_KEYS.FOLLOWINGS, [record]);
+      const result = await domainStore.mergeAndSaveAuthors(CONFIG.STORAGE_KEYS.CANDIDATES, [record]);
+      // 回读落库记录与分组名（merge 内部不回传旧分组）：added=0 即作者已在候选域，
+      // 配 groupName 让 toast 能提示「已存在 / 位于哪个组」；单键 + 小列表读取代价可忽略
+      const facade = domainStore.facade(CONFIG.STORAGE_KEYS.CANDIDATES);
+      const [saved, groupList] = await Promise.all([facade.get(record.uid), facade.getGroups()]);
+      const groups = groupList.length ? groupList : domainStore.defaultGroups(CONFIG.STORAGE_KEYS.CANDIDATES);
+      const groupName = groups.find((g) => g.id === (saved?.groupId || CONFIG.GROUPS.DEFAULT_ID))?.name || "未分组";
       // 内容真有变化才广播：重复收录同一作者（字段全等）是 no-op，不该触发 options 重载
       if (result.changed > 0) {
-        utils.sendMessageSafe({ type: "STORE_CHANGED", domain: CONFIG.STORAGE_KEYS.FOLLOWINGS });
+        utils.sendMessageSafe({ type: "STORE_CHANGED", domain: CONFIG.STORAGE_KEYS.CANDIDATES });
       }
-      sendResponse({ ok: true, following: record, added: result.added, updated: result.updated });
+      sendResponse({ ok: true, candidate: saved || record, added: result.added, updated: result.updated, groupName });
     } catch (err) {
       sendResponse({ ok: false, error: err.message });
     }
@@ -114,14 +173,17 @@ class ScanTasks {
   }
 
   // 作者档案取数（双模）：独立直连 profile/other；Tab 转发 FETCH_PROFILE_OTHER。
-  // 返回归一化 user 摘要（计数 + 关注域入库所需档案字段）；原始字段抽取与 inject 侧
-  // FETCH_PROFILE_OTHER 结果对象的扁平化保持一致（calibrateOne / importFollowing 共用）
-  async #fetchProfileUser(secUid) {
+  // 入参 `{ secUid, uid }` 二选一：uid 走 `user_id`（数字 uid 反查 sec_uid），
+  // secUid 走 `sec_user_id`（既有校准/候选入库路径）。
+  // 返回归一化 user 摘要（计数 + 档案字段）；原始字段抽取与 inject 侧
+  // FETCH_PROFILE_OTHER 结果对象的扁平化保持一致（calibrateOne / importCandidate / resolveUserProfile 共用）
+  async #fetchProfileUser({ secUid = "", uid = "" } = {}) {
+    const lookup = uid ? { user_id: String(uid) } : { sec_user_id: secUid };
     if (await independentClient.loadMode()) {
       await credentials.ensureABogus();
       const data = await independentClient.request(
         CONFIG.API.PROFILE_OTHER,
-        await credentials.buildBaseParams({ sec_user_id: secUid }),
+        await credentials.buildBaseParams(lookup),
       );
       if (!data.user) throw new Error("PROFILE_FETCH_FAILED");
       const user = data.user;
@@ -129,6 +191,7 @@ class ScanTasks {
         awemeCount: user.aweme_count || 0,
         followerCount: user.follower_count || 0,
         nickname: user.nickname || "",
+        uniqueId: user.unique_id || "",
         avatarLarger: ((user.avatar_larger && user.avatar_larger.url_list) || [])[0] || "",
         uid: String(user.uid || ""),
         secUid: user.sec_uid || secUid,
@@ -136,6 +199,7 @@ class ScanTasks {
     }
     const resp = await tabBridge.sendAsync("FETCH_PROFILE_OTHER", {
       secUid,
+      uid,
       timeout: CONFIG.TIMEOUT.REQUEST,
     });
     if (!resp?.ok) throw new Error(resp?.error || "PROFILE_FETCH_FAILED");
@@ -143,10 +207,44 @@ class ScanTasks {
       awemeCount: resp.awemeCount || 0,
       followerCount: resp.followerCount || 0,
       nickname: resp.nickname || "",
+      uniqueId: resp.uniqueId || "",
       avatarLarger: resp.avatarLarger || "",
       uid: String(resp.uid || ""),
       secUid: resp.secUid || secUid,
     };
+  }
+
+  // uid → 主页链接（工具弹窗只读查询，双模）：数字 uid 走 profile/other 的 user_id
+  // 分支换取 sec_uid，再拼主页 URL。不落库、不广播；3170=uid 不存在，2096=隐私不可见。
+  async resolveUserProfile(uid, sendResponse) {
+    try {
+      const id = String(uid || "").trim();
+      if (!/^\d{5,20}$/.test(id)) return sendResponse({ ok: false, error: "BAD_UID" });
+      const user = await this.#fetchProfileUser({ uid: id });
+      if (!user.secUid) return sendResponse({ ok: false, error: "UID_NOT_FOUND" });
+      sendResponse({
+        ok: true,
+        uid: user.uid || id,
+        secUid: user.secUid,
+        nickname: user.nickname || "",
+        uniqueId: user.uniqueId || "",
+        profileUrl: CONFIG.URL_BASE + "/user/" + user.secUid,
+      });
+    } catch (err) {
+      sendResponse({ ok: false, error: this.#mapProfileError(err) });
+    }
+  }
+
+  // profile/other 错误归一：独立模式 err.statusCode 带业务码，Tab 模式只有 message 文本
+  #mapProfileError(err) {
+    const msg = err?.message || String(err);
+    const m = msg.match(/status_code=(\d+)/);
+    const code = Number(err?.statusCode || (m ? m[1] : 0));
+    if (code === 3170) return "UID_NOT_FOUND";
+    if (code === 2096) return "USER_PRIVATE";
+    if (code === 8) return "LOGIN_REQUIRED";
+    if (code === 403) return "RATE_LIMITED";
+    return msg;
   }
 
   async fetchFollowing(secUid, sendResponse) {
@@ -184,21 +282,6 @@ class ScanTasks {
         if (hasMore && !guard.isCancelled()) {
           await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay("syncFollowings")));
         }
-      }
-      if (!guard.isCancelled() && all.length > 0 && (await independentClient.isCalibrateEnabled())) {
-        await this.calibrateStats(
-          all,
-          async (secUid) => {
-            const resp = await tabBridge.sendAsync("FETCH_PROFILE_OTHER", {
-              secUid,
-              timeout: CONFIG.TIMEOUT.REQUEST,
-            });
-            if (!resp?.ok) throw new Error(resp?.error || "PROFILE_FETCH_FAILED");
-            return resp;
-          },
-          () => guard.isCancelled(),
-          requestId,
-        );
       }
       guard.dispose();
       if (!guard.isCancelled() && all.length === 0 && lastError) {
@@ -270,11 +353,9 @@ class ScanTasks {
           lastError = resp?.error || "FETCH_FAILED";
           break;
         }
-        const unfollowedCount = all.filter((w) => w.authorFollowed === false).length;
         utils.sendMessageSafe({
           type: progressType,
           collected: all.length,
-          unfollowedCount,
           hasMore,
           total: resp.total || 0,
           requestId,
@@ -361,9 +442,7 @@ class ScanTasks {
         awemeId: awemeIds[i],
         timeout: CONFIG.TIMEOUT.REQUEST,
       });
-      if (resp?.ok) {
-        // success
-      } else {
+      if (!resp?.ok) {
         errors.push({ awemeId: awemeIds[i], error: resp?.error || "FAILED" });
       }
       utils.sendMessageSafe({
@@ -395,9 +474,8 @@ class ScanTasks {
     });
   }
 
-  // persistDomain 缺省时防御性跳过删本地（正常调用链由路由层保证 domain 恒在）
+  // persistDomain 由路由层保证恒在；删除失败仅告警、不阻断取消收尾
   async deleteCancelled(persistDomain, awemeIds, failedAwemeIds) {
-    if (!persistDomain) return [];
     const failedSet = new Set((failedAwemeIds || []).map(String));
     const ids = (awemeIds || []).map(String).filter((id) => !failedSet.has(id));
     if (ids.length === 0) return [];
@@ -465,24 +543,14 @@ class ScanTasks {
       });
 
       if (!cancelled) {
-        await utils.pauseWithKeepalive(i, "syncWorks");
+        await utils.pauseWithKeepalive(i, awemeIds.length, "syncWorks");
       }
     }
 
     chrome.runtime.onMessage.removeListener(cancelHandler);
 
     try {
-      if (allWorks.length > 0) {
-        const result = await domainStore.mergeAndSave(CONFIG.STORAGE_KEYS.WORKS, allWorks);
-        utils.sendSyncDone(requestId, {
-          ok: true,
-          refreshed: result.added + result.updated,
-          failed: errors.length,
-          failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
-        });
-      } else {
-        utils.sendSyncDone(requestId, { ok: false, error: errors[0]?.error || "NO_WORKS_COLLECTED" });
-      }
+      await finishSyncWorks(requestId, allWorks, errors);
     } catch (err) {
       utils.sendSyncDone(requestId, { ok: false, error: err.message });
     }
@@ -490,4 +558,19 @@ class ScanTasks {
 }
 const scanTasks = new ScanTasks();
 
-export { scanTasks };
+// 双模 syncWorks 共用收尾：整批 mergeAndSave 落库 + SYNC_DONE 终态（调用方各自 try/catch 兜底）
+async function finishSyncWorks(requestId, allWorks, errors) {
+  if (allWorks.length > 0) {
+    const result = await domainStore.mergeAndSave(CONFIG.STORAGE_KEYS.WORKS, allWorks);
+    utils.sendSyncDone(requestId, {
+      ok: true,
+      refreshed: result.added + result.updated,
+      failed: errors.length,
+      failedAwemeIds: errors.map((e) => e.awemeId).filter(Boolean),
+    });
+  } else {
+    utils.sendSyncDone(requestId, { ok: false, error: errors[0]?.error || "NO_WORKS_COLLECTED" });
+  }
+}
+
+export { scanTasks, finishSyncWorks };

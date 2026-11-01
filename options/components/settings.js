@@ -2,11 +2,24 @@
 import { dom, state, runtimeConfig, services, utils } from '../core.js';
 import { dialog } from './dialog.js';
 
+// 运行参数键（面板渲染与关闭保存共用单一来源，与 runtimeConfig.DEFAULTS 键一致）
+const CONFIG_FIELDS = [
+  "timeoutRequest", "timeoutSecurityStatus",
+  "syncWorksDelayMin", "syncWorksDelayMax",
+  "syncFollowingsDelayMin", "syncFollowingsDelayMax",
+  "syncFavoritesDelayMin", "syncFavoritesDelayMax",
+  "syncCollectionDelayMin", "syncCollectionDelayMax",
+  "cancelFavoritesDelayMin", "cancelFavoritesDelayMax",
+  "cancelCollectionDelayMin", "cancelCollectionDelayMax",
+  "importWorksDelayMin", "importWorksDelayMax",
+  "syncBatchSize", "syncBatchPauseMin", "syncBatchPauseMax",
+  "syncKeepaliveInterval", "syncRetryMax",
+];
+
 // ---------- Settings ----------
 class Settings {
   #dialogBody = null;
   #pendingIndependent = null;
-  #pendingCalibrate = null;
 
   #$(id) {
     return this.#dialogBody.querySelector("#" + id);
@@ -47,9 +60,8 @@ class Settings {
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
     this.#dialogBody = dom.dialogBody;
-    // 两个开关的未保存选择：#refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
+    // 开关的未保存选择：#refresh 渲染时 pending 优先于存储值，落库统一走 saveBeforeClose
     this.#pendingIndependent = null;
-    this.#pendingCalibrate = null;
     this.#bind();
     this.#bindStatus();
     state.preventDialogClose = true;
@@ -71,18 +83,18 @@ class Settings {
     if (hint) hint.textContent = expanded ? "[收起]" : "[展开]";
   }
 
-  toggleKeyExpand(root) {
+  #toggleKeyExpand(root) {
     const text = root.querySelector("#secKeyValueText");
     const hint = root.querySelector("#secKeyValue .sec-expand-hint");
     this.#toggleTruncated(text, hint);
   }
 
-  toggleSigExpand(root, rowId) {
+  #toggleSigExpand(root, rowId) {
     const row = root.querySelector("#" + rowId);
     if (!row) return;
     const text = row.querySelector(".sec-truncate, .sec-expanded");
     const hint = row.querySelector(".sec-expand-hint");
-    if (!text || !hint || hint.classList.contains("hidden")) return;
+    if (!text || hint.classList.contains("hidden")) return;
     this.#toggleTruncated(text, hint);
   }
 
@@ -99,11 +111,9 @@ class Settings {
       valueEl.textContent = key;
       valueEl.classList.add("sec-truncate");
       valueEl.classList.remove("sec-expanded");
-      if (expandHint) {
-        expandHint.classList.remove("hidden");
-        expandHint.textContent = "[展开]";
-      }
-      if (copyBtn) copyBtn.classList.remove("hidden");
+      expandHint.classList.remove("hidden");
+      expandHint.textContent = "[展开]";
+      copyBtn.classList.remove("hidden");
       hintEl.classList.add("hidden");
     } else {
       statusEl.textContent = "❌ 不可用";
@@ -111,8 +121,8 @@ class Settings {
       valueEl.textContent = "—";
       valueEl.classList.add("sec-truncate");
       valueEl.classList.remove("sec-expanded");
-      if (expandHint) expandHint.classList.add("hidden");
-      if (copyBtn) copyBtn.classList.add("hidden");
+      expandHint.classList.add("hidden");
+      copyBtn.classList.add("hidden");
       hintEl.classList.remove("hidden");
       hintEl.textContent = "请确保抖音页面已打开且您已登录 → 刷新抖音页面（按 F5） → 等待页面加载完成（约 3-5 秒） → 返回此处点击刷新按钮";
     }
@@ -125,7 +135,7 @@ class Settings {
     const hintEl = root.querySelector("#" + valueId.replace(/Value$/, "Hint"));
     const copyBtn = root.querySelector("#" + rowId + " .sec-copy-btn");
     // captured 与 value 分离：捕获可能仅含 SDK 签名键（展示值已剥离），此时仍算已捕获
-    const captured = sig ? (sig.captured ?? !!sig.value) : false;
+    const captured = Boolean(sig && sig.captured);
     const v = sig?.value || "";
     const t = sig?.updatedAt || 0;
     if (captured) {
@@ -135,11 +145,9 @@ class Settings {
       valueEl.textContent = v || "（仅含签名键，已由页面包装器代签）";
       valueEl.className = "sec-value sec-truncate";
       valueEl.classList.remove("sec-expanded");
-      if (expandHint) {
-        expandHint.classList.remove("hidden");
-        expandHint.textContent = "[展开]";
-      }
-      if (copyBtn) copyBtn.classList.toggle("hidden", !v);
+      expandHint.classList.remove("hidden");
+      expandHint.textContent = "[展开]";
+      copyBtn.classList.toggle("hidden", !v);
       hintEl.classList.add("hidden");
     } else {
       statusEl.textContent = "❌ 未捕获";
@@ -147,8 +155,8 @@ class Settings {
       valueEl.textContent = "—";
       valueEl.className = "sec-value sec-err";
       valueEl.classList.remove("sec-expanded");
-      if (expandHint) expandHint.classList.add("hidden");
-      if (copyBtn) copyBtn.classList.add("hidden");
+      expandHint.classList.add("hidden");
+      copyBtn.classList.add("hidden");
       hintEl.classList.remove("hidden");
       hintEl.textContent = guidance;
     }
@@ -182,11 +190,7 @@ class Settings {
       hint.textContent = "未捕获到 Cookie，请打开抖音页面";
       cookieList.appendChild(hint);
     }
-    const modeSwitch = this.#$("settingsModeSwitch");
-    if (modeSwitch) {
-      this.#applySwitchUI(modeSwitch, this.#pendingIndependent ?? independentMode);
-    }
-    this.#$("settingsModeHint").textContent = "";
+    this.#$("settingsModeSwitch").checked = Boolean(this.#pendingIndependent ?? independentMode);
     const features = bf?.features;
     const list = this.#$("settingsBFList");
     list.innerHTML = "";
@@ -202,7 +206,7 @@ class Settings {
     }
     // secUid
     const { secUid } = await chrome.storage.local.get("secUid");
-    if (this.#$("settingsSecUid")) this.#$("settingsSecUid").value = secUid || "";
+    this.#$("settingsSecUid").value = secUid || "";
     // 缓存状态
     this.#renderCacheList(ci, ct);
     this.#renderStatus(secRes);
@@ -212,44 +216,15 @@ class Settings {
 
   #renderConfigSection() {
     const cfg = runtimeConfig._cache || runtimeConfig.DEFAULTS;
-    const map = {
-      timeoutRequest: "timeoutRequest",
-      timeoutSecurityStatus: "timeoutSecurityStatus",
-      syncWorksDelayMin: "syncWorksDelayMin",
-      syncWorksDelayMax: "syncWorksDelayMax",
-      syncFollowingsDelayMin: "syncFollowingsDelayMin",
-      syncFollowingsDelayMax: "syncFollowingsDelayMax",
-      syncFavoritesDelayMin: "syncFavoritesDelayMin",
-      syncFavoritesDelayMax: "syncFavoritesDelayMax",
-      syncCollectionDelayMin: "syncCollectionDelayMin",
-      syncCollectionDelayMax: "syncCollectionDelayMax",
-      cancelFavoritesDelayMin: "cancelFavoritesDelayMin",
-      cancelFavoritesDelayMax: "cancelFavoritesDelayMax",
-      cancelCollectionDelayMin: "cancelCollectionDelayMin",
-      cancelCollectionDelayMax: "cancelCollectionDelayMax",
-      importWorksDelayMin: "importWorksDelayMin",
-      importWorksDelayMax: "importWorksDelayMax",
-      syncBatchSize: "syncBatchSize",
-      syncBatchPauseMin: "syncBatchPauseMin",
-      syncBatchPauseMax: "syncBatchPauseMax",
-      syncKeepaliveInterval: "syncKeepaliveInterval",
-      syncRetryMax: "syncRetryMax",
-    };
     const section = this.#dialogBody.querySelector("#settingsConfigSection");
-    if (!section) return;
-    for (const [key, inputKey] of Object.entries(map)) {
-      const input = section.querySelector(`.config-input[data-key="${inputKey}"]`);
-      if (input) input.value = cfg[key] ?? "";
-    }
-    const calSwitch = section.querySelector("#settingsCalibrateSwitch");
-    if (calSwitch) {
-      this.#applySwitchUI(calSwitch, this.#pendingCalibrate ?? (cfg.calibrateFollowings !== false));
+    for (const key of CONFIG_FIELDS) {
+      const input = section.querySelector(`.config-input[data-key="${key}"]`);
+      input.value = cfg[key] ?? "";
     }
   }
 
   #renderCacheList(ci, ct) {
     const list = this.#dialogBody.querySelector("#settingsCacheList");
-    if (!list) return;
     const times = ct?.times || {};
     const hasRawCookie = !!(ci?.rawCookie);
     const items = [
@@ -302,8 +277,8 @@ class Settings {
         e.stopPropagation();
         const row = hint.closest(".sec-clickable");
         if (!row) return;
-        if (row.id === "secKeyValue") this.toggleKeyExpand(root);
-        else this.toggleSigExpand(root, row.id);
+        if (row.id === "secKeyValue") this.#toggleKeyExpand(root);
+        else this.#toggleSigExpand(root, row.id);
       });
     });
     root.querySelectorAll(".sec-copy-btn").forEach((btn) => {
@@ -323,7 +298,6 @@ class Settings {
 
   #renderStatus(secRes) {
     const root = this.#dialogBody;
-    if (!root) return;
     if (!secRes || !secRes.ok || !secRes.status) {
       const errMsg = secRes?.error || "QUERY_FAILED";
       // NO_DOUYIN_TAB 是最常见失败：给出可操作的引导而非裸错误码
@@ -344,7 +318,6 @@ class Settings {
       ];
       for (const id of targets) {
         const el = root.querySelector("#" + id);
-        if (!el) continue;
         el.textContent = failText;
         el.className = "sec-value sec-err";
       }
@@ -361,25 +334,13 @@ class Settings {
     this.#renderStatusHooks(root, s.hooks);
   }
 
-  // 开关仅切换视觉态；持久化与副作用统一走「关闭时校验并持久化」（saveBeforeClose）
-  #applySwitchUI(switchEl, on) {
-    const btn = switchEl.querySelector(`.mode-btn[data-mode="${on ? "on" : "off"}"]`);
-    if (!btn) return;
-    switchEl.querySelectorAll(".mode-btn").forEach((b) => b.classList.toggle("active", b === btn));
-    const slider = switchEl.querySelector(".mode-slider");
-    if (slider) {
-      slider.style.width = btn.offsetWidth + "px";
-      slider.style.transform = "translateX(" + btn.offsetLeft + "px)";
-    }
-  }
-
   // min/max 成对即时校验：两端同亮同灭，避免只标一端造成误读
   #validateDelayPair(section, key) {
-    if (!section || !key || !(key.endsWith("Min") || key.endsWith("Max"))) return;
+    // section 由调用方 cfgSection 监听保证非空；key 来自模板静态 data-key
+    if (!(key.endsWith("Min") || key.endsWith("Max"))) return;
     const base = key.slice(0, -3);
     const minInput = section.querySelector(`.config-input[data-key="${base}Min"]`);
     const maxInput = section.querySelector(`.config-input[data-key="${base}Max"]`);
-    if (!minInput || !maxInput) return;
     const min = Number(minInput.value);
     const max = Number(maxInput.value);
     const filled = minInput.value.trim() !== "" && maxInput.value.trim() !== "";
@@ -394,11 +355,10 @@ class Settings {
         h3.closest(".settings-section").classList.toggle("collapsed");
       });
     });
-    // 恢复默认（建议9）：仅回填输入框，持久化仍统一走关闭面板时的 saveBeforeClose
+    // 恢复默认：仅回填输入框，持久化仍统一走关闭面板时的 saveBeforeClose
     const cfgSection = this.#$("settingsConfigSection");
     this.#$("btnResetConfig")?.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (!cfgSection) return;
       cfgSection.querySelectorAll(".config-input").forEach((inp) => {
         const key = inp.dataset.key;
         if (key && runtimeConfig.DEFAULTS[key] != null) inp.value = runtimeConfig.DEFAULTS[key];
@@ -406,30 +366,17 @@ class Settings {
       });
       dialog.showToast("已填入默认参数，关闭面板时保存", "info");
     });
-    // min/max 即时校验（建议9）：输入期红框提示，保存拦截仍由 saveBeforeClose 兜底
-    cfgSection?.addEventListener("input", (e) => {
+    // min/max 即时校验：输入期红框提示，保存拦截仍由 saveBeforeClose 兜底
+    cfgSection.addEventListener("input", (e) => {
       const input = e.target.closest?.(".config-input");
       if (!input) return;
       this.#validateDelayPair(cfgSection, input.dataset.key);
     });
+    // 开关仅切换视觉态；持久化与副作用统一走「关闭时校验并持久化」（saveBeforeClose）
     const modeSwitch = this.#$("settingsModeSwitch");
-    if (modeSwitch) {
-      modeSwitch.addEventListener("click", (e) => {
-        const btn = e.target.closest(".mode-btn");
-        if (!btn || btn.classList.contains("active")) return;
-        this.#pendingIndependent = btn.dataset.mode === "on";
-        this.#applySwitchUI(modeSwitch, this.#pendingIndependent);
-      });
-    }
-    const calibrateSwitch = this.#dialogBody.querySelector("#settingsCalibrateSwitch");
-    if (calibrateSwitch) {
-      calibrateSwitch.addEventListener("click", (e) => {
-        const btn = e.target.closest(".mode-btn");
-        if (!btn || btn.classList.contains("active")) return;
-        this.#pendingCalibrate = btn.dataset.mode === "on";
-        this.#applySwitchUI(calibrateSwitch, this.#pendingCalibrate);
-      });
-    }
+    modeSwitch.addEventListener("change", () => {
+      this.#pendingIndependent = modeSwitch.checked;
+    });
     // 缓存刷新按钮
     const cacheList = this.#$("settingsCacheList");
     if (cacheList) {
@@ -497,18 +444,6 @@ class Settings {
     const section = this.#dialogBody.querySelector("#settingsConfigSection");
     // 设置面板未打开（当前弹窗是其它面板）时无需处理
     if (!section) return true;
-    const FIELDS = [
-      "timeoutRequest", "timeoutSecurityStatus",
-      "syncWorksDelayMin", "syncWorksDelayMax",
-      "syncFollowingsDelayMin", "syncFollowingsDelayMax",
-      "syncFavoritesDelayMin", "syncFavoritesDelayMax",
-      "syncCollectionDelayMin", "syncCollectionDelayMax",
-      "cancelFavoritesDelayMin", "cancelFavoritesDelayMax",
-      "cancelCollectionDelayMin", "cancelCollectionDelayMax",
-      "importWorksDelayMin", "importWorksDelayMax",
-      "syncBatchSize", "syncBatchPauseMin", "syncBatchPauseMax",
-      "syncKeepaliveInterval", "syncRetryMax",
-    ];
     const DELAY_PAIRS = [
       ["syncWorksDelayMin", "syncWorksDelayMax", "同步作品"],
       ["syncFollowingsDelayMin", "syncFollowingsDelayMax", "同步关注"],
@@ -519,9 +454,9 @@ class Settings {
       ["importWorksDelayMin", "importWorksDelayMax", "作者入库"],
     ];
     const values = {};
-    for (const key of FIELDS) {
+    for (const key of CONFIG_FIELDS) {
       const input = section.querySelector(`.config-input[data-key="${key}"]`);
-      const raw = input?.value.trim();
+      const raw = input.value.trim();
       const num = Number(raw);
       if (!raw || !Number.isFinite(num) || num <= 0) {
         dialog.showToast(`"${key}" 请输入有效的正数`, "error");
@@ -535,7 +470,6 @@ class Settings {
         return false;
       }
     }
-    values.calibrateFollowings = this.#pendingCalibrate ?? (section.querySelector("#settingsCalibrateSwitch .mode-btn.active")?.dataset.mode === "on");
     if (values.syncBatchPauseMin > values.syncBatchPauseMax) {
       dialog.showToast("批次暂停最小值不能大于最大值", "error");
       return false;
@@ -548,7 +482,7 @@ class Settings {
       dialog.showToast("保存失败", "error");
     }
     // 独立模式：与运行参数同走关闭通道；与存储值有变化才下发 SET_MODE（写存储+background 运行态+a-bogus 初始化）
-    const modeOn = this.#pendingIndependent ?? (section.querySelector("#settingsModeSwitch .mode-btn.active")?.dataset.mode === "on");
+    const modeOn = this.#pendingIndependent ?? Boolean(section.querySelector("#settingsModeSwitch")?.checked);
     const { independentMode: savedOn } = await chrome.storage.local.get("independentMode");
     if (modeOn !== (savedOn === true)) {
       try {

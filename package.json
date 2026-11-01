@@ -1,0 +1,9 @@
+{
+  "name": "douyin-saver-extension-audit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/pure.test.mjs",
+    "snapshot": "node tests/snapshot.mjs"
+  }
+}

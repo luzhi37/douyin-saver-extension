@@ -1,16 +1,14 @@
-// background/identity/independent-client.js — 独立模式开关/校准开关 + 签名直连 request + resolveSelfSecUid
+// background/identity/independent-client.js — 独立模式开关 + 签名直连 request + resolveSelfSecUid
 
 import { CONFIG } from "../core.js";
 import { credentials } from "./credentials.js";
 import { Crypto } from "./crypto.js";
 
 // ---------- IndependentClient ----------
-// 独立模式开关、校准开关与签名直连客户端；持有 3 个模式开关字段。
+// 独立模式开关与签名直连客户端；持有 2 个模式开关字段。
 class IndependentClient {
   #mode = false;
   #loaded = false;
-  #calibrate = true;
-  #calibrateLoaded = false;
 
   async loadMode() {
     if (!this.#loaded) {
@@ -27,23 +25,6 @@ class IndependentClient {
     this.#loaded = true;
     if (message.enabled) await credentials.ensureABogus();
     sendResponse({ ok: true });
-  }
-
-  // 校准开关惰性加载（对标 loadMode）：SW 每次重建后首次扫描才读 storage，恢复已保存的关闭态；
-  // 缺键或未显式关闭时保持默认开启（与 runtimeConfig.apply 的 ?? true 语义一致）。
-  // 设置面板保存后经 RELOAD_CONFIG → setCalibrateEnabled 直接覆盖内存值并标记已加载，不再重读。
-  async isCalibrateEnabled() {
-    if (!this.#calibrateLoaded) {
-      const { runtimeConfig: cfg } = await chrome.storage.local.get("runtimeConfig");
-      this.#calibrate = cfg?.calibrateFollowings !== false;
-      this.#calibrateLoaded = true;
-    }
-    return this.#calibrate;
-  }
-
-  setCalibrateEnabled(v) {
-    this.#calibrate = v === true;
-    this.#calibrateLoaded = true;
   }
 
   // 抖音服务端验证 a_bogus 时剥离签名族键（a_bogus/timestamp/x-secsdk-web-signature）、
@@ -139,6 +120,9 @@ class IndependentClient {
   // 任意 uid 未实测收录，兑换失败（未收录/风控）返回空串，由调用方降级提示
   async resolveSecUidById(id) {
     try {
+      // RESOLVE_SEC_UID 是唯一不经 ensureABogus 预热的独立模式请求链：SW 冷启动后
+      // 首个消息若是它，sign() 会因 #abOgus 未初始化抛 TypeError，此处先补热
+      await credentials.ensureABogus();
       const data = await this.request("/aweme/v1/web/im/user/info/", await credentials.buildBaseParams(), {
         method: "POST",
         body: JSON.stringify({ sec_user_ids: [String(id)] }),

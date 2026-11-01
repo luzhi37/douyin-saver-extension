@@ -16,11 +16,11 @@ import { settings } from './components/settings.js';
 import { detail } from './components/detail.js';
 import { appShell } from './components/app-shell.js';
 
-// ---------- 快捷键速查（P0-3）：'?' 打开静态内容弹窗 ----------
+// ---------- 快捷键速查：'?' 打开静态内容弹窗 ----------
 const SHORTCUT_ROWS = [
-  ["Ctrl+K", "展开并聚焦搜索栏"],
+  ["S", "展开 / 收起搜索栏"],
   ["?", "打开快捷键速查"],
-  ["Esc", "关闭弹窗 / 详情 / 退出批量 / 收起搜索"],
+  ["Esc", "关闭弹窗 / 退出详情；无覆盖层时退出输入聚焦"],
   ["B", "进入 / 退出批量模式"],
   ["弹窗 · Enter", "执行主动作（移除 / 删除 / 下载等）"],
   ["弹窗 · Ctrl+Enter", "执行次要动作（如批量取消的「直接移除」）"],
@@ -28,12 +28,16 @@ const SHORTCUT_ROWS = [
   ["详情 · Space", "播放 / 暂停"],
   ["详情 · M", "静音 / 取消静音"],
   ["详情 · L", "循环模式（单作品 / 分组 / 关闭）"],
-  ["详情 · F", "全屏播放"],
   ["详情 · ←/→", "图集翻页（多图作品）"],
   ["详情 · Delete / Backspace", "移除当前作品（弹确认）"],
   ["批量 · Ctrl+A", "全选当前结果"],
   ["批量 · Delete", "删除已勾选项（弹确认）"],
+  ["批量 · I", "入库：关注域存入候选 / 点赞·收藏域存入作品"],
+  ["批量 · M", "移动到分组"],
+  ["批量 · D", "下载已勾选作品"],
   ["批量 · Shift+点击", "范围选择"],
+  ["Ctrl/Cmd+点击作品作者名", "打开该作者作品栏（作品/点赞/收藏域）"],
+  ["批量 · Ctrl/Cmd+点击作者卡", "临时打开右侧作品栏（关注/候选域）"],
 ];
 
 function showShortcutHelp() {
@@ -83,6 +87,18 @@ function flushStoreChanged() {
     if (bulkDomains.has(domain)) upsertsByDomain.delete(domain);
   }
   if (bulkDomains.size > 0) store.refreshGroups();
+  // 作者域变更（无点载荷）：作品型三域可见时刷新作者主键集并原地 patch 卡片作者 chip
+  //（不整刷；若同批还有当前域整刷，重载后仍用更新后的集合渲染）
+  if (
+    config.WORK_RECORD_DOMAINS.includes(state.domain) &&
+    (bulkDomains.has("followings") || bulkDomains.has("candidates"))
+  ) {
+    services.loadAuthorUidSets().then((ok) => {
+      if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+        search.activeWorkRecordGrid().syncAuthorFlags();
+      }
+    });
+  }
   for (const domain of bulkDomains) {
     if (domain !== state.domain) continue;
     // 当前域 bulk 收口：作品型三域带 id 载荷 → 补拉记录后增量应用（零整刷）；无载荷
@@ -91,7 +107,7 @@ function flushStoreChanged() {
       applyBulkChanged(domain, bulkIdsByDomain.get(domain));
       continue;
     }
-    services.loadDomainData().catch(() => {});
+    services.loadDomainData(search.fetchAscending()).catch(() => {});
   }
   for (const [domain, entries] of upsertsByDomain) {
     applyStoreUpserts(domain, [...entries.values()]);
@@ -105,12 +121,12 @@ async function applyBulkChanged(domain, ids) {
   // 补拉规模守卫：响应是全记录过消息通道（千条 ≈ MB 级 structured clone），且超大新增
   // 本就会撞 tryHeadInsert 的预铺容量守卫打回整刷——超限直接整刷兜底，省一次巨型往返
   if (ids.changedIds.size > config.GRID_PREMOUNT_CAP) {
-    services.loadDomainData().catch(() => {});
+    services.loadDomainData(search.fetchAscending()).catch(() => {});
     return;
   }
   const res = await services.bgMsg({ type: "GET_WORKS_BY_IDS", domain, ids: [...ids.changedIds] }).catch(() => null);
   if (!res || res.error || !Array.isArray(res.items) || res.items.length === 0) {
-    services.loadDomainData().catch(() => {});
+    services.loadDomainData(search.fetchAscending()).catch(() => {});
     return;
   }
   applyStoreUpserts(domain, res.items.map((w) => ({ work: w, added: ids.addedIds.has(String(w.awemeId)) })));
@@ -124,7 +140,7 @@ function applyStoreUpserts(domain, entries) {
   if (domain !== state.domain || !config.WORK_RECORD_DOMAINS.includes(domain)) return;
   if (search.isFilterActive() || state.batchMode || !dom.detailOverlay.classList.contains("hidden")) {
     store.refreshGroups();
-    services.loadDomainData().catch(() => {});
+    services.loadDomainData(search.fetchAscending()).catch(() => {});
     return;
   }
   let needCounts = false; // 当前视图外的新增：分组数字变了
@@ -155,15 +171,15 @@ function applyStoreUpserts(domain, entries) {
     if (tryHeadInsert(domain, viewAdds) === "fallback") {
       needReload = true;
     } else {
-      // 头插/借道待渲渲染成功：分组计数、结果数与 Shift 范围锚点随之收口
+      // 头插/借道待渲渲染成功：分组计数与结果数随之收口（Shift 锚点只存 id，
+      // 头插不改变已有条目的相对序，区间在新顺序下仍按点击时现算的下标正确圈选）
       store.refreshGroups();
       search.syncCount();
-      batch.resetRangeAnchor(); // 顺序已变，旧锚点在新顺序中的索引失效（与 refreshGridView 同理）
     }
   }
   if (needReload) {
     store.refreshGroups();
-    services.loadDomainData().catch(() => {});
+    services.loadDomainData(search.fetchAscending()).catch(() => {});
     return;
   }
   if (needCounts) store.refreshGroups();
@@ -257,6 +273,7 @@ chrome.runtime.onMessage.addListener((message) => {
       domainScanSync.onScanProgress(message);
       break;
     case "IMPORT_WORKS_PROGRESS":
+    case "CALIBRATE_PROGRESS":
       authorImport.onProgress(message);
       break;
     case "IMPORT_PROGRESS":
@@ -302,10 +319,12 @@ document.addEventListener("click", (e) => {
   if (e.target.closest?.(".dy-dialog-close")) appShell.requestDialogClose();
 });
 
-// Esc 关闭优先级单点收口（本监听是全页唯一 Esc 裁决者）：弹窗 → 详情 → 退出批量 → 收起
-// 搜索栏，一次按键只关一层。详情不能自管 Esc——弹窗叠在详情层之上时，本监听先关掉弹窗，
-// detail 的 document 监听在同一事件内随后执行，此时它查 dialogOverlay 已是关闭态，若由
-// detail 自管 Esc 会把详情一并关掉（同事件多监听串行，后者看到的是前者处理后的状态）
+// Esc 单点收口（本监听是全页唯一 Esc 裁决者）：按层级「弹窗 → 详情 → 失焦」依次收口。
+// 弹窗打开 → 关弹窗（顶层 ✕ 同入口）；否则详情打开 → 退出详情；
+// 都无 → 让当前聚焦元素失焦（搜索框场景——Esc 退出输入后再按 S 收起搜索栏）。**仅搜索栏不归
+// Esc**：由 S 开关；批量模式不归 Esc（由 B 键 / 「批量」按钮退出）。计数输入框内 Esc 走其自身
+// 监听（stopPropagation 还原编辑、不关详情）；详情监听不得自管 Esc（同事件多监听串行，否则会
+// 连弹窗一并关掉）
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!dom.dialogOverlay.classList.contains("hidden")) {
@@ -316,26 +335,27 @@ document.addEventListener("keydown", (e) => {
     detail.closeDetail();
     return;
   }
-  if (state.batchMode) {
-    batch.handleBatchToggle();
-    return;
-  }
-  search.closeSearchBar();
+  // 无覆盖层：仅让当前聚焦元素失焦，不改变任何层的开合状态
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body) active.blur();
 });
 
-// 全局快捷键（P0-3/P1-7）：Ctrl+K 聚焦搜索、? 速查、B 进入/退出批量模式、批量模式 Ctrl+A 全选 /
-// Delete 删除已勾选。输入框内一律不拦截；弹窗打开时跳过 ?/B/Ctrl+A/Delete，避免与弹窗交互重叠
+// 全局快捷键：S 展开/收起搜索栏、? 速查、B 进入/退出批量模式、批量模式 Ctrl+A 全选 /
+// Delete 删除 / I 入库 / M 移动到分组 / D 下载。输入框内一律不拦截；弹窗打开时跳过
+// S/?/B/Ctrl+A/Delete/I/M/D，避免与弹窗交互重叠
 const isTypingTarget = (el) =>
   el instanceof HTMLElement && !!el.closest("input, textarea, select, [contenteditable]");
 document.addEventListener("keydown", (e) => {
   const typing = isTypingTarget(e.target);
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+  // S 展开/收起搜索栏（与侧边栏「搜索」按钮同入口 toggleSearchBar）：输入框内不拦截——
+  // 否则无法向搜索框键入字母 s；任何展开路径均不自动聚焦输入框，S 恒为开关切换。
+  // 弹窗/详情打开时不切换，避免在覆盖层背后展开/收起
+  if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (typing) return;
-    // 弹窗/详情打开时不展开搜索栏，避免在覆盖层背后展开
     if (!dom.dialogOverlay.classList.contains("hidden")) return;
     if (!dom.detailOverlay.classList.contains("hidden")) return;
     e.preventDefault();
-    search.openSearchBar();
+    search.toggleSearchBar();
     return;
   }
   if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
@@ -363,6 +383,26 @@ document.addEventListener("keydown", (e) => {
     if (state.selectedIds.size === 0) return;
     e.preventDefault();
     batch.handleBatchDelete();
+  }
+  // 批量态操作快捷键：I 入库（关注域→候选域 / 点赞·收藏域→作品域）、M 移动到分组、
+  // D 下载已勾选。与 Delete 同款守卫（输入框/弹窗/详情打开时让位）；未勾选或不适用
+  // 的域由各方法自身早退兜底（与对应按钮的可用态一致）
+  if (state.batchMode && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const actionKey = e.key.toLowerCase();
+    if (actionKey === "i" || actionKey === "m" || actionKey === "d") {
+      if (
+        typing ||
+        !dom.dialogOverlay.classList.contains("hidden") ||
+        !dom.detailOverlay.classList.contains("hidden")
+      ) {
+        return;
+      }
+      e.preventDefault();
+      if (actionKey === "i") batch.handleBatchSave();
+      else if (actionKey === "m") batch.handleBatchMove();
+      else batch.handleBatchDownload();
+      return;
+    }
   }
   // B 进入/退出批量模式（与「批量」按钮同入口，退出时同按钮语义清空选区）；弹窗/详情
   // 打开时不切换——避免在覆盖层背后改变底层网格的交互模式
@@ -393,6 +433,7 @@ dom.batchSelectAll.addEventListener("click", () => batch.handleBatchSelectAll())
 dom.batchDelete.addEventListener("click", () => batch.handleBatchDelete());
 dom.batchMove.addEventListener("click", () => batch.handleBatchMove());
 dom.batchSaveToWorks.addEventListener("click", () => batch.saveSelectedToWorks());
+dom.batchSaveToCandidates.addEventListener("click", () => batch.saveSelectedToCandidates());
 dom.batchDownload.addEventListener("click", () => batch.handleBatchDownload());
 
 dom.btnGroupManage.addEventListener("click", () => groups.showGroupManage());
@@ -400,14 +441,17 @@ dom.btnGroupManage.addEventListener("click", () => groups.showGroupManage());
 dom.btnDataTools.addEventListener("click", () => importExport.openDialog());
 dom.fileInput.addEventListener("change", (e) => importExport.handleImport(e));
 
-dom.btnSettings?.addEventListener("click", () => settings.openPanel());
+dom.btnSettings.addEventListener("click", () => settings.openPanel());
 
 dom.btnSync.addEventListener("click", async () => {
-  if (sync.isRunning() || domainScanSync.isRunning() || authorImport.isRunning()) return;
+  // 各链路互斥由入口自守卫（syncFollowings/syncCurrentGroup/checkCandidatesOverlap/syncDomain 均检查 isRunning）
   if (state.domain === "followings") {
     await sync.syncFollowings();
   } else if (state.domain === "works") {
     await sync.syncCurrentGroup();
+  } else if (state.domain === "candidates") {
+    // 候选域无账号同步数据源：同步 = 与关注域做本地重叠比对，重叠项可移入「稍后删除」
+    await sync.checkCandidatesOverlap();
   } else {
     await domainScanSync.syncDomain(state.domain);
   }
@@ -417,8 +461,8 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
 
 // ---------- init IIFE ----------
 (async function init() {
-  // 构建标记：用于确认页面运行的是最新构建（STORE_CHANGED 增量收口版）
-  console.info("[DDM] options build 2026-10-02 store-changed-incremental");
+  // 构建标记：读取 manifest 版本，便于确认页面加载的是当前构建
+  console.info(`[DDM] options build v${chrome.runtime.getManifest().version}`);
   dom.mainContainer.classList.add("hidden");
   dom.emptyState.classList.add("hidden");
   // 预加载运行时配置
@@ -428,14 +472,16 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
   }
 
   sidebar.initSidebar();
-  appShell.initLeftSidebar();
+  appShell.initRightSidebar();
   detail.initDetailEvents();
 
   // 离开扩展页面（切标签/最小化，页面转为隐藏）即暂停全部播放：
-  // 卡片悬浮预览（含播放按钮直启）走 WorksGrid.stopAllMedia；详情视频/图集音频走 Detail.pauseOnHidden
+  // 卡片悬浮预览（含播放按钮直启）走 WorksGrid.stopAllMedia、侧栏悬停预览走
+  // Sidebar.stopAllMedia、详情视频/图集音频走 Detail.pauseOnHidden
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) return;
     worksGrid.stopAllMedia();
+    sidebar.stopAllMedia();
     detail.pauseOnHidden();
   });
 
@@ -448,7 +494,7 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
   );
   // resize 滑块必须 no-anim 瞬移回 active tab（直接传函数引用会把 Event 对象当 animated 实参）。
   // 全局 resize 只保留这一个 rAF 节流入口（组合根统一布线，app-shell 不再自挂监听）：
-  // 窗口拖拽期每帧最多一次域滑块 + 分组 tab 掩码重算
+  // 窗口拖拽期每帧最多一次域滑块 + 分组 tab 掩码重算 + 侧栏展开宽度钳制
   let resizeRaf = 0;
   window.addEventListener(
     "resize",
@@ -459,6 +505,7 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
         appShell.updateDomainSlider(state.domain);
         groups.updateTabMask();
         groups.updateGroupSlider(false);
+        sidebar.clampOpenWidth();
       });
     },
     { passive: true },
@@ -466,29 +513,42 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
 
   store.on("domain", async () => {
     batch.syncSaveToWorksBtn();
-    await groups.renderGroupTabs();
+    batch.syncSaveToCandidatesBtn();
+    // 首屏关键路径：首页数据请求先发——切域后首帧只等它，不再排在 GET_GROUPS /
+    // GET_AUTHOR_UID_SETS 两个往返之后（SW 冷启动时这两条可达数百 ms）
+    const dataLoad = appShell.loadDomainDataSafe();
+    // 搜索栏域联动是纯 UI 同步，无数据依赖
     search.onDomainChanged();
-    // 方案A：作者归属判定依赖关注全集，域切换时异步刷新；完成后归属筛选仍生效则重渲网格
-    services.loadFollowedUids().then((ok) => {
-      if (ok && search.isOwnerFilterActive()) search.refreshGridView();
-    });
-    await appShell.loadDomainDataSafe();
-    // 滚动已随 switchDomain 点击时刻的 wipe clamp 归零
+    // 作品型三域的作品卡按作者域成员资格显示 chip：主键集延后到首屏渲染之后再取
+    //（getAllKeys 与 page-0 游标并发会抢 IDB，实测首页往返被拖到 ~1s），到达后经
+    // syncAuthorFlags 原地 patch 已挂载卡；失败降级为不显示 chip（作者域删除/移动
+    // 不广播，切域刷新即兜底）
+    const uidDomain = state.domain;
+    const uidGroupId = state.currentGroupId;
+    const uidSets = config.WORK_RECORD_DOMAINS.includes(uidDomain)
+      ? services
+          .whenFirstScreen(uidDomain, uidGroupId)
+          .then(() => services.loadAuthorUidSets())
+          .then((ok) => {
+            if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+              search.activeWorkRecordGrid().syncAuthorFlags();
+            }
+          })
+      : Promise.resolve();
+    await Promise.all([groups.renderGroupTabs(), uidSets, dataLoad]);
+    // 滚动已在 switchDomain 显式归零（尾部占位使 wipe clamp 不再触发）
   });
 
-  store.on("works", () => {
-    if (state.domain === "works") search.refreshGridView();
+  for (const domain of config.WORK_RECORD_DOMAINS) {
+    store.on(domain, () => {
+      if (state.domain === domain) search.refreshGridView();
+    });
+  }
+  store.on("followings", () => {
+    if (state.domain === "followings") search.refreshGridView();
   });
-  store.on("followings", async () => {
-    // 方案A：关注数据变化时同步刷新关注全集，保证作者归属判定不过期
-    await services.loadFollowedUids();
-    if (state.domain === "followings" || search.isOwnerFilterActive()) search.refreshGridView();
-  });
-  store.on("favorites", () => {
-    if (state.domain === "favorites") search.refreshGridView();
-  });
-  store.on("collections", () => {
-    if (state.domain === "collections") search.refreshGridView();
+  store.on("candidates", () => {
+    if (state.domain === "candidates") search.refreshGridView();
   });
   store.on("groups", () => groups.renderGroupTabs());
   // 切换分组与域切换同序列：点击即清场（abortRender+wipe，只清不铺），数据到达后由
@@ -496,24 +556,48 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
   // ~50ms + 全量预铺压到不可感知）
   store.on("currentGroupId", async () => {
     appShell.clearActiveGrid();
+    // 计数占位：K 恒 0，N 取与分组 tab 同源的分组缓存总量（见 SearchBar.syncCount）
+    const groupId = state.currentGroupId;
+    const cachedTotal = state.gridTotals[`${state.domain}|${groupId}`];
+    state.gridPending = true;
+    state.gridTotal = cachedTotal != null ? { domain: state.domain, groupId, total: cachedTotal } : null;
+    dom.sbCount.textContent = cachedTotal != null ? `0/${cachedTotal}` : "…";
     // tab 集合未变，仅同步激活态 + 滑块动画（renderGroupTabs 会重建 tab、毁掉滑动起点）
     groups.syncActiveTabs();
     await appShell.loadDomainDataSafe();
   });
-  // 分页渐进回填（作品型三域，loadDomainData 逐页发出）：默认视图按槽回填（网格侧以
-  // 键前缀自锚定落点）+ 刷新计数，完成时摘除尾部未回填占位卡；筛选激活时静默累积
-  // （逆序/作者聚类破坏页序对齐），加载完成一次性整渲。domain/groupId 双校验，
-  // 防止切换瞬间在途旧页混入新网格
-  store.on("work-record-appended", ({ domain, groupId, items, start, done }) => {
+  // 分页渐进回填（作品型三域，loadDomainData 逐页发出）：页序与视图序单调一致时按视图
+  // 下标续填（键前缀自锚定）+ 刷新计数，完成时摘除尾部未回填占位卡；不一致时（作品数
+  // 排序依赖全库 rank，或加载中途切了排序/逆序导致取数方向失配）静默累积，加载完成一次性
+  // 整渲。domain/groupId 双校验，防止切换瞬间在途旧页混入新网格
+  store.on("work-record-appended", ({ domain, groupId, items, done, ascending }) => {
     if (state.domain !== domain || state.currentGroupId !== groupId) return;
-    if (search.isFilterActive()) {
+    if (!search.isPageAligned(ascending)) {
+      // 页序与视图序不对齐：DOM 静默累积到加载完成再整渲；K/N 计数逐页刷新（避免 done
+      // 时刻一次性跳变——用户按旧版直觉核对加载进度）。完成态整渲经节点复用重排，
+      // 已渲染卡保留封面/文案，只有首次进榜的条目走新骨架填充
+      search.syncCount();
       if (done) search.refreshGridView();
       return;
     }
+    // 页序对齐：过滤后剩余条目保持页内顺序，即视图尾部的一段连续区间；起点 = 全量视图
+    // 长度 − 本页可见条数（按数据侧下标推算，与网格待处理队列状态无关）
     const grid = search.activeWorkRecordGrid();
-    grid.fillSlots(start, items);
-    if (done) grid.pruneEmptyTail();
-    search.syncCount();
+    const view = search.getWorksView();
+    const pageView = search.filterPageForView(items);
+    let refreshed = false;
+    if (pageView.length) {
+      // 首页视图为零命中时网格停在空态壳（容器 hidden、无槽位），按槽续填无可落点：
+      // 直接整渲当前已加载视图，后续页再走续填（整渲自带尾部占位，收尾无需再 prune）
+      if (grid.renderedItems()?.length) {
+        grid.fillSlots(view.length - pageView.length, pageView);
+      } else {
+        search.refreshGridView();
+        refreshed = true;
+      }
+    }
+    if (done && !refreshed) grid.pruneEmptyTail();
+    search.syncCount(view.length);
   });
   store.on("batchMode", (v) => {
     document.body.classList.toggle("batch-mode", v);
@@ -522,16 +606,19 @@ dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
 
   document.body.dataset.domain = "works";
   appShell.updateDomainSlider("works");
-  await groups.renderGroupTabs();
-  // 方案A预载关注全集与首屏数据并行：归属判定懒消费（未加载成功时不归判本就是设计
-  // 行为），串行等待让启动首屏多付一次全量关注域往返；它自增 dataVersion 但无
-  // refreshGridView 触发方，不会引发首渲后重渲
-  const followedUidsLoading = services
-    .loadFollowedUids()
-    .catch((err) => console.error("[DY] load followed uids failed:", err));
-  await appShell.loadDomainDataSafe();
-  await followedUidsLoading;
-  // 清理历史版本搜索态 hash 残留：P1-8 的 URL 持久化已移除（读取方已删，URL 不再承载
+  // 首屏同样并行：首页数据请求先发，分组 tab 与作者主键集不挡首帧；chip 主键集等首屏
+  // 渲染后再取（避免与 page-0 抢 IDB），到达后原地 patch 已挂载卡
+  const dataLoad = appShell.loadDomainDataSafe();
+  const uidSets = services
+    .whenFirstScreen("works", state.currentGroupId)
+    .then(() => services.loadAuthorUidSets())
+    .then((ok) => {
+      if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+        search.activeWorkRecordGrid().syncAuthorFlags();
+      }
+    });
+  await Promise.all([groups.renderGroupTabs(), uidSets, dataLoad]);
+  // 清理历史版本搜索态 hash 残留：旧版 URL 持久化已移除（读取方已删，URL 不再承载
   // 任何状态），旧标签页 URL 上残留的 #search?... 会随刷新永久保留，一次性剥掉即可。
   // 放在 init 尾部不影响首屏；此后全仓无任何 hash 读写方
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);

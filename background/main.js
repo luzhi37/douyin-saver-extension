@@ -1,10 +1,10 @@
 // background/main.js — 组合根 + 入口：App 类 + 实例化 + 启动（init / onMessage 监听）
 
-import { CONFIG, utils, runtimeConfig } from "./core.js";
+import { CONFIG, DOMAIN_CONFIG, utils, runtimeConfig } from "./core.js";
 import { credentials } from "./identity/credentials.js";
 import { independentClient } from "./identity/independent-client.js";
 import { tabBridge } from "./identity/tab-bridge.js";
-import { worksHandlers, followingsHandlers, favoritesHandlers, collectionsHandlers } from "./data/domain-handlers.js";
+import { worksHandlers, followingsHandlers, favoritesHandlers, collectionsHandlers, candidatesHandlers } from "./data/domain-handlers.js";
 import { groups } from "./data/groups.js";
 import { dataTools } from "./data/data-tools.js";
 import { scanTasks } from "./tasks/scan-tasks.js";
@@ -35,24 +35,10 @@ class App {
       await independentClient.loadMode();
       await runtimeConfig.reload();
 
-      const worksGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS);
-      if (!worksGroups.length) {
-        await storage.putGroups(CONFIG.STORAGE_KEYS.WORKS_GROUPS, CONFIG.DEFAULT_GROUPS);
-      }
-
-      const followingsGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS);
-      if (!followingsGroups.length) {
-        await storage.putGroups(CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS, CONFIG.DEFAULT_GROUPS);
-      }
-
-      const favoritesGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.FAVORITES_GROUPS);
-      if (!favoritesGroups.length) {
-        await storage.putGroups(CONFIG.STORAGE_KEYS.FAVORITES_GROUPS, CONFIG.DEFAULT_GROUPS);
-      }
-
-      const collectionsGroups = await storage.getGroups(CONFIG.STORAGE_KEYS.COLLECTIONS_GROUPS);
-      if (!collectionsGroups.length) {
-        await storage.putGroups(CONFIG.STORAGE_KEYS.COLLECTIONS_GROUPS, CONFIG.DEFAULT_GROUPS);
+      // 五域分组播种：缺组时写入默认组（五域同构，键集中在 DOMAIN_CONFIG；新增域自动纳入）
+      for (const cfg of Object.values(DOMAIN_CONFIG)) {
+        const groups = await storage.getGroups(cfg.groupsName);
+        if (!groups.length) await storage.putGroups(cfg.groupsName, CONFIG.DEFAULT_GROUPS);
       }
     } catch (e) {
       console.warn("[DY] onInstalled partial failure:", e.message);
@@ -64,9 +50,7 @@ class App {
       await this.onInstalled();
     });
 
-    if (chrome.runtime.onStartup) {
-      chrome.runtime.onStartup.addListener(() => this.setupDeclarativeNetRequest());
-    }
+    chrome.runtime.onStartup.addListener(() => this.setupDeclarativeNetRequest());
 
     chrome.action.onClicked.addListener(() => {
       const url = chrome.runtime.getURL("options/options.html");
@@ -81,9 +65,31 @@ class App {
 
     // SW 冷启动恢复运行参数：reload 此前仅挂在 onInstalled（装/更新）上，重开扩展
     // 时新 SW 实例按编译期默认值重建 CONFIG，面板已保存的时延/超时/批量/重试参数
-    // 会静默失效（校准开关另有 isCalibrateEnabled 惰性加载兜底，两者幂等无冲突）。
-    // 监听器已在上方同步注册，reload 在事件送达前完成，不阻塞消息路由。
+    // 会静默失效。这里异步启动、不阻塞消息路由；极早期到达的消息仍可能读到编译期
+    // 默认值，reload 完成后即恢复。
     runtimeConfig.reload().catch((e) => console.warn("[DY] runtimeConfig reload failed:", e.message));
+  }
+
+  // 双模路由样板：独立模式优先；两分支以闭包传入，保持各自调用参数不变
+  #byMode(sendResponse, independentFn, tabFn) {
+    return utils.asyncHandler(async () => {
+      const im = await independentClient.loadMode();
+      return im ? independentFn() : tabFn();
+    }, sendResponse);
+  }
+
+  // 侧边栏作品卡点赞/收藏状态切换：远端设置成功后才落库（active=true，mergeAndSave
+  // 自动补分组/时间戳并广播）或删本地（false），失败保持原状。点赞无独立模式分支，
+  // 由路由层拒绝（a_bogus 与 XHR 原型链绑定，见 docs/06）
+  async #applyReaction(handlers, remote, message, sendResponse) {
+    if (!remote?.ok) return sendResponse({ ok: false, error: remote?.error || "FAILED" });
+    if (!message.active) return handlers.delete([message.awemeId], sendResponse);
+    if (!message.work || !message.work.awemeId) return sendResponse({ ok: false, error: "NO_WORK" });
+    return handlers.save([message.work], sendResponse);
+  }
+
+  #reactionMessage(message) {
+    return { awemeId: message.awemeId, active: message.active === true, timeout: CONFIG.TIMEOUT.REQUEST };
   }
 
   // 路由保持同步函数：返回 true 表示稍后异步 sendResponse（与 chrome.runtime.onMessage 契约一致）
@@ -94,7 +100,7 @@ class App {
         return utils.asyncHandler(() => worksHandlers.save(message.works, sendResponse), sendResponse);
       case "GET_WORKS":
         return utils.asyncHandler(
-          () => worksHandlers.get(message.groupId, sendResponse, message.page, message.cursor),
+          () => worksHandlers.get(message.groupId, sendResponse, message.page, message.cursor, message.ascending),
           sendResponse,
         );
       case "DELETE_WORKS":
@@ -107,7 +113,7 @@ class App {
       // 点赞域
       case "GET_FAVORITES":
         return utils.asyncHandler(
-          () => favoritesHandlers.get(message.groupId, sendResponse, message.page, message.cursor),
+          () => favoritesHandlers.get(message.groupId, sendResponse, message.page, message.cursor, message.ascending),
           sendResponse,
         );
       case "DELETE_FAVORITES":
@@ -121,7 +127,7 @@ class App {
       // 收藏域
       case "GET_COLLECTIONS":
         return utils.asyncHandler(
-          () => collectionsHandlers.get(message.groupId, sendResponse, message.page, message.cursor),
+          () => collectionsHandlers.get(message.groupId, sendResponse, message.page, message.cursor, message.ascending),
           sendResponse,
         );
       case "DELETE_COLLECTIONS":
@@ -160,6 +166,29 @@ class App {
           sendResponse,
         );
 
+      // 候选域（作者档案型，扩展自建）
+      case "SAVE_CANDIDATES":
+        return utils.asyncHandler(() => candidatesHandlers.save(message.candidates, sendResponse), sendResponse);
+      case "GET_CANDIDATES":
+        return utils.asyncHandler(() => candidatesHandlers.get(message.groupId, sendResponse), sendResponse);
+      case "DELETE_CANDIDATES":
+        return utils.asyncHandler(() => candidatesHandlers.delete(message.uids, sendResponse), sendResponse);
+      case "MOVE_CANDIDATES":
+        return utils.asyncHandler(
+          () => candidatesHandlers.move(message.uids, message.targetGroupId, sendResponse),
+          sendResponse,
+        );
+      // 作者域成员资格主键集（作品卡作者状态 chip）：两域主键并行直取（keyPath=uid），
+      // 不物化记录；供 options 建 Set 做 O(1) 判定
+      case "GET_AUTHOR_UID_SETS":
+        return utils.asyncHandler(async () => {
+          const [followings, candidates] = await Promise.all([
+            followingsHandlers.getAllKeys(),
+            candidatesHandlers.getAllKeys(),
+          ]);
+          sendResponse({ ok: true, followings, candidates });
+        }, sendResponse);
+
       // 分组管理 (域感知)
       case "GET_GROUPS":
         return utils.asyncHandler(() => groups.get(message.domain, sendResponse), sendResponse);
@@ -186,50 +215,71 @@ class App {
       case "RESET_DOMAIN":
         return utils.asyncHandler(() => dataTools.reset(message.domain, sendResponse), sendResponse);
       case "GET_STATS":
-        return utils.asyncHandler(() => dataTools.getStats(sendResponse), sendResponse);
+        return utils.asyncHandler(() => dataTools.getStats(sendResponse, message), sendResponse);
 
       // 独立模式 / Tab 转发
       case "FETCH_FOLLOWING":
-        return utils.asyncHandler(async () => {
-          const im = await independentClient.loadMode();
-          if (im) return independentTasks.fetchFollowing(message.secUid, sendResponse);
-          return scanTasks.fetchFollowing(message.secUid, sendResponse);
-        }, sendResponse);
+        return this.#byMode(
+          sendResponse,
+          () => independentTasks.fetchFollowing(message.secUid, sendResponse),
+          () => scanTasks.fetchFollowing(message.secUid, sendResponse),
+        );
       case "CALIBRATE_FOLLOWING":
-        return utils.asyncHandler(() => scanTasks.calibrateOne(message.uid, message.secUid, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => scanTasks.calibrateOne(message.uid, message.secUid, CONFIG.STORAGE_KEYS.FOLLOWINGS, sendResponse),
+          sendResponse,
+        );
+      case "CALIBRATE_FOLLOWINGS":
+        return utils.asyncHandler(
+          () => scanTasks.calibrateAll(CONFIG.STORAGE_KEYS.FOLLOWINGS, sendResponse),
+          sendResponse,
+        );
+      case "CALIBRATE_CANDIDATE":
+        return utils.asyncHandler(
+          () => scanTasks.calibrateOne(message.uid, message.secUid, CONFIG.STORAGE_KEYS.CANDIDATES, sendResponse),
+          sendResponse,
+        );
+      case "CALIBRATE_CANDIDATES":
+        return utils.asyncHandler(
+          () => scanTasks.calibrateAll(CONFIG.STORAGE_KEYS.CANDIDATES, sendResponse),
+          sendResponse,
+        );
       case "FETCH_FAVORITES":
         return utils.asyncHandler(async () => {
           // 点赞列表无独立模式分支（favorite 端点 Turing 风控，见 docs/05）
           return scanTasks.fetchFavorites(message.secUid, message.persist, sendResponse);
         }, sendResponse);
       case "FETCH_COLLECTION":
-        return utils.asyncHandler(async () => {
-          const im = await independentClient.loadMode();
-          if (im) return independentTasks.fetchCollection(message.persist, sendResponse);
-          return scanTasks.fetchCollection(message.persist, sendResponse);
-        }, sendResponse);
+        return this.#byMode(
+          sendResponse,
+          () => independentTasks.fetchCollection(message.persist, sendResponse),
+          () => scanTasks.fetchCollection(message.persist, sendResponse),
+        );
       case "SYNC_WORKS":
-        return utils.asyncHandler(async () => {
-          const im = await independentClient.loadMode();
-          if (im) return independentTasks.syncWorks(message.awemeIds, sendResponse);
-          return scanTasks.syncWorks(message.awemeIds, sendResponse);
-        }, sendResponse);
+        return this.#byMode(
+          sendResponse,
+          () => independentTasks.syncWorks(message.awemeIds, sendResponse),
+          () => scanTasks.syncWorks(message.awemeIds, sendResponse),
+        );
       case "FETCH_WORKS_PAGE":
-        return utils.asyncHandler(async () => {
-          const im = await independentClient.loadMode();
-          if (im) return independentTasks.fetchWorksPage(message.secUid, message.cursor || "", sendResponse);
-          return tabBridge.fetchWorksPage(message, sendResponse);
-        }, sendResponse);
+        return this.#byMode(
+          sendResponse,
+          () => independentTasks.fetchWorksPage(message.secUid, message.cursor || "", sendResponse),
+          () => tabBridge.fetchWorksPage(message, sendResponse),
+        );
 
-      // 入库：作者作品 → 作品域（分页循环长任务）/ 作者档案 → 关注域（单请求短操作）
+      // 入库：作者作品 → 作品域（分页循环长任务）/ 作者档案 → 候选域（单请求短操作）
       case "IMPORT_USER_WORKS":
-        return utils.asyncHandler(async () => {
-          const im = await independentClient.loadMode();
-          if (im) return independentTasks.importUserWorks(message.secUid, sendResponse);
-          return scanTasks.importUserWorks(message.secUid, sendResponse);
-        }, sendResponse);
-      case "IMPORT_FOLLOWING":
-        return utils.asyncHandler(() => scanTasks.importFollowing(message.secUid, sendResponse), sendResponse);
+        return this.#byMode(
+          sendResponse,
+          () => independentTasks.importUserWorks(message.secUid, sendResponse),
+          () => scanTasks.importUserWorks(message.secUid, sendResponse),
+        );
+      case "IMPORT_CANDIDATE":
+        return utils.asyncHandler(() => scanTasks.importCandidate(message.secUid, sendResponse), sendResponse);
+      // 工具弹窗 uid → 主页链接（双模只读查询，不落库）
+      case "RESOLVE_USER_PROFILE":
+        return utils.asyncHandler(() => scanTasks.resolveUserProfile(message.uid, sendResponse), sendResponse);
       case "CANCEL_FAVORITES":
         return utils.asyncHandler(async () => {
           // 点赞取消无独立模式分支（a_bogus 与 XHR 原型链深度绑定，SW 无法直连，见 docs/06）
@@ -239,10 +289,29 @@ class App {
           return scanTasks.runCancelBatch(message.awemeIds, "CANCEL_ONE_FAVORITES", "CANCEL_PROGRESS", message.domain, sendResponse);
         }, sendResponse);
       case "CANCEL_COLLECTION":
+        return this.#byMode(
+          sendResponse,
+          () => independentTasks.cancel(message.awemeIds, message.domain, sendResponse),
+          () => scanTasks.runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", message.domain, sendResponse),
+        );
+      // 侧边栏作品卡：单作品点赞/收藏状态切换（active=true 添加并落库，false 取消并删本地）
+      case "SET_FAVORITES":
         return utils.asyncHandler(async () => {
+          if (!message.awemeId) return sendResponse({ ok: false, error: "EMPTY" });
+          if (await independentClient.loadMode()) {
+            return sendResponse({ ok: false, error: "UNSUPPORTED_INDEPENDENT" });
+          }
+          const remote = await tabBridge.sendAsync("SET_ONE_FAVORITES", this.#reactionMessage(message));
+          await this.#applyReaction(favoritesHandlers, remote, message, sendResponse);
+        }, sendResponse);
+      case "SET_COLLECTION":
+        return utils.asyncHandler(async () => {
+          if (!message.awemeId) return sendResponse({ ok: false, error: "EMPTY" });
           const im = await independentClient.loadMode();
-          if (im) return independentTasks.cancel(message.awemeIds, "collection", message.domain, sendResponse);
-          return scanTasks.runCancelBatch(message.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", message.domain, sendResponse);
+          const remote = im
+            ? await independentTasks.setReaction(message.awemeId, message.active === true)
+            : await tabBridge.sendAsync("SET_ONE_COLLECTION", this.#reactionMessage(message));
+          await this.#applyReaction(collectionsHandlers, remote, message, sendResponse);
         }, sendResponse);
       case "GET_SECURITY_STATUS":
         tabBridge.getSecurityStatus(sendResponse);

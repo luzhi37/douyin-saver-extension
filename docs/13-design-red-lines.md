@@ -1,0 +1,78 @@
+# 13 · 设计红线与知识点陷阱
+
+> 本文自 AGENTS.md「设计约定与知识点陷阱」迁出（2026-11-01 瘦身）。AGENTS.md 只保留精简版红线索引；完整规则、机制原理、历史踩坑与实测数据在本册。未单独标注依据的条目，其机制定案与复现数据见 [11](./11-options-ui.md)；词汇与消息协议见 [01](./01-project-architecture.md)；写入语义见 [10](./10-storage-write-and-import.md)。
+
+## 编码约定
+
+- **所有共享全局变量定义在 `options/core.js` 顶部** — `config` / `dom` / `state` / `store` / `utils` / `runtimeConfig` / `services` 在此定义并 export，其余模块经 ES import 引用；类内自引用一律 `this.xxx()`，不用模块级单例变量。
+- **私有方法用 `#` 语法**；class field 箭头仅用于 add/remove 对称的事件回调（如 `Sidebar.#onResizeDown/Move/Up`）。
+- **词汇与 API 关键词一一对应：点赞=favorite（域键 `favorites`、链路 `FETCH_FAVORITES` 族、延迟 `syncFavorites`/`cancelFavorites`）、收藏=collection(s)（域键 `collections`、链路 `FETCH_COLLECTION` 族、延迟 `syncCollection`/`cancelCollection`）、作品/关注/候选=works/followings/candidates** — 每个语义恰好一个词，`like`/`digg` 词形标识符全仓清零（`favorite`/`collect`/`digg`/`listcollection` 仅存于端点路径、`API_PATTERNS`、DNR urlFilter、`URL_FAVORITE_TAB` 值 `?showTab=like` 等**字符串值**）。历史教训：域键曾误用 favorites 指收藏、又曾以 likes 作点赞近义词与链路 favorite 并存，两次一词两用后于 v2.0.3 定案为域键=链路同词；本版本不再携带 IDB 改名迁移（升级前须先在旧版导出备份），导出带 `schemaVersion: 2`、导入按版本区分旧备份（favorites 键 v1=收藏数据、v2=点赞数据，旧收藏备份误投点赞域报 `LEGACY_COLLECTION_BACKUP`）。取消操作四要素按域组构：inject `CANCEL.favorites`（digg 端点）/`CANCEL.collection`（collect 端点）与 background `CANCEL.collection` 同构。延迟键按业务链路命名（含独立的 `importWorks`），禁止跨链路借用。
+- **aweme 为平台实体词，视同端点值白名单** — 记录字段 `awemeId`（持久化！）、API 响应字段 `aweme_list`/`aweme_id`/`aweme_type`、`AWEME_TYPE_NOTE`、`transformAwemeItem` 保留 aweme 词形，禁止"规范化"为 works（改名牵涉数据迁移且与 API 字段脱钩）。
+- **动词语义定案：SYNC_WORKS ≠ 列表扫描** — `SYNC_WORKS` 是对**已存**作品逐条重取详情；`FETCH_FOLLOWING`/`FETCH_FAVORITES`/`FETCH_COLLECTION` 是列表扫描入口。延迟键族统一 `sync*` 前缀（`syncFollowings`/`syncFavorites`/`syncCollection` 服务于对应 `FETCH_*` 扫描），属既定族名非动词错位。
+- **捕获层词汇分层：页面捕获事件用域词、签名捕获用端点词** — inject 派发的 `DY_CAPTURE_WORKS`（按钮捕获，载荷为 Work 记录）与 fetch-hook 被动捕获用域词 works；`signatureCapture` 的 `postQuery`/`favoriteQuery`/`collectionQuery`/`detailQuery`/`followingQuery`/`profileQuery` 按其拦截的端点原文命名，两者分层自洽、勿互改。单作品详情两条通道名字含 detail 词根且传输分层：tab 转发 `FETCH_WORK_DETAIL`（带任务控制）、WorkSaver 直调 `FETCH_DETAIL`（免任务控制）——事件名不同不可合并，合并会导致同一请求双触发双取数。
+
+## 消息与通信
+
+- **取消信号必须发到抖音 document** — `DY_CANCEL_ACTIVE_TASK` 经 background→content→inject 路径送达，不能直接在 options 页 dispatch（路径差异见 [01](./01-project-architecture.md) / [09](./09-inject-tab-mode.md)）。
+- **同步 requestId 时序差异** — `SYNC_WORKS` 立即返回 requestId（进度经 `Sync.#requestId` 严格过滤）；`FETCH_FOLLOWING` 等 fetch 完成才返回，收集期 `Sync.#requestId` 尚为 null，进度过滤必须兼容（null 时全收、拿到后严格过滤，见 [03](./03-independent-sync-followings.md)）。
+
+## 网络与签名
+
+- **点赞/收藏状态设置用 XHR 而非 fetch（Tab 模式）** — a_bogus 签名与 XHR 原型链深度绑定，fetch 发不出有效签名；独立模式仅收藏由 background 直接 `fetch()` POST（`action=1/0`，点赞路由层拒绝 `UNSUPPORTED_INDEPENDENT`），Referer / Sec-Fetch-* 靠 DNR 规则网络层注入（见 [06](./06-independent-cancel-collection.md) / [08](./08-dnr-rules.md) / [09](./09-inject-tab-mode.md)）。
+- **独立模式全端点需 Argus webSign 签名** — listcollection 缺签名 403 `Signature Not Found`；`IndependentClient.request` 默认开启（`options.webSign !== false`），aweme/post 亦被风控间歇强制同款校验（算法与盐轮换处置见 [05](./05-independent-scan-collection.md)）。
+- **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject 六个 API 请求函数经 Fetch Hook 但不被捕获；走 `origFetch.call(window, ...)` 绕过 Hook 会错过页面包装器注入的签名参数（见 [09](./09-inject-tab-mode.md)）。
+
+## 数据语义
+
+- **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案见 [02](./02-independent-sync-works.md) / [09](./09-inject-tab-mode.md)（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）。
+- **侧边作品栏作品卡信息条（发布日期 / 点赞·收藏域状态与切换 / 「存入·入库」三态按钮）判据按 awemeId** — 三域存在性经一次批量 `GET_WORKS_BY_IDS { domain, ids }`（works/favorites/collections 三域并行，主键直取）→ 命中即在该域，任一域失败该域降级空集（保守按不存在展示）；信息条内 ♥ 点赞 / ★ 收藏 为**可点击按钮**、两态常显（存在 = `.on` 高亮 / 不存在 = 暗色）：点击走 `SET_FAVORITES` / `SET_COLLECTION`（远端 XHR/独立 POST 成功后才把当前作品写入对应域、取消成功后删本地记录，卡片原地翻转态），失败保持原态；点赞无独立模式分支（`UNSUPPORTED_INDEPENDENT`，收藏双模均通），`Sidebar.#pendingReactions` 防重入。`#syncSaveState` 把 `inWorks`/`pending` 分流成**单一三态「存入」按钮**（存入 / 存入中… / 已入库，后者禁用 + `.in-works` 弱化），`SAVE_WORKS` 单作品落库后卡片原地更新。**禁止再拆独立存在性徽标**（与按钮重复表达同一状态，2026-10-20 并入）。存入按钮与 ♥/★ 在封面链接之外（信息条），点击不得触发外链跳转；`Sidebar.#pendingSaves` 防重入。见 [11](./11-options-ui.md)「侧边栏作品卡信息条」。（关注者卡不再有存入作品域按钮，2026-10-16 移除）**侧边作品栏跨五域共用**：关注/候选域由作者卡打开，作品/点赞/收藏域经 Ctrl/Cmd+点击作品作者名打开（内容同为该作者的远端作品列表；普通点击作者名仍打开主页，2026-10-31）。
+- **作品卡作者域状态 chip（关注/候选）按 uid 主键集判定** — `GET_AUTHOR_UID_SETS` 经 `storage.getAllKeys` 直取关注/候选两域主键（作者域 keyPath=uid，**不物化记录**），options 建 `state.followedUids`/`state.candidateUids`；进入作品型三域时**等首屏渲染落笔后再取**（`services.whenFirstScreen` 错峰，避免与 page-0 抢 IDB；主键集到达后 `syncAuthorFlags()` 原地 patch）与两域 `STORE_CHANGED` 时刷新（失败保留旧集、不显示即降级）。chip 随 `fillCard` 懒创建、`clearCard` 移除（同勾选框），主键集刷新后 `WorksGrid.syncAuthorFlags()` 只 toggle 挂载卡 chip、**禁止整刷**；chip 不可点击、跨分组判定（「稍后删除」组也算在域内）、无 `uid` 不显示、同时命中显示两个。**禁止改用 `authorFollowed`（平台关注快照）或往 Work 记录写派生字段**（会过期且污染导出/导入 schema）。见 [11](./11-options-ui.md)「作品卡作者域状态 chip」。
+- **图集（note）封面「取轻」：`cover` 存平台封面档，卡片展示统一走 `utils.pickCardCover(work)`** — Tab `#extractCover` 对 note 优先 `video.cover.url_list[0]`（`~noop.jpeg` 封面档）、回退首图；独立 `formatWork` 无 note 分支、仅取 `video.cover`（缺失即空串，不回退首图）。平台给图集首图签发的 `:3000:3000` 模板 ≈ 原图（实测 6-8.7MP、解码 25-35MB/张，是侧边栏/网格滚动卡顿根因）；`~tplv` 改写小变体被签名拒绝（实测 403）、url_list 无更小档。选源规则：首图模板短边 <2000（如 `:1440:` 压缩档）保留首图，否则 cover 优先、缺失回退；**详情首帧 cover 占位后静默换 `images[0]` 高清**（`#imgProbeToken` + `#noteWork/#noteImgIndex` + overlay 三重守卫）。旧已存记录（cover===images[0]）无迁移、重采集自动升级。见 [02](./02-independent-sync-works.md) / [11](./11-options-ui.md)。
+- **工具弹窗「清理点赞域/清理收藏域」把未关注作者的作品移入「稍后删除」** — 关注全集经 `GET_FOLLOWINGS { groupId:"all" }` 加载；点赞/收藏域经 `GET_*`（`groupId:"all"`、`page:0` + keyset `cursor`）逐页筛 `uid` 不在全集的作品；**无 `uid` 作品不参与判定、关注域为空时拒绝执行**（避免整域误移），已位于「稍后删除」的条目不重复计入；确认后经 `moveToTrashGroup` + `MOVE_FAVORITES`/`MOVE_COLLECTIONS` 落库（见 [01](./01-project-architecture.md)）。候选域同名逻辑归「同步」按钮（`Sync.checkCandidatesOverlap`），工具弹窗不重复提供。
+- **note 内容项实况视频 `imageVideos[]` 与 `images[]` 逐位对位（红线）** — 图集每条内容项可为纯静帧或实况（静帧 + 1-8s 静音小视频 `images[i].video.play_addr`，实测 110-280KB）；两提取端同源映射保对位（inject `#extractImageVideos` 与 `#extractImages` 同过滤、formatWork imagePairs 双数组），**无静帧项两者同步丢弃、无视频项空串占位；旧记录字段缺失按全空语义，禁止在无对位保证下按索引读（`imageVideos?.[i]`）**。详情切条自动单次播放（muted、无控件、`pointer-events:none` 叠于 `#detailImage` 同槽位；`ended` 隐藏回静帧；`play()` 拒绝/媒体 error 静默隐藏；不调 markMediaOk/Fail、不写 `state.mediaMuted`、不设 `#setMediaAspect`），`#noteClipToken`/`#imgProbeToken` 代际守卫，`#releaseNoteClip` 挂 addCleanup（切作品/关闭释放）、`pauseOnHidden` 一并停播；**起步时机必须对齐本条静帧**——`#noteShowImage` 里小视频的 `#playNoteClip` 须在静帧**提交点**（探针 `onload` 的 `doCommit`）才调用，不得在探针之前同步上屏，否则小视频会叠在「切条尚未替换、仍保留的旧静帧背景」之上（切条零空档不先清背景，2026-10-20 修复）。见 [01](./01-project-architecture.md) / [11](./11-options-ui.md)。
+
+## UI 交互与 CSS
+
+- **批量勾选必须用 `Batch.updateCheckboxDOM`** — 只设 `innerHTML` 不加/移除 `checked` 类则图标透明不可见；`handleBatchSelectAll` 按域选择 checkbox（作品型三域 `.work-checkbox`，作者域两域 `.following-checkbox`）。勾选框**显隐由 `body.batch-mode` 纯 CSS 驱动**，JS 禁止逐元素写 inline display；勾选框随填充创建、降级（clearCard）即移除，退出批量只清 `.checked` 的。**批量禁选文本走 `#mainGrid` mousedown preventDefault，禁止用 CSS user-select**（全网格级联重算是进入批量模式卡顿主因，见 [11](./11-options-ui.md)）。**批量模式下 Shift+点击 = 连选（`Batch.#applyRange`）；Ctrl/Cmd 旁路仅保留作者维度**：关注/候选域点击作者卡、作品/点赞/收藏域点击作品作者名均打开同一侧边作品栏（不切换勾选、不退出批量）；作品标题/作者外链不再有 Ctrl/Cmd 旁路（批量模式下与普通点击一致归勾选）；实现分别在 `WorksGrid.handleClick` 作者分支与 `AuthorGrid.handleClick` 顶部守卫。**Shift 区间必须按网格已渲染顺序快照 `VirtualGrid.renderedItems()` 取序（与挂载卡 DOM 同序，禁止按 `getWorksView()`/`getAuthorRecordsView()` 现算下标——视图随 dataVersion 重算后可能与 DOM 不同序，「勾选两点间、移动的却是区间外卡片」的根因）；用户重定义结果集时选区与 Shift 锚点一并作废（`Batch.resetSelection`）**。**批量模式下标题/作者恒为 `cursor:default` + 无 hover 变色**（`body.ctrl-hold` 与修饰键视觉切换已随外链旁路一并移除）。
+- **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
+- **弹窗 footer 按钮键盘直达（无焦点设计）** — **分组管理/工具弹窗不自动聚焦输入框**（`showDialog(..., { autoFocus:false })`，2026-10-28 定案）；Enter=顶层弹窗主动作（footer 按钮 danger>primary 推断、ghost 永不占）、Ctrl+Enter 仅显式 `hotkey: "ctrl+enter"` 可占；登记随 footer 增清同步（`updateDialog` 清空即失效、`addDialogBtn` 追加补登），按钮内 `.dy-btn-kbd` 徽标显示实际绑定、与槽位解析同源；输入框一律让位、焦点在弹窗内部操作按钮时走原生激活（**✕ 默认落点除外，Enter 仍直达主动作**），弹窗开启时弹窗外的 Enter/Space 被 `preventDefault` 屏蔽；Esc 仍归 main.js 单点收口、Tab 不管理。见 [11](./11-options-ui.md)「弹窗 footer 按钮键盘直达」。
+- **`state.activeDialog` 在弹窗挂载时由 `Dialog.#mountLayer` 写入（恒等于顶层 onClose）** — 只在 `closeDialog` 出栈时补写会使「本次打开后的首次关闭」静默失效（机制与回归教训见 [11](./11-options-ui.md)）。无 onClose 的弹窗该值为 null，走兜底关闭。
+- **Esc 单点收口按层级「弹窗 → 详情 → 失焦」（红线）** — Esc 在 main.js 唯一裁决：弹窗打开 → 关弹窗（顶层 ✕ 同入口）；否则详情打开 → 退出详情；都无 → 让当前聚焦元素失焦（`document.activeElement.blur()`，保留输入框「退出聚焦」语义——搜索框场景即 Esc 退出输入、再按 S 收起搜索栏）。**搜索栏与批量模式均不归 Esc**：搜索栏由 S 键开关（2026-10-20 定案），批量模式由 B 键 / 「批量」按钮退出（2026-10-21 定案：移除 Esc 退出批量）。计数输入框内 Esc 走其自身监听（stopPropagation 还原编辑、不关详情）。**详情监听仍不得自管 Esc**——同事件多 document 监听串行执行，main.js 先关掉弹窗后 detail 查到的 dialogOverlay 已是关闭态，detail 若自管 Esc 会连详情一并关掉。
+- **详情层双形态进度条**（视频连续轨道/图集分段音乐驱动，seek 统一 `#applySeek`）、`.media-view` 宽度随媒体宽高比自适应（`--media-aspect` 由 `Detail.#setMediaAspect` 写入，切作品复位 9:16）与模糊背景全亮度（无压暗/无渐晕，对齐抖音播放器）为既定视觉，定案细节见 [11](./11-options-ui.md)（2026-09-29 修订：废弃横版 39.3vw 封顶；2026-10 修订：模糊底废弃 0.8 压暗与边缘渐晕——叠加后两缘过暗、关闭钮难辨）。
+- **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — `row.querySelector('.sec-truncate, .sec-expanded')`（见 [09](./09-inject-tab-mode.md)）。
+- **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被后部组件规则覆盖，hidden 静默失效。
+- **搜索栏收起即重置，筛选不跨收起保留** — **搜索栏默认展开且任何展开路径均不自动聚焦输入框**（`options.html` 初始不带 `hidden`、`openSearchBar` 不调 focus，仅用户点击输入框才聚焦，2026-10-28 定案）；`closeSearchBar()` 必须先调 `clearSearchFilters()`；**域切换只重置搜索态、搜索栏保持展开**（`resetSearchState(false)`：清筛选 + 收菜单、不隐藏栏位；重置不重渲，网格随域切换即清场重载，2026-10-28 定案替代 2026-10-23「随域切换收起」）；筛选状态**不落 URL hash**（P1-8 的刷新恢复已移除：hash 残留会让搜索栏在从没打开过它的会话里被「自动展开」，main.js init 仅保留一次性残留清理，全仓无 hash 读写方）（见 [11](./11-options-ui.md)「SearchBar」）。**无激活筛选时收起是纯 UI 重置**（`clearSearchFilters` 以重置前的 `isFilterActive()` 判据，状态==默认则不动网格与滚动——数据变化已由各自增量通道同步，重渲只会因身份失配白闪一次，2026-10 定案）。**范围匹配口径与提示文案严格对齐**（作品型三域：作者=昵称子串、标题=desc 子串、ID=作者 uid 精确；作品 `awemeId` 不参与任何关键词匹配，2026-10-14 定案）——改文案必须同步改行为、反之亦然（见 [11](./11-options-ui.md)「SearchBar」）。
+
+## 渲染与虚拟化
+
+> 管线全景、机制细节与历史踩坑见 [11](./11-options-ui.md)；本节只保留规则红线。
+
+- **快滚门控** — 快滚判定在 scroll 事件时刻做（帧间差超 `FAST_SCROLL_THRESHOLD`），rAF 侧不推进判定基准；快滚态挂起填充 drain、跳过 `#demote`；停稳后 `#refillBand` 丢弃沿路积压（**丢弃前必须全量重新 observe**）只补落点带区；滚轮级滚动 scrollFast 恒 false，由 `#scheduleSettleCheck` 在滚动静止一帧后补同款收口（幂等），勿让滚轮路径失去停稳收口。容器级事件委托（click/pointerover/out/input）一律绑 `#mainGrid` 而非容器——清场换壳后零重绑。
+- **网格卡片层禁用 `content-visibility: auto`** — `.work-card`/`.work-skeleton`/`.following-card` 一律不加（屏外跳过渲染会让远跳落点骨架延迟出现）；sidebar 的 CV 禁令是另一条理由，互不影响。
+- **侧边作品栏虚拟化** — 条目只挂 meta、进视口限量发探针、整页 fragment 追加（禁止创建即全量急切加载）；observer root 必须显式传 `dom.sidebarBody`；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；不用 `content-visibility:auto`。
+- **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换 + 活动窗口）** — 填充/卸载 IO 的 root 必须显式传 `#mainGrid`；哨兵被删须立刻续接；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`）；两段式铺设（首段同步 + 余量游离态拼装一次挂载），**禁止逐帧向容器追加**；活动 DOM 锁 `GRID_MOUNT_MAX`（600）硬上限，超出只登记进 `#viewItems`/`#itemMap` 不挂 DOM；滚动条与恒定活动 DOM 由活动窗口（`#syncWindow`/`#remountWindow`）+ 尾部占位（`#syncTailReserve`）+ 滚近扩容（`#extendIfNeeded`）+ 远跳追赶（`#scheduleRush`）维持，**禁止改回「预挂/后台补铺余量卡」**；窗口行范围/扩容目标/尾部占位一律以「已加载条目数」为界且换算到窗口系；整窗重挂按 itemKey 复用新旧窗口重叠卡、只给新跨入的边行克隆骨架（**禁止整窗重克隆回灰骨架**），窗口已铺到已加载末尾时下滚不再重挂（否则逐行整窗重建 = 滚动闪烁）；`fillSlots` 按键前缀自锚定回填、占位卡在 fill IO 回调中**不得 unobserve**；`insertItems`/`removeItems` 位插对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前、`removeItems` 同步收缩 `#totalSlots`（下界取**视图系剩余条目数**、不是窗口系 `#slots.length`）；**非窗口化（`total ≤ GRID_MOUNT_MAX`）⟺ `#headTrim === 0` 是硬不变量**——剩余跌破上限却仍残留窗口时，`removeItems` 立即 `#remountWindow(0)`、`#syncWindow` 的非窗口化分支兜底重挂（否则头部回收区只剩 padding-top，上滚整屏空白、无卡无骨架）；空态按数据口径（`known`）判定，禁止看 `container.children.length`（窗口态下「窗口掏空」≠ 网格为空）；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载降级经 `#pendingDemotes` 按 `DEMOTE_FRAME_BUDGET_MS` 预算分帧（快滚期冻结、让位于填充队列），勿改回 IO 回调内同步成批降级；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`（含清尾部占位 inline style）；卡宽自适应 `#applyLayout` 容差带搜索、inline `gridTemplateColumns` + `--dy-card-actual` 落笔，`#mainGrid` 必须保持 `scrollbar-gutter: stable`——**禁止改回「固定卡宽 + auto-fill」**。机制全景、窗口系换算细则与实测数据见 [11](./11-options-ui.md)「VirtualGrid 渲染管线」。
+- **STORE_CHANGED 收口优先增量、整刷仅作兜底** — 新增落当前视图走 `tryHeadInsert` 头插，禁止改回「视图内新增→整刷」；头插与在途分页的守卫（`services.isGridLoading()`/`grid.isScrollFrozen()` 等）不过必须整刷兜底、不得绕过（`state.gridSlots` 命中走 deferred 借道待渲、不整刷）；bulk 补拉规模 > `GRID_PREMOUNT_CAP` 直接整刷兜底；落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引 prev 遍历同序、bulk 载荷只带 id 集（规模守卫与管线全景见 [11](./11-options-ui.md)「STORE_CHANGED 增量收口管线」）。
+- **分组与域切换同序列清场（点击即清空）** — 切换瞬间 `appShell.clearActiveGrid()`：abortRender×5（五网格实例）+ O(1) 换空壳（`replaceWith`）+ 旧子树空闲期分批销毁（requestIdleCallback，每轮 8ms 预算）；「冻结-定格」与「不清场保无闪烁」均已定案否决/禁止。数据侧配套 `loadDomainData` 分页渐进（作者域两域单发全量）。
+- **`state.dataVersion` 是视图缓存的失效判据（红线）** — store 域数据变更方法自动自增；绕过 store 封装的原地写入（main.js `tryHeadInsert`/`applyStoreUpserts`）必须手动自增（detail.js `removeWork` 走 `store.removeWorkRecordSilent`，自增在封装内）。`getWorksView`/`getAuthorRecordsView` 返回共享缓存数组，调用方一律只读。筛选态（封闭视图）首帧同步预铺恒为 `GRID_PREMOUNT_CAP_FILTER`、余量行由尾部占位（`#syncTailReserve`）预留、滚近按需铺卡并等量收缩占位、铺卡/扩容凡快照已覆盖的槽位必须带真实键（无 fillSlots 回填的封闭态里，无键占位卡永久灰卡）；机制与红线见 [11](./11-options-ui.md)「视图阶段缓存与筛选切换性能」。
+- **详情导航顺序 = 网格已渲染顺序（红线）** — Detail 翻页与 K/N 计数取 `VirtualGrid.renderedItems()`（与挂载卡 DOM 同序），快照缺失才回退 `getWorksView()`，**禁止改回按视图现算**：渐进加载（作品数排序/加载中途切排序）时视图随 dataVersion 增长、网格仍停在上一版渲染顺序，按视图导航会与网格可见顺序错位（2026-10-30 修复）。展示作品以 `#currentId` 钉住，网格重渲换序后 `#index` 按 id 重锚定；关闭详情按 awemeId 滚回原卡（`restoreGridScroll(awemeId)`，不得用下标）。见 [11](./11-options-ui.md)「详情导航顺序 = 网格已渲染顺序」。
+- **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断。**启停必须再补滚动侧收口**：滚动/布局变化会让卡从指针下移走，而浏览器不重算 hover、不补发 `pointerout`（「hover 粘住」），预览会一直播（未静音即残留声音），唯一停靠点退化为 demote/整窗重挂/页面隐藏——`#bindMediaEvents` 另挂 `pointermove`（保鲜指针坐标）+ `scroll`（`#scheduleHoverRecheck`：rAF 节流按最新坐标验证 `#currentMediaCard` 的 `.work-media` 框是否仍含指针，否则 `#stopPreview`；仍在框内则保留）。（2026-10-20 修复）
+
+## 媒体体系
+
+- **媒体加载有全局熔断** — 失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`。
+- **静音偏好全页单一共享（`state.mediaMuted`）** — 网格卡片与详情播放器两处静音按钮双向同步：网格走 `WorksGrid.#toggleMediaMute()`（翻转标志 + `syncMediaMute()` 同步全部卡片与侧栏在播预览），详情走 `Detail.#toggleMediaMute(el)`（视频/图集音乐共用，回写网格卡片元素态）；填充/悬停起播与详情渲染路径统一施加该标志，勿读元素 `muted` 回写偏好。禁止改回两套独立标志（历史「详情独立」实现进详情即丢静音状态）。依据见 [11](./11-options-ui.md)「静音偏好全页单一共享」。
+- **离开扩展页面即暂停全部播放** — `visibilitychange`(hidden) 触发：卡片预览走 `WorksGrid.stopAllMedia`、侧栏悬停预览走 `Sidebar.stopAllMedia`，详情走 `Detail.pauseOnHidden`；仅页面真正隐藏时暂停，窗口失焦不暂停。
+- **侧边作品栏悬停预览与作品卡共用取链与媒体体系** — `FETCH_WORKS_PAGE` 返回的 work 已带 `video`（三级取链），`.sidebar-work-player` 悬停起播（延迟 / 静音 / 熔断 / `markMediaOk/Fail` 同作品卡），note 无预览；所有摘除/降级/收起/隐藏路径必须 `Sidebar.stopAllMedia`（`pointerout` 不补发），降级同时移除 `src` 释放解码。见 [11](./11-options-ui.md)。
+- **全站媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际；切换路径旧背景保持到新背景提交（零空档）。
+
+## 相关文档
+
+| 编号 | 文档 | 关联内容 |
+|------|------|----------|
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | 架构/消息协议/配置项 |
+| 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | 取链/封面语义 |
+| 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | 作者域校准 |
+| 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | 注入侧签名与事件桥 |
+| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | 写入/导入语义 |
+| 11 | [11-options-ui.md](./11-options-ui.md) | UI 机制定案与实测数据 |
+| 12 | [12-class-map.md](./12-class-map.md) | 类职责总表 |

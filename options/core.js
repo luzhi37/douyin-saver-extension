@@ -22,10 +22,21 @@ export const config = {
   HOVER_PREVIEW_DELAY: 200,
   BLOB_REVOKE_DELAY: 10000,
   NOTE_AUTO_PLAY_INTERVAL: 3000,
-  SEARCH_DEBOUNCE: 200,
-
-  // 侧边栏
-  SIDEBAR_SNAP_POINTS: [650, 0],
+  // 侧边栏档位：N 列 × 固定卡宽（wN = N×CARD_SIZE + (N-1)*GAP + 2*PADDING）与收起(0)，
+  // 无连续宽度、无容差带；N 从 1 起由可用宽度上限决定（展开默认 3 列，见 Sidebar.DEFAULT_COLS）。
+  // CARD_SIZE 为固定卡宽，经 Sidebar.initSidebar 注入 CSS 变量
+  // --sb-card-size/--sb-grid-gap/--sb-grid-padding（options.css 的 var() 兜底值须与这里一致），
+  // 网格列数由 Sidebar.#applyColumns 以 inline gridTemplateColumns 落笔
+  SIDEBAR_CARD_SIZE: 210,
+  SIDEBAR_GRID_GAP: 6,
+  SIDEBAR_GRID_PADDING: 8,
+  // 可用上限：availableMax = appBody - 右栏 - 分割条 - MAIN_GRID_MIN；超上限的档位从
+  // 候选剔除，全部档位放不下（非拖拽路径）被动收起归 0
+  // 主网格保底宽度：关注域单列卡宽带内下限（212×CARD_SIZE_BAND_MIN≈199）附近取 195
+  // 作最小可读宽——侧栏在场时主网格至少呈现一列关注卡，appBody 再窄
+  //（< 195+62+226 = 483px）才允许被动收起侧栏
+  //（侧栏最小宽 226 = 其作品卡宽 210 + 2*padding）
+  SIDEBAR_MAIN_GRID_MIN: 195,
   SIDEBAR_SCROLL_THRESHOLD: 100,
   SIDEBAR_FILL_THRESHOLD: 50,
   SIDEBAR_IMG_PER_FRAME: 6,
@@ -35,6 +46,17 @@ export const config = {
   CARD_SIZE_FALLBACK: 261,
   CARD_GAP: 11,
   CARD_HEIGHT_OFFSET: 44,
+  // 自适应卡宽容差带（占理想卡宽比例，上下限对称 ±6%）：VirtualGrid #applyLayout
+  // 带内卡宽钳在 [MIN, MAX]×ideal——上限防「为填满而把卡片拉得过胖」，下限防
+  // 「卡片过小不可读」；无可行解（相邻列宽差跨过整个带宽）时向下破下限 ≤ 一个
+  // 带宽换零空白，卡片明显过小才钳到上限、收少量空白
+  CARD_SIZE_BAND_MIN: 0.94,
+  CARD_SIZE_BAND_MAX: 1.06,
+  // 作品卡（works/favorites/collections 三域，WorksGrid）专用宽容差带（±10%）：比作者域
+  // 沿用的全局默认（±6%）更宽，卡片在填满列宽时的可伸缩档位更大（经 VirtualGrid 构造参数
+  // sizeBandMin/sizeBandMax 按实例覆盖；作者域仍用上面的全局默认）
+  WORK_CARD_SIZE_BAND_MIN: 0.9,
+  WORK_CARD_SIZE_BAND_MAX: 1.1,
 
   // 详情页
   DETAIL_TITLE_MAX_LEN: 40,
@@ -64,15 +86,23 @@ export const config = {
   // 筛选切换都全量拆建——预铺数直接决定切换的 DOM 成本；滚近底部由键控扩容
   // （#extendIfNeeded 键控分支）倍增补齐真实键卡
   GRID_PREMOUNT_CAP_FILTER: 600,
+  // 活动 DOM 硬上限（预铺与自动翻页追加共用）：改一次卡宽要对每张已挂载卡重排其内部
+  // 子树，实测约 60µs/张——2000 张时折叠侧栏 = 120ms+，600 张约 20ms。自动翻页把
+  // 整域条目全挂进 DOM 是卡顿根因（数据仍在 #viewItems/#itemMap，滚近键控扩容铺卡）
+  GRID_MOUNT_MAX: 600,
   GRID_EXTEND_THRESHOLD: 1.5,
   // 扩容单步新增槽位上限：深域（十万级 totalSlots）倍增到后段时单步会是数千上万张
   // 占位卡克隆 + 整容器布局的长任务——超出部分留待后续滚动 rAF 继续扩，小槽位段
   // 倍增语义不变（2S < S+步长时仍按倍增）
   GRID_EXTEND_STEP: 1000,
+  // 远跳追赶单步上限：拖拽把视口丢进尾部占位区（封闭视图）后，按视口带区直铺追赶的
+  // 单步新增槽位上限——大 M 下每次容器追加都是全网格重排（实测 2 万卡单次追加约
+  // 130ms、4 万卡可达 1s），单步封顶防长冻结，未覆盖视口时下一帧续铺
+  GRID_EXTEND_JUMP_STEP: 4000,
   // 停稳降级分帧预算：快滚期冻结的降级在停稳后成批积压（沿途数千张），一次性执行
   // 是数百毫秒单任务——按帧预算分帧执行且让位于填充队列
   DEMOTE_FRAME_BUDGET_MS: 8,
-  // 网格媒体探针每帧派发配额（works 封面 + followings 头像；sidebar 窄列沿用
+  // 网格媒体探针每帧派发配额（works 封面 + 作者域头像；sidebar 窄列沿用
   // SIDEBAR_IMG_PER_FRAME）。滚入新带时数十张探针按 6/帧要摊十几帧——提到 10
   // 缩短起跑排队；派发只是 new Image()，实际网络并发由浏览器按 host 连接数自限
   GRID_IMG_PER_FRAME: 10,
@@ -90,13 +120,16 @@ export const config = {
   URL_COLLECTION_TAB: "?showTab=favorite_collection",
   URL_FOLLOWING_TAB: "?showTab=following",
 
-  // 域元数据：作品型三域（works/favorites/collections）同构 Work 记录，followings 独立结构
+  // 域元数据：作品型三域（works/favorites/collections）同构 Work 记录；作者档案型两域
+  //（followings 原生关注镜像 / candidates 扩展自建候选池）同构 7 字段记录
   WORK_RECORD_DOMAINS: ["works", "favorites", "collections"],
+  AUTHOR_RECORD_DOMAINS: ["followings", "candidates"],
   DOMAINS_META: {
-    works: { label: "作品", itemKey: "works", idKey: "awemeId", isFollowings: false },
-    followings: { label: "关注", itemKey: "followings", idKey: "uid", isFollowings: true },
-    favorites: { label: "点赞", itemKey: "favorites", idKey: "awemeId", isFollowings: false },
-    collections: { label: "收藏", itemKey: "collections", idKey: "awemeId", isFollowings: false },
+    works: { label: "作品", itemKey: "works", idKey: "awemeId", isAuthorRecord: false },
+    followings: { label: "关注", itemKey: "followings", idKey: "uid", isAuthorRecord: true },
+    favorites: { label: "点赞", itemKey: "favorites", idKey: "awemeId", isAuthorRecord: false },
+    collections: { label: "收藏", itemKey: "collections", idKey: "awemeId", isAuthorRecord: false },
+    candidates: { label: "候选", itemKey: "candidates", idKey: "uid", isAuthorRecord: true },
   },
 
   // 正则
@@ -108,6 +141,7 @@ export const config = {
 
 // ---------- dom ----------
 export const dom = {
+  appBody: document.querySelector("#appBody"),
   domainSwitch: document.querySelector(".domain-switch"),
   dsSlider: document.querySelector(".ds-slider"),
   groupTabs: document.querySelector("#groupTabs"),
@@ -164,15 +198,17 @@ export const dom = {
   btnAuthorImport: document.querySelector("#btnAuthorImport"),
   btnSettings: document.querySelector("#btnSettings"),
   menuStorage: document.querySelector("#menuStorage"),
-  leftSidebar: document.querySelector("#leftSidebar"),
+  rightSidebar: document.querySelector("#rightSidebar"),
   btnSidebarToggle: document.querySelector("#btnSidebarToggle"),
   sidebar: document.querySelector("#sidebar"),
   sidebarBody: document.querySelector("#sidebarBody"),
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
   sidebarLoader: document.querySelector("#sidebarLoader"),
+  sidebarEndNotice: document.querySelector("#sidebarEndNotice"),
   sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
   sidebarWorkTemplate: document.querySelector("#sidebarWorkTemplate"),
   batchSaveToWorks: document.querySelector("#btnBatchSaveToWorks"),
+  batchSaveToCandidates: document.querySelector("#btnBatchSaveToCandidates"),
   batchDownload: document.querySelector("#btnBatchDownload"),
   batchCount: document.querySelector("#batchCount"),
   searchBar: document.querySelector("#searchBar"),
@@ -183,14 +219,11 @@ export const dom = {
   sbScopeTitle: document.querySelector("#sbScopeTitle"),
   sbWorkFilters: document.querySelector("#sbWorkFilters"),
   sbSort: document.querySelector("#sbSort"),
-  sbWorkType: document.querySelector("#sbWorkType"),
+  sbType: document.querySelector("#sbType"),
   sbFollowFilters: document.querySelector("#sbFollowFilters"),
   sbFollowSort: document.querySelector("#sbFollowSort"),
-  sbFollowed: document.querySelector("#sbFollowed"),
-  sbUnfollowed: document.querySelector("#sbUnfollowed"),
-  sbReverse: document.querySelector("#sbReverse"),
-  btnCloseSearch: document.querySelector("#btnCloseSearch"),
   btnClearInBar: document.querySelector("#btnClearInBar"),
+  btnSearchGo: document.querySelector("#btnSearchGo"),
   btnSearchMenu: document.querySelector("#btnSearch"),
 };
 
@@ -201,25 +234,43 @@ export const state = {
   followings: [],
   favorites: [],
   collections: [],
+  candidates: [],
   currentGroupId: "all",
   batchMode: false,
   selectedIds: new Set(),
+  // 全页媒体静音偏好（网格卡片预览 + 详情播放器共用单一事实源）：两处静音按钮都读写
+  // 此标志，所有媒体渲染/起播路径统一施加；仅页面生命周期内保持，不落存储
+  mediaMuted: false,
   activeDialog: null,
-  currentFollowingSecUid: null,
+  currentAuthorSecUid: null,
   sidebarCursor: null,
   sidebarLoading: false,
-  // 作者归属判定（方案A）：关注全集 uid 集合，全量加载不受分组影响；
-  // followedUidsLoaded 标记加载成功，加载失败时保留旧集合并把“未关注”判定归零，避免误判全为未关注
+  // 关注全集 uid 集合（候选域重叠比对 + 作品卡作者状态 chip 共用）：全量不受分组影响，
+  // 加载失败时保留旧集合
   followedUids: new Set(),
-  followedUidsLoaded: false,
+  // 候选域 uid 全集（作品卡作者状态 chip）：与 followedUids 同款主键集
+  candidateUids: new Set(),
   // 短操作弹窗锁：为 true 时禁止点击 X 关闭，待操作完成才解锁
   preventDialogClose: false,
   // 渐进加载的一次性预铺额度 { domain, groupId, total }：首页渲染时消费（renderCards
   // 读取后即清），按 total 一次铺满全量骨架，余页经 fillSlots 以键前缀自锚定回填
   gridSlots: null,
+  // 当前域+分组的后台权威总量（作品型三域 = GET_* page:0 的 total；作者域 = 单发全量
+  // 长度）：搜索栏 K/N 的 N 在加载期取它，K 随页增长而 N 恒定。切域/切组瞬间由
+  // gridTotals 缓存（与分组 tab 同源）先给出 0/Total，首页到达后校正；无缓存显示「…」。
+  // 加载完成后 N 回落为已加载条数（此时与 total 相等）
+  gridTotal: null,
+  // 「domain|groupId」→ 权威总量缓存：page:0 响应与 GET_STATS 分组计数写入——切域/切组
+  // 的「0/Total」占位与分组 tab 数字同源，不会出现两个位置各说各的
+  gridTotals: {},
+  // 首屏数据未到达（切域/切组后网格已清场）：K 恒 0、N 取缓存/权威总量；首页落库即清
+  gridPending: false,
+  // 进度式分组计数运行态（一次「全部」视图加载内累计各分组已到达条数）：
+  // { domain, counts: { [groupId]: 已加载条数 } }；新载入清零（见 services._tallyGroupCounts）
+  gridGroupTally: null,
   // 域数据写入版本号：SearchBar 视图阶段缓存（#viewCache）的失效判据。store 的数据
   // 变更方法自动自增；绕过 store 封装的原地写入（main.js tryHeadInsert/applyStoreUpserts）
-  // 与归属判定输入重载（services.loadFollowedUids）必须手动自增，否则缓存读到脏视图
+  // 必须手动自增，否则缓存读到脏视图
   //（红线见 docs/11「视图阶段缓存」）
   dataVersion: 0,
 };
@@ -231,7 +282,6 @@ export const store = {
   on(event, fn) {
     if (!this._listeners.has(event)) this._listeners.set(event, new Set());
     this._listeners.get(event).add(fn);
-    return () => this._listeners.get(event).delete(fn);
   },
 
   notify(event, ...args) {
@@ -247,7 +297,9 @@ export const store = {
     state[key] = val;
     if (old !== val) {
       // 域数据替换计入数据版本（domain/currentGroupId/batchMode 等非数据键不计）
-      if (key === "followings" || config.WORK_RECORD_DOMAINS.includes(key)) state.dataVersion++;
+      if (config.AUTHOR_RECORD_DOMAINS.includes(key) || config.WORK_RECORD_DOMAINS.includes(key)) {
+        state.dataVersion++;
+      }
       this.notify(key, val, old);
     }
   },
@@ -265,26 +317,33 @@ export const store = {
 
   // 分页渐进加载追加（作品型三域）：push 进域数组后发专属事件，与 set 的全量替换
   // 事件分流——避免逐页触发 refreshGridView 全量重渲（骨架闪烁 + 封面重探）。
-  // start = push 前的域数组长度，作回填落点的上界提示：网格侧 #applyFill 以键前缀
-  // 自锚定实际落点（删除会使 #slots 相对页序收缩，固定下标会整页写偏）。
-  // 消费方（main.js）按筛选态决定按槽回填或静默累积
+  // start = 变更前的域数组长度（升序前插为前插前长度）；对齐模式的回填落点由视图下标
+  // 推算（筛选子集下页域下标不可用），start 仅作兼容/核对字段。
+  // 消费方（main.js）按页序是否与视图序对齐决定按槽回填或静默累积。
+  // ascending 标记取数方向：页内为升序块时消费方须按「视图下标」续填（见 prependWorkRecord）
   appendWorkRecord(domain, groupId, items, done) {
     const start = state[domain].length;
     state[domain].push(...items);
     state.dataVersion++;
-    this.notify("work-record-appended", { domain, groupId, items, start, done });
+    this.notify("work-record-appended", { domain, groupId, items, start, done, ascending: false });
   },
 
-  removeFollowingsSilent(idSet) {
-    state.followings = state.followings.filter((f) => !idSet.has(f.uid));
+  // 升序取数（从最旧一端分页）的对称操作：items 为到达序（savedAt 升序块，即视图序）。
+  // 域数组须保持 savedAt 降序不变量（头插比较器/键集游标/导出等消费方均按该序假设），
+  // 故前插前先反转回降序；事件仍按到达序派发，让消费方按视图下标续填（尾部单调追加）
+  prependWorkRecord(domain, groupId, items, done) {
+    const start = state[domain].length;
+    state[domain].unshift(...items.slice().reverse());
+    state.dataVersion++;
+    this.notify("work-record-appended", { domain, groupId, items, start, done, ascending: true });
+  },
+
+  // 作者档案型域通用的静默移除（按当前域数据源过滤）
+  removeAuthorRecordsSilent(domain, idSet) {
+    state[domain] = state[domain].filter((f) => !idSet.has(f.uid));
     state.dataVersion++;
   },
 
-  spliceWork(idx, deleteCount = 1) {
-    state.works.splice(idx, deleteCount);
-    state.dataVersion++;
-    this.notify("works", state.works);
-  },
 };
 
 // ---------- utils ----------
@@ -293,8 +352,30 @@ export const utils = {
     if (!url) return "";
     return url.startsWith("//") ? "https:" + url : url;
   },
+  // 卡片展示封面（四网格/侧边栏共用）：图集优先平台 cover（video.cover 小图），但首图
+  // URL 带压缩档标记（tplv 模板短边 < 2000，如 :1440:）时首图更轻，保留首图；视频与
+  // 模板不可解析一律 cover 优先、缺失回退。背景：平台给图集首图签发的 3000 档 ≈ 原图
+  //（实测 6-8.7MP），cover 是封面档（实测轻 1.4-4.6×）；tplv 改写小变体被签名拒绝（403）
+  pickCardCover(work) {
+    const cover = this.pickHttpsUrl(work?.cover || "");
+    if (!work || work.type !== "note") return cover;
+    const still = this.pickHttpsUrl(work.images?.[0] || "");
+    if (!cover || !still) return cover || still;
+    const m = still.match(/~tplv-[^/:]+:(\d+):/);
+    return m && Number(m[1]) < 2000 ? still : cover;
+  },
+  // 进度弹窗装配（syncDialogBodyTemplate 单一来源，三个 sync 类共用）：克隆 + 取三元素，
+  // 状态位预置 SYNCING，计数/摘要文案由调用方按域填写
+  buildSyncProgressBody() {
+    const body = document.getElementById("syncDialogBodyTemplate").content.cloneNode(true);
+    const countEl = body.querySelector(".sync-count");
+    const summaryEl = body.querySelector(".sync-summary");
+    const statusEl = body.querySelector(".sync-status");
+    statusEl.textContent = "SYNCING";
+    return { body, countEl, summaryEl, statusEl };
+  },
   formatCount(num) {
-    if (!num && num !== 0) return "0";
+    if (num == null || Number.isNaN(Number(num))) return "0";
     const n = Number(num);
     if (n >= 10000) return (n / 10000).toFixed(1) + "w";
     if (n >= 1000) return (n / 1000).toFixed(1) + "k";
@@ -309,7 +390,8 @@ export const utils = {
   },
   secUidFromUrl(url) {
     if (!url) return "";
-    const m = url.match(/\/user\/([^/?]+)/);
+    // SEC_UID_REGEX 锚定 pathname 起始；完整 URL 先取 pathname 再匹配
+    const m = new URL(url, config.URL_BASE).pathname.match(config.SEC_UID_REGEX);
     return m ? m[1] : "";
   },
   formatCacheTime(ts) {
@@ -344,15 +426,6 @@ export const utils = {
     const pad = (n) => String(n).padStart(2, "0");
     return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
   },
-  // 四域统一的网格锚点：视口内最上方可见卡片（骨架/完整卡均参与网格流、位置真实）。
-  // AppShell 侧栏折叠锚定与 Sidebar 锚点兜底共用（无卡片时返回 null，调用方自行降级）
-  topVisibleGridCard() {
-    const gridTop = dom.mainGrid.getBoundingClientRect().top;
-    for (const card of dom.mainContainer.querySelectorAll(".work-card, .following-card")) {
-      if (card.getBoundingClientRect().bottom > gridTop + 4) return card;
-    }
-    return null;
-  },
 };
 
 // ---------- runtimeConfig ----------
@@ -380,7 +453,6 @@ export const runtimeConfig = {
     syncBatchPauseMax: 20000,
     syncKeepaliveInterval: 2000,
     syncRetryMax: 2,
-    calibrateFollowings: true,
   },
   _cache: null,
   async load() {
@@ -412,6 +484,10 @@ export const services = {
   // 的守卫输入——>0 时头插会与在途 fillSlots 的落点锚定交错（rAF 窗口内 start 基准
   // 过期），须整刷兜底（整刷重载本就会作废在途循环，口径最稳）
   _gridLoadCount: 0,
+  // 首屏就绪条目（本域本次加载）：{ domain, groupId, promise, resolve, done, timer }。
+  // 由 _armFirstScreen 注册、首页渲染落笔后兑现；分组计数/作者主键集等装饰性请求据此
+  // 错峰，避免与 GET_* page-0 的 IDB 游标并发抢资源（3 万级实测把首页往返拖到 ~1s）
+  _gridFirstScreen: null,
 
   bgMsg(msg) {
     return new Promise((resolve) => {
@@ -455,44 +531,52 @@ export const services = {
     return "";
   },
 
-  async loadStats() {
-    const res = await this.bgMsg({ type: "GET_STATS" });
+  // domain 必传 → 只回该域的分组计数（切域/切组渲染分组 tab，避免为少量按钮拖上全部五域计数）；
+  // 返回值按 DOMAINS_META 补齐五域形状，消费方按 stats[domain] 读取
+  async loadStats(domain) {
+    const res = await this.bgMsg({ type: "GET_STATS", domain });
     const s = res.stats || {};
-    return {
-      works: s.works || { total: 0, groupCounts: {} },
-      followings: s.followings || { total: 0, groupCounts: {} },
-      favorites: s.favorites || { total: 0, groupCounts: {} },
-      collections: s.collections || { total: 0, groupCounts: {} },
-      bytes: s.bytes || 0,
-    };
+    const stats = {};
+    for (const key of Object.keys(config.DOMAINS_META)) {
+      stats[key] = s[key] || { total: 0, groupCounts: {} };
+    }
+    return stats;
   },
 
-  // 作品型三域通用读取（works/favorites/collections 响应形状一致，仅 itemKey 不同）
-  async loadWorkRecordItems(domain, groupId) {
-    const meta = config.DOMAINS_META[domain];
-    const res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId });
-    return (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
+  // 仅取存储占用字节（bytesOnly 不做任何 count）：存储指示器独立刷新用，与分组 tab 重建解耦
+  async loadStorageBytes() {
+    const res = await this.bgMsg({ type: "GET_STATS", bytesOnly: true });
+    return (res.stats && res.stats.bytes) || 0;
   },
 
   async loadWorks(groupId) {
     // IDB 主键读取天然无重复
-    return this.loadWorkRecordItems("works", groupId);
+    const res = await this.bgMsg({ type: "GET_WORKS", groupId });
+    return (res.works || []).filter((w) => w && w.awemeId);
   },
 
-  async loadFollowings(groupId) {
-    const res = await this.bgMsg({ type: "GET_FOLLOWINGS", groupId: groupId || state.currentGroupId });
-    return (res.followings || []).filter((f) => f && f.uid);
+  async loadAuthorRecords(domain, groupId) {
+    const meta = config.DOMAINS_META[domain];
+    const res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId: groupId || state.currentGroupId });
+    return (res[meta.itemKey] || []).filter((f) => f && f.uid);
   },
 
-  // 作者归属判定用关注全集（方案A）：全量加载不受分组影响，直接建 uid 集合。
-  // 加载失败时保留旧集合并保持 followedUidsLoaded=false，避免把全部作品误判为「未关注」
+  // 候选域重叠比对用关注全集：全量加载不受分组影响，直接建 uid 集合；加载失败时保留旧集合
   async loadFollowedUids() {
     const res = await this.bgMsg({ type: "GET_FOLLOWINGS", groupId: "all" }).catch(() => null);
     if (!res || !Array.isArray(res.followings)) return false;
-    state.followedUidsLoaded = true;
     state.followedUids = new Set(res.followings.filter((f) => f && f.uid).map((f) => String(f.uid)));
-    // 归属筛选（已关注/未关注）的判定输入变化：计入数据版本，视图缓存随之失效
-    state.dataVersion++;
+    return true;
+  },
+
+  // 作者域成员资格主键集（作品卡作者状态 chip）：作者域主键即 uid，background 用
+  // getAllKeys 直取、不物化记录；两域并行一次取回。失败保持旧集合并返回 false
+  //（调用方按「不显示 chip」降级，不阻塞网格加载）
+  async loadAuthorUidSets() {
+    const res = await this.bgMsg({ type: "GET_AUTHOR_UID_SETS" }).catch(() => null);
+    if (!res || res.error || !Array.isArray(res.followings) || !Array.isArray(res.candidates)) return false;
+    state.followedUids = new Set(res.followings.map(String));
+    state.candidateUids = new Set(res.candidates.map(String));
     return true;
   },
 
@@ -505,45 +589,157 @@ export const services = {
     return this._gridLoadCount > 0;
   },
 
+  // 首屏就绪等待（装饰性请求错峰用）：返回本域本次加载的首屏 Promise——首页渲染落笔
+  // （state.gridSlots 被 renderCards 消费）+ 让出一次空闲期后兑现；无在途加载立即兑现。
+  // 分组计数（GET_STATS 的分组 count）与作者主键集（getAllKeys）在 3 万级库上与
+  // page-0 的游标读并发，会把首页往返从 ~150ms 拖到 ~1s（切域实测），故一律延后到首屏之后
+  whenFirstScreen(domain = state.domain, groupId = state.currentGroupId) {
+    const entry = this._gridFirstScreen;
+    if (!entry || entry.domain !== domain || entry.groupId !== groupId || entry.done) return Promise.resolve();
+    // 外部等待者让出一个宏任务：loadDomainData 的续页请求同步于同一微任务先发出，
+    // 装饰性请求（分组计数/主键集）后跟，不抢占首段续页
+    return entry.promise.then(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  },
+
+  // 注册本次加载的首屏就绪 Promise（loadDomainData 入口同步调用，供 whenFirstScreen 取用）。
+  // 首页请求失败/迟迟不到时最多等 800ms 兑现，等待方不会永久挂住
+  _armFirstScreen(domain, groupId) {
+    const prev = this._gridFirstScreen;
+    if (prev) prev.resolve(); // 上一笔加载的等待直接放行，避免悬挂
+    const entry = { domain, groupId, done: false, timer: 0, promise: null, resolve: null };
+    entry.promise = new Promise((resolve) => {
+      entry.resolve = () => {
+        if (entry.done) return;
+        entry.done = true;
+        clearTimeout(entry.timer);
+        resolve();
+      };
+    });
+    entry.timer = setTimeout(entry.resolve, 800);
+    this._gridFirstScreen = entry;
+    return entry;
+  },
+
+  // 首页数据落库（store.set）后调用：等 renderCards 消费掉 gridSlots（渲染已落笔）再
+  // 让出一次空闲期（首屏填充先跑本轮）后兑现；等待期间域/分组已变则立即放行
+  _fireFirstScreenOnRender(entry) {
+    const step = () => {
+      if (!entry || entry.done || this._gridFirstScreen !== entry) return;
+      if (state.domain !== entry.domain || state.currentGroupId !== entry.groupId) {
+        entry.resolve();
+        return;
+      }
+      const rendered = !state.gridSlots || state.gridSlots.domain !== entry.domain;
+      if (!rendered) {
+        requestAnimationFrame(step);
+        return;
+      }
+      window.requestIdleCallback(() => entry.resolve(), { timeout: 300 });
+    };
+    requestAnimationFrame(step);
+  },
+
+  // 进度式分组计数：一次「全部」视图加载内，按已到达页累计各分组条数（与 K/N 的
+  // 「已加载」口径一致），page-0 与每页到达时广播 grid-totals——分组 tab 的非当前分组
+  // 数字不必等延后的 GET_STATS（大域要等加载空闲），随续页出现并增长；gridTotals 缓存
+  // 同步为已加载计数，加载完成后由 GET_STATS 校正为权威值。分组视图（groupId≠all）
+  // 只加载本组记录，不参与累计（本组数字由 page-0 的 total 直接给出）
+  _tallyGroupCounts(domain, groupId, items) {
+    if (groupId !== "all" || !items || !items.length) return;
+    const prev = state.gridGroupTally;
+    const tally = prev && prev.domain === domain ? prev : { domain, counts: {} };
+    state.gridGroupTally = tally;
+    const touched = new Set();
+    for (const w of items) {
+      const gid = w.groupId || "uncategorized";
+      tally.counts[gid] = (tally.counts[gid] || 0) + 1;
+      touched.add(gid);
+    }
+    for (const gid of touched) state.gridTotals[`${domain}|${gid}`] = tally.counts[gid];
+    store.notify("grid-totals", { domain, counts: tally.counts });
+  },
+
+  // 独立模式开关（chrome.storage.local 的 independentMode 布尔；此前 batch/domain-scan-sync 各自内联读取）
+  async isIndependentMode() {
+    const { independentMode } = await chrome.storage.local.get("independentMode");
+    return independentMode === true;
+  },
+
   // 网格数据加载：作品型三域分页渐进（首页 store.set 即渲染，余量逐页 appendWorkRecord，
-  // 消费方决定追加渲染或静默累积）；followings 记录小，维持单发全量。
+  // 消费方决定追加渲染或静默累积）；作者档案型两域记录小，维持单发全量。
   // 翻页协议：page=0 取首页，后续以 bg 回传的 nextCursor（末条索引键）keyset 续传——
   // bg 端索引游标直出、无全量读取，首页延迟在几十毫秒量级。
   // _gridLoadSeq 为全局加载代际：任何新加载（切组/切域/STORE_CHANGED）作废在途旧循环；
-  // 循环体内再校验当前域/分组，双保险防止旧页混入新视图
-  async loadDomainData() {
+  // 循环体内再校验当前域/分组，双保险防止旧页混入新视图。
+  // ascending=true（「保存时间(升)」排序）：bg 从最旧一端按 next 方向分页，页内为升序块
+  // （即视图序），首页落库前反转回域数组的 savedAt 降序；余页前插（prependWorkRecord）
+  async loadDomainData(ascending = false) {
     const groupId = state.currentGroupId;
     const domain = state.domain;
     this._gridLoadCount++;
     try {
-      if (domain === "followings") {
-        const data = await this.loadFollowings(groupId);
+      if (config.AUTHOR_RECORD_DOMAINS.includes(domain)) {
+        const data = await this.loadAuthorRecords(domain, groupId);
         if (state.currentGroupId !== groupId || state.domain !== domain) return;
+        // 作者域单发全量：权威总量即记录数（同时写入缓存供下次切域占位）
+        const total = data.length;
+        state.gridTotals[`${domain}|${groupId}`] = total;
+        state.gridTotal = { domain, groupId, total };
+        state.gridPending = false;
+        store.notify("grid-total", { domain, groupId, total });
+        // 全量已到：一次累计出各分组精确计数（分组 tab 不必等 GET_STATS）
+        state.gridGroupTally = null;
+        this._tallyGroupCounts(domain, groupId, data);
         store.set(domain, data);
         return;
       }
       const meta = config.DOMAINS_META[domain];
       const seq = ++this._gridLoadSeq;
+      // 新载入：进度式分组计数从头累计（见 _tallyGroupCounts）
+      state.gridGroupTally = null;
       const stale = () => seq !== this._gridLoadSeq || state.currentGroupId !== groupId || state.domain !== domain;
       const t0 = performance.now();
-      let res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, page: 0 });
+      // 首屏就绪 Promise：入口即注册，供分组计数/作者主键集等装饰性请求先等首屏（错峰）
+      const firstScreen = this._armFirstScreen(domain, groupId);
+      let res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, page: 0, ascending });
       if (res.error) throw new Error(res.error);
       if (stale()) return;
       // 预铺额度：首页响应携带 total，render 按它一次铺满全量骨架（未到达页为占位卡）
-      state.gridSlots = { domain, groupId, total: res.total || 0 };
-      store.set(domain, (res[meta.itemKey] || []).filter((w) => w && w.awemeId));
+      const total = res.total || 0;
+      state.gridTotals[`${domain}|${groupId}`] = total;
+      state.gridTotal = { domain, groupId, total };
+      state.gridPending = false; // 首页已到：K 开始按已加载条数计数
+      state.gridSlots = { domain, groupId, total };
+      // 立即校正当前分组 tab 数字（与搜索栏 0/Total 同源），不必等延后的 GET_STATS
+      store.notify("grid-total", { domain, groupId, total });
+      const first = (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
+      // 进度式分组计数：首页条目先计入（其余分组数字随续页逐页补齐，不必等 GET_STATS）
+      this._tallyGroupCounts(domain, groupId, first);
+      // 域数组不变量 = savedAt 降序：升序块须反转落库（视图侧再由 view 段整体翻转回来）
+      store.set(domain, ascending ? [...first].reverse() : first);
+      // 首屏错峰：等首页渲染落笔 + 首屏填充跑一轮后再启动余页串行拉取（见 _fireFirstScreenOnRender）
+      this._fireFirstScreenOnRender(firstScreen);
+      if (res.hasMore) await firstScreen.promise;
+      if (stale()) return;
       let pages = 1;
       while (res.hasMore) {
-        res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, cursor: res.nextCursor });
+        res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, cursor: res.nextCursor, ascending });
         if (res.error) {
           // 游标续页失败（SW 被强制重启等）：网格停在已加载部分，badge 数字为准，
-          // 下次加载自愈；不自动重启避免循环
+          // 下次加载自愈；不自动重启避免循环。筛选态下逐页为静默累积、done 不会再来，
+          // 必须补一次重渲——否则网格停在首页渲染时的旧顺序，而视图已随 dataVersion
+          // 按全量数据重算（作者聚类 rank 随页变化），视口里的卡片顺序与视图下标脱钩
+          // （Shift 区间按视图圈选会落到 DOM 顺序之外的根因，见 docs/11「Shift 连选」）
           console.warn("[DDM] grid load stopped:", res.error);
+          store.notify(domain);
           break;
         }
         if (stale()) return;
         pages++;
-        store.appendWorkRecord(domain, groupId, (res[meta.itemKey] || []).filter((w) => w && w.awemeId), !res.hasMore);
+        const pageItems = (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
+        if (ascending) store.prependWorkRecord(domain, groupId, pageItems, !res.hasMore);
+        else store.appendWorkRecord(domain, groupId, pageItems, !res.hasMore);
+        this._tallyGroupCounts(domain, groupId, pageItems);
       }
       console.debug(
         `[DDM] grid load ${domain}/${groupId}: ${pages} page(s) in ${Math.round(performance.now() - t0)}ms`,
@@ -553,15 +749,20 @@ export const services = {
     }
   },
 
-  async deleteFollowings(uids) {
-    return this.bgMsg({ type: "DELETE_FOLLOWINGS", uids });
+  async deleteAuthorRecords(domain, uids) {
+    return this.bgMsg({ type: "DELETE_" + domain.toUpperCase(), uids });
   },
 
+  async moveAuthorRecords(domain, uids, targetGroupId) {
+    return this.bgMsg({ type: "MOVE_" + domain.toUpperCase(), uids, targetGroupId });
+  },
+
+  // 原生关注域兼容包装（调用方沿用旧名；底层走作者域通用消息）
   async moveFollowings(uids, targetGroupId) {
-    return this.bgMsg({ type: "MOVE_FOLLOWINGS", uids, targetGroupId });
+    return this.moveAuthorRecords("followings", uids, targetGroupId);
   },
 
-  // 找/建「稍后删除」分组并把条目移入（works/followings/favorites/collections 域通用；
+  // 找/建「稍后删除」分组并把条目移入（五域通用；
   // moveFn(groupId) 按域完成实际移动，随后统一刷新域数据与分组）
   async moveToTrashGroup(domain, ids, moveFn) {
     const groupsRes = await this.bgMsg({ type: "GET_GROUPS", domain });

@@ -3,13 +3,14 @@ import { config, dom, state, utils, services, store } from '../core.js';
 import { search } from '../components/search-bar.js';
 import { dialog } from '../components/dialog.js';
 import { detail } from '../components/detail.js';
-import { followingsGrid } from '../grids/followings-grid.js';
 import { createZip } from './zip.js';
 
 // ---------- Batch ----------
 class Batch {
   // Shift 范围选择的锚点：上一次（非 Shift）点击的 id
   #lastSelectedId = null;
+  // 批量下载任务令牌：本地长任务取消（X/Esc → #cancelDownload）共用
+  #downloadTask = null;
 
   toggleSelect(id) {
     if (state.selectedIds.has(id)) {
@@ -29,7 +30,7 @@ class Batch {
   selectAll() {
     // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
     const isWorkRecord = config.WORK_RECORD_DOMAINS.includes(state.domain);
-    const items = isWorkRecord ? search.getWorksView() : search.getFollowingsView();
+    const items = isWorkRecord ? search.getWorksView() : search.getAuthorRecordsView();
     const idKey = isWorkRecord ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
     if (allSelected) {
@@ -50,11 +51,12 @@ class Batch {
   // 已选计数与按钮可用性统一在此刷新（见 docs/11）
   syncSelectionUI() {
     const count = state.selectedIds.size;
-    if (dom.batchCount) dom.batchCount.textContent = `已选 ${count}`;
+    dom.batchCount.textContent = `已选 ${count}`;
     const noneSelected = count === 0;
     dom.batchMove.disabled = noneSelected;
     dom.batchDelete.disabled = noneSelected;
     this.syncSaveToWorksBtn();
+    this.syncSaveToCandidatesBtn();
     this.syncDownloadBtn();
   }
 
@@ -72,19 +74,19 @@ class Batch {
     if (state.selectedIds.size === 0) return null;
     const ids = Array.from(state.selectedIds);
     const domain = state.domain;
-    const isFollowings = domain === "followings";
+    const isAuthorRecord = config.AUTHOR_RECORD_DOMAINS.includes(domain);
 
-    const res = await serviceFn(ids, isFollowings);
+    const res = await serviceFn(ids, isAuthorRecord);
     // 失败即抛、不动选区：确认弹窗的 catch 统一反馈，选中项保留可重试
     if (!res || res.ok !== true) throw new Error(res?.error || "OPERATION_FAILED");
     state.selectedIds.clear();
 
-    const grid = isFollowings ? followingsGrid : search.activeWorkRecordGrid();
-    const removeSilent = isFollowings
-      ? store.removeFollowingsSilent
+    const grid = search.gridForDomain(domain);
+    const removeSilent = isAuthorRecord
+      ? (idSet) => store.removeAuthorRecordsSilent(domain, idSet)
       : (idSet) => store.removeWorkRecordSilent(domain, idSet);
     if (!conditionallyRemove || state.currentGroupId !== "all") {
-      removeSilent.call(store, new Set(ids));
+      removeSilent(new Set(ids));
       grid.removeItems(new Set(ids));
     }
 
@@ -94,20 +96,22 @@ class Batch {
     // 静默移除不触发域事件，搜索栏结果数需手动同步（删除/移出当前分组都会改变可见数量）
     search.syncCount();
     this.syncSelectionUI();
-    return { count: ids.length, isFollowings };
+    return { count: ids.length, isAuthorRecord };
   }
 
   deleteSelected() {
-    return this.#executeBatchOp((ids, isFollowings) =>
-      isFollowings ? services.deleteFollowings(ids) : services.deleteWorkRecord(state.domain, ids),
+    return this.#executeBatchOp((ids, isAuthorRecord) =>
+      isAuthorRecord
+        ? services.deleteAuthorRecords(state.domain, ids)
+        : services.deleteWorkRecord(state.domain, ids),
     );
   }
 
   moveSelected(targetGroupId) {
     return this.#executeBatchOp(
-      (ids, isFollowings) =>
-        isFollowings
-          ? services.moveFollowings(ids, targetGroupId)
+      (ids, isAuthorRecord) =>
+        isAuthorRecord
+          ? services.moveAuthorRecords(state.domain, ids, targetGroupId)
           : services.moveWorkRecord(state.domain, ids, targetGroupId),
       { conditionallyRemove: true },
     );
@@ -125,7 +129,7 @@ class Batch {
     if (!checkboxEl) return; // 骨架卡无勾选框（模板本不含、降级即移除）：批量点击直启路径容错
     if (isSelected) {
       checkboxEl.classList.add("checked");
-      checkboxEl.innerHTML = (config.icons && config.icons.check) || "";
+      checkboxEl.innerHTML = config.icons.check || "";
     } else {
       checkboxEl.classList.remove("checked");
       checkboxEl.textContent = "";
@@ -133,10 +137,10 @@ class Batch {
     checkboxEl.setAttribute("aria-checked", isSelected ? "true" : "false");
   }
 
-  // shift=true 时按当前筛选视图顺序，从上次锚点到目标 id 圈选区间（P1-7）
+  // shift=true 按当前筛选视图顺序从锚点到目标连选
   toggleBatchSelect(id, checkboxEl, shift = false) {
     if (shift && this.#lastSelectedId !== null && this.#lastSelectedId !== id) {
-      this.#rangeSelect(this.#lastSelectedId, id);
+      this.#applyRange(this.#lastSelectedId, id);
     } else {
       const selected = this.toggleSelect(id);
       this.updateCheckboxDOM(checkboxEl, selected);
@@ -145,22 +149,37 @@ class Batch {
     this.syncSelectionUI();
   }
 
-  // 视图顺序变更后调用（SearchBar.refreshGridView）：旧锚点在新顺序中的索引与点击时
-  // 不一致，继续沿用会让 shift 区间按错误索引圈选（跨排序/关键词/域/分组换序的根因）
-  resetRangeAnchor() {
+  // 选区与 Shift 锚点一并复位的统一入口（视图上下文切换/结果集重定义共用；批量模式
+  // 本身保留）：清空选区、复位全选按钮与已勾选卡的勾选态（分组切换随清场、筛选重渲随
+  // 重建，仍顺带清一次防「重渲被跳过」时的残留）。锚点必须一并清空——锚点的位置只在新
+  // 视图里重新现算才有意义，而它通常是视口外的旧卡：保留会让重排后的首次 Shift 点击从
+  // 不可见的旧卡跨到任意位置、圈出视口外的大段区间（「勾选两点间、移动的却是别的卡」
+  // 的根因之一，见 docs/11「Shift 连选」）
+  resetSelection() {
+    state.selectedIds.clear();
     this.#lastSelectedId = null;
+    document
+      .querySelectorAll(".work-checkbox.checked, .following-checkbox.checked")
+      .forEach((el) => this.updateCheckboxDOM(el, false));
+    this.#setSelectAllBtn(false);
+    this.syncSelectionUI();
   }
 
-  // 范围选择：把视图顺序中 [from, to] 区间的条目全部置为选中并同步勾选圆。
-  // 视图顺序与网格视觉一致（含关键词/排序/归属过滤），保证所见即所选
-  #rangeSelect(fromId, toId) {
+  // 区间应用：把网格**已渲染顺序**中 [from, to] 区间的条目统一置为选中。
+  // 取序必须用网格快照（VirtualGrid.renderedItems）而非 getWorksView()/getAuthorRecordsView()
+  // 现算：视图缓存随 dataVersion 重建（排序重排、渐进加载、局部替换）后可能与尚未重渲的
+  // DOM 顺序不一致，按视图下标圈选会把区间落到视口/挂载窗口之外——表现为「视觉上选中
+  // 两点间、实际移动的却是区间外的卡」。快照与挂载卡 DOM 同序，所见即所选；快照缺失
+  // （render 前/abort 后）才回退视图函数
+  #applyRange(fromId, toId) {
     const isWorkRecord = config.WORK_RECORD_DOMAINS.includes(state.domain);
-    const view = isWorkRecord ? search.getWorksView() : search.getFollowingsView();
+    const rendered = search.gridForDomain(state.domain).renderedItems();
+    const view = rendered || (isWorkRecord ? search.getWorksView() : search.getAuthorRecordsView());
     const idKey = isWorkRecord ? "awemeId" : "uid";
     const ids = view.map((x) => x[idKey]);
     const a = ids.indexOf(fromId);
     const b = ids.indexOf(toId);
-    // 锚点已不在当前视图（被删除/筛掉等）：退化为仅选中目标，避免整段区间落空
+    // 锚点已不在当前视图（被删除/筛掉等）：退化为仅应用目标，避免整段区间落空
     if (a === -1) {
       state.selectedIds.add(toId);
     } else if (b === -1) {
@@ -172,26 +191,25 @@ class Batch {
     const selector = isWorkRecord ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => {
       const id = this.#checkboxId(el);
-      if (state.selectedIds.has(id)) this.updateCheckboxDOM(el, true);
+      this.updateCheckboxDOM(el, state.selectedIds.has(id));
     });
   }
 
   handleBatchToggle() {
     const newMode = this.toggleBatchMode();
     store.set("batchMode", newMode);
+    // 进入/退出都重置范围锚点：域切换等非按钮路径直接置 batchMode=false 时不走本方法，
+    // 下次进入仍从干净锚点开始；分组切换保留批量模式，选区与锚点由 resetSelection 清理
+    this.#lastSelectedId = null;
     // 勾选框显隐由 body.batch-mode 纯 CSS 驱动（options.css 基类 display:none + 批量模式
     // flex），禁止逐元素写 inline display：万级域滚动后勾选框可达数千，逐个 style 写入
     // 会让进/出批量模式秒级卡顿
     if (!newMode) {
-      // 退出批量模式：清空选区与范围选择锚点；DOM 勾选态只清 checked 的（未勾选框本就无内容）
-      this.#lastSelectedId = null;
+      // 退出批量模式：清空选区；DOM 勾选态只清 checked 的（未勾选框本就无内容）
       document
         .querySelectorAll(".work-checkbox.checked, .following-checkbox.checked")
         .forEach((el) => this.updateCheckboxDOM(el, false));
       this.#setSelectAllBtn(false);
-      this.syncSaveToWorksBtn();
-    } else {
-      this.syncSaveToWorksBtn();
     }
     this.syncSelectionUI();
   }
@@ -199,7 +217,9 @@ class Batch {
   handleBatchSelectAll() {
     const result = this.selectAll();
     this.#setSelectAllBtn(result === "all");
-    const selector = state.domain === "followings" ? ".following-checkbox" : ".work-checkbox";
+    const selector = config.AUTHOR_RECORD_DOMAINS.includes(state.domain)
+      ? ".following-checkbox"
+      : ".work-checkbox";
     document.querySelectorAll(selector).forEach((el) => {
       this.updateCheckboxDOM(el, this.isSelected(this.#checkboxId(el)));
     });
@@ -214,8 +234,12 @@ class Batch {
       await this.cancelAndRemoveSelected();
       return;
     }
-    const isFollowings = state.domain === "followings";
-    const name = isFollowings ? "关注者" : "作品";
+    const isAuthorRecord = config.AUTHOR_RECORD_DOMAINS.includes(state.domain);
+    const name = isAuthorRecord
+      ? state.domain === "candidates"
+        ? "候选作者"
+        : "关注者"
+      : "作品";
     const delBody = document.createElement("p");
     delBody.className = "confirm-delete-msg";
     delBody.textContent = `确定移除选中的 ${count} 个${name}？此操作不可撤销。`;
@@ -224,21 +248,13 @@ class Batch {
         text: "移除",
         danger: true,
         callback: async () => {
-          dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个${name}…</p>`);
-          state.preventDialogClose = true;
-          try {
-            const result = await this.deleteSelected();
-            if (result) {
-              // 执行期弹窗已挡住 UI 变更，成功后不再要求"好的"确认（建议2）
-              dialog.closeDialog();
-              dialog.showToast(`已移除 ${count} 个${name}`, "success");
-            }
-          } catch (err) {
-            dialog.closeDialog();
-            dialog.showToast("移除失败: " + (err.message || String(err)), "error");
-          } finally {
-            state.preventDialogClose = false;
-          }
+          await this.#runWithDialogLock(
+            "正在移除…",
+            `<p>正在移除 ${count} 个${name}…</p>`,
+            () => this.deleteSelected(),
+            `已移除 ${count} 个${name}`,
+            "移除失败: ",
+          );
         },
       },
     ]);
@@ -254,7 +270,7 @@ class Batch {
     const cancelType = isFavorites ? "CANCEL_FAVORITES" : "CANCEL_COLLECTION";
     const actionLabel = isFavorites ? "取消点赞" : "取消收藏";
 
-    if (isFavorites && (await this.#isIndependentMode())) {
+    if (isFavorites && (await services.isIndependentMode())) {
       dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
       return;
     }
@@ -270,20 +286,13 @@ class Batch {
         ghost: true,
         hotkey: "ctrl+enter",
         callback: async () => {
-          dialog.updateDialog("正在移除…", `<p>正在移除 ${count} 个作品…</p>`);
-          state.preventDialogClose = true;
-          try {
-            const result = await this.deleteSelected();
-            if (result) {
-              dialog.closeDialog();
-              dialog.showToast(`已移除 ${count} 个作品`, "success");
-            }
-          } catch (err) {
-            dialog.closeDialog();
-            dialog.showToast("移除失败: " + (err.message || String(err)), "error");
-          } finally {
-            state.preventDialogClose = false;
-          }
+          await this.#runWithDialogLock(
+            "正在移除…",
+            `<p>正在移除 ${count} 个作品…</p>`,
+            () => this.deleteSelected(),
+            `已移除 ${count} 个作品`,
+            "移除失败: ",
+          );
         },
       },
       {
@@ -344,31 +353,51 @@ class Batch {
     ]);
   }
 
-  async #isIndependentMode() {
-    const { independentMode } = await chrome.storage.local.get("independentMode");
-    return independentMode === true;
+  // 弹窗锁定执行骨架（批量删除/直接移除/批量移动共用）：更新进度 → preventDialogClose 锁定
+  // → 成功关层+success toast / 失败关层+error toast → finally 解锁。执行期弹窗已挡住 UI
+  // 变更，成功后不再要求"好的"确认
+  async #runWithDialogLock(progressTitle, progressHtml, task, successToast, failToast) {
+    dialog.updateDialog(progressTitle, progressHtml);
+    state.preventDialogClose = true;
+    try {
+      if (await task()) {
+        dialog.closeDialog();
+        dialog.showToast(successToast, "success");
+      }
+    } catch (err) {
+      dialog.closeDialog();
+      dialog.showToast(failToast + (err.message || String(err)), "error");
+    } finally {
+      state.preventDialogClose = false;
+    }
   }
 
   async handleBatchMove() {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
-    const name = state.domain === "followings" ? "关注者" : config.DOMAINS_META[state.domain].label;
+    const name = config.AUTHOR_RECORD_DOMAINS.includes(state.domain)
+      ? state.domain === "candidates"
+        ? "候选作者"
+        : "关注者"
+      : config.DOMAINS_META[state.domain].label;
     dialog.showGroupSelectDialog(`移动到分组...`, await services.loadGroups(), async (groupId) => {
-      dialog.updateDialog("正在移动…", `<p>正在移动 ${count} 个${name}…</p>`);
-      state.preventDialogClose = true;
-      try {
-        const result = await this.moveSelected(groupId);
-        if (result) {
-          dialog.closeDialog();
-          dialog.showToast(`已移动 ${count} 个${name}`, "success");
-        }
-      } catch (err) {
-        dialog.closeDialog();
-        dialog.showToast("移动失败: " + (err.message || String(err)), "error");
-      } finally {
-        state.preventDialogClose = false;
-      }
+      await this.#runWithDialogLock(
+        "正在移动…",
+        `<p>正在移动 ${count} 个${name}…</p>`,
+        () => this.moveSelected(groupId),
+        `已移动 ${count} 个${name}`,
+        "移动失败: ",
+      );
     });
+  }
+
+  // 批量「入库」快捷键/统一入口：按当前域分发到对应按钮动作——关注域 → 入库候选域，
+  // 点赞/收藏域 → 存入作品域；作品域无入库目标，不响应
+  handleBatchSave() {
+    if (state.domain === "followings") return this.saveSelectedToCandidates();
+    if (config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works") {
+      return this.saveSelectedToWorks();
+    }
   }
 
   // 跨域保存：点赞/收藏域勾选条目经 SAVE_WORKS 入作品域（mergeWork 去重合并）
@@ -400,23 +429,53 @@ class Batch {
 
   // 「存入作品」按钮显隐与可用态：仅点赞/收藏域且批量模式下显示
   syncSaveToWorksBtn() {
-    if (!dom.batchSaveToWorks) return;
     const show =
       config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works" && state.batchMode;
     dom.batchSaveToWorks.classList.toggle("hidden", !show);
     if (show) dom.batchSaveToWorks.disabled = state.selectedIds.size === 0;
   }
 
+  // 关注域批量入库：勾选作者经 SAVE_CANDIDATES 复制入候选域（源关注域保留，剥离来源分组 id）
+  async saveSelectedToCandidates() {
+    if (this.selectedCount() === 0 || state.domain !== "followings") return;
+    const targets = state.followings
+      .filter((f) => state.selectedIds.has(f.uid))
+      .map(({ groupId, ...rest }) => rest);
+    if (targets.length === 0) return;
+    dom.batchSaveToCandidates.disabled = true;
+    try {
+      const res = await services.bgMsg({ type: "SAVE_CANDIDATES", candidates: targets });
+      if (!res || res.ok !== true) {
+        dialog.showToast("入库候选域失败: " + (res?.error || "未知错误"), "error");
+        return;
+      }
+      state.selectedIds.clear();
+      search.gridForDomain("followings").clearSelectionUI();
+      this.syncSelectionUI();
+      dialog.showToast(`已入库候选（新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}）`, "success");
+    } finally {
+      this.syncSaveToCandidatesBtn();
+    }
+  }
+
+  // 「入库候选」按钮显隐与可用态：仅关注域且批量模式下显示
+  syncSaveToCandidatesBtn() {
+    const show = state.domain === "followings" && state.batchMode;
+    dom.batchSaveToCandidates.classList.toggle("hidden", !show);
+    if (show) dom.batchSaveToCandidates.disabled = state.selectedIds.size === 0;
+  }
+
   // 「批量下载」按钮显隐与可用态：仅作品型三域（作品/点赞/收藏）且批量模式下显示，关注域无媒体可下
   syncDownloadBtn() {
-    if (!dom.batchDownload) return;
     const show = config.WORK_RECORD_DOMAINS.includes(state.domain) && state.batchMode;
     dom.batchDownload.classList.toggle("hidden", !show);
     if (show) dom.batchDownload.disabled = state.selectedIds.size === 0;
   }
 
   // 批量下载：作品/点赞/收藏域勾选条目取流后整体打包为单个 zip（复用 detail 取流+重试，失败/跳过聚合汇报）。
-  // 无可用视频/图片链接的条目跳过不计入失败，仅在确认文案与结果 toast 中说明
+  // 无可用视频/图片链接的条目跳过不计入失败，仅在确认文案与结果 toast 中说明。
+  // 长任务不走 preventDialogClose（短操作锁会把关闭入口整体短路）：进度层登记 onClose=取消，
+  // X/Esc 经 requestDialogClose 调用 #cancelDownload，abort 在途 fetch 与 zip worker
   async handleBatchDownload() {
     if (this.selectedCount() === 0) return;
     if (!config.WORK_RECORD_DOMAINS.includes(state.domain)) return;
@@ -445,48 +504,102 @@ class Batch {
         text: "下载",
         primary: true,
         callback: async () => {
-          dialog.updateDialog("正在下载…", `<p>正在下载 0 / ${targets.length}…</p>`);
-          state.preventDialogClose = true;
+          // 整个回调体纳入 try：async 点击回调一旦 reject 会以 Uncaught (in promise) 进扩展错误面板
+          const task = { cancelled: false, controller: new AbortController() };
+          this.#downloadTask = task;
+          const entries = [];
           try {
-            const entries = [];
+            // 进度层重挂基层并登记 onClose：X/Esc 经 requestDialogClose 触发取消（onClose 自行关层）
+            dialog.showDialog("正在下载…", `<p>正在下载 0 / ${targets.length}…</p>`, [], () =>
+              this.#cancelDownload(),
+            );
             let ok = 0;
+            const failures = [];
+            const unavailable = [];
             for (const [i, work] of targets.entries()) {
+              if (task.cancelled) return;
               dialog.updateDialog("正在下载…", `<p>正在下载 ${i + 1} / ${targets.length}…</p>`);
               try {
-                entries.push(...(await detail.fetchWorkMedia(work)));
+                entries.push(...(await detail.fetchWorkMedia(work, task.controller.signal)));
                 ok++;
               } catch (err) {
-                console.error("[DY] batch download work failed:", err);
+                // 取消触发的 AbortError 与在途错误一律静默（#cancelDownload 已提示并关层）
+                if (task.cancelled) return;
+                // 诊断增强：日志带上作品身份与取流 URL，便于定位是哪条、哪个链接失败
+                const url = work.type === "video" ? utils.getVideoUrl(work) : (work.images?.[0] || "");
+                const message = err?.message || String(err);
+                // 404/410 = 作品已删除/私密/审核中/仅好友可见：用户已知，跳过且不计入失败。
+                // 日志用 info/debug：console.warn/error 会被 chrome://extensions 错误面板收录
+                if (err?.code === "MEDIA_UNAVAILABLE") {
+                  unavailable.push({ awemeId: work.awemeId, nickname: work.nickname || "", type: work.type, url });
+                  console.debug("[DY] media unavailable, skipped:", work.awemeId, url);
+                  continue;
+                }
+                failures.push({ awemeId: work.awemeId, nickname: work.nickname || "", type: work.type, url, error: message });
+                console.info("[DY] batch download work failed:", work.awemeId, message, url, err);
               }
             }
+            if (failures.length) console.info("[DY] batch download failures:", failures);
+            if (task.cancelled) return;
             if (ok === 0) {
               dialog.closeDialog();
-              const failParts = ["下载失败"];
-              if (skipped > 0) failParts.push(`${skipped} 个无链接跳过`);
-              dialog.showToast(failParts.join("，"), "error");
+              if (failures.length) {
+                const failParts = ["下载失败", this.#failureIds(failures)];
+                if (unavailable.length) failParts.push(`${unavailable.length} 个不可用跳过`);
+                if (skipped > 0) failParts.push(`${skipped} 个无链接跳过`);
+                dialog.showToast(failParts.join("，"), "error");
+              } else {
+                const skipParts = ["所选作品均不可访问，已跳过"];
+                if (skipped > 0) skipParts.push(`${skipped} 个无链接跳过`);
+                dialog.showToast(skipParts.join("，"), "info");
+              }
               return;
             }
             dialog.updateDialog("正在打包…", `<p>正在打包 0 / ${ok} 条…</p>`);
-            const zip = await createZip(entries, (done, total) =>
-              dialog.updateDialog("正在打包…", `<p>正在打包 ${done} / ${total} 条…</p>`),
+            const zip = await createZip(
+              entries,
+              (done, total) => dialog.updateDialog("正在打包…", `<p>正在打包 ${done} / ${total} 条…</p>`),
+              task.controller.signal,
             );
+            if (task.cancelled) return;
             detail.triggerDownload(zip, `${label}批量下载_${this.#today()}.zip`);
             dialog.closeDialog();
-            const failed = targets.length - ok;
+            const failed = failures.length;
             const parts = [`已下载 ${ok} 个${label}`];
-            if (failed > 0) parts.push(`${failed} 个失败`);
+            if (failed > 0) parts.push(`${failed} 个失败：${this.#failureIds(failures)}`);
+            if (unavailable.length > 0) parts.push(`${unavailable.length} 个不可用跳过`);
             if (skipped > 0) parts.push(`${skipped} 个无链接跳过`);
             dialog.showToast(parts.join("，"), failed > 0 ? "error" : "success");
           } catch (err) {
+            if (task.cancelled) return;
             console.error("[DY] batch download failed:", err);
             dialog.closeDialog();
             dialog.showToast("批量下载失败: " + (err.message || String(err)), "error");
           } finally {
-            state.preventDialogClose = false;
+            // 取消后立即丢弃已下载条目引用（Blob 交给 GC），避免残留内存
+            if (task.cancelled) entries.length = 0;
+            if (this.#downloadTask === task) this.#downloadTask = null;
           }
         },
       },
     ]);
+  }
+
+  // 取消批量下载（X/Esc 经 requestDialogClose → 顶层 onClose）：置令牌 + abort 在途
+  // fetch / zip worker，并自行关层（requestDialogClose 检测到 depth 变化后不再二次关闭）
+  #cancelDownload() {
+    const task = this.#downloadTask;
+    if (!task || task.cancelled) return;
+    task.cancelled = true;
+    task.controller.abort();
+    dialog.closeDialog();
+    dialog.showToast("已取消下载", "info");
+  }
+
+  // 批量下载失败条目标识串：最多列前 3 个 awemeId，超出以「等 N 个」收尾，避免 toast 过长
+  #failureIds(failures) {
+    const ids = failures.map((f) => f.awemeId);
+    return ids.length > 3 ? `${ids.slice(0, 3).join("、")} 等 ${ids.length} 个` : ids.join("、");
   }
 
   // 打包文件名日期后缀：yyyy-MM-dd

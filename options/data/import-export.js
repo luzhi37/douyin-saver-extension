@@ -1,10 +1,11 @@
 // ---------- ImportExport ----------
 import { config, dom, state, store, services } from '../core.js';
 import { dialog } from '../components/dialog.js';
+import { search } from '../components/search-bar.js';
 import { groups } from './groups.js';
 
 // ---------- ImportExport ----------
-// 数据维护弹窗（菜单「维护」）：四域导出/导入/重置三列聚合于一处，不随当前域自适应，
+// 数据维护弹窗（菜单「维护」）：五域导出/导入/重置三列聚合于一处，不随当前域自适应，
 // 均显式指定目标域；导入经隐藏 #fileInput 选档，目标域在点击按钮时记入 #pendingImportDomain、
 // change 事件到达时取回；重置确认/进度弹窗经 pushDialog 叠于维护弹窗之上，关闭即回到本弹窗
 class ImportExport {
@@ -77,6 +78,8 @@ class ImportExport {
             state.selectedIds.clear();
             store.set("batchMode", false);
             store.set(domain, []);
+            // 作者域整域清空：主键集同步清空（作品卡作者 chip 立即失效）
+            if (config.AUTHOR_RECORD_DOMAINS.includes(domain)) await this.#syncAuthorUids(domain, true);
             await groups.renderGroupTabs();
             dialog.closeDialog();
             dialog.showToast(`${domainName}数据已清空`, "success");
@@ -95,7 +98,7 @@ class ImportExport {
     const domain = this.#pendingImportDomain;
     this.#pendingImportDomain = "";
     if (!domain) return;
-    // 进度层叠于备份弹窗之上：终态一律关层 + toast 收口，回到备份弹窗继续操作
+    // 进度层叠于维护弹窗之上：终态一律关层 + toast 收口，回到维护弹窗继续操作
     dialog.pushDialog("正在导入…", "<p>正在读取文件…</p>");
     state.preventDialogClose = true;
     try {
@@ -119,6 +122,10 @@ class ImportExport {
         return;
       }
 
+      // 作者域导入（无 STORE_CHANGED 广播）：重取主键集并 patch 作品卡作者 chip
+      //（失败保留旧集；非作品型三域时 syncAuthorFlags 自然空转）
+      if (config.AUTHOR_RECORD_DOMAINS.includes(domain)) await this.#syncAuthorUids(domain, false);
+
       // 仅导入目标域为当前域时刷新视图；其余域在下次域切换时自然加载
       if (domain === state.domain) {
         await services.loadDomainData();
@@ -137,6 +144,20 @@ class ImportExport {
       dialog.showToast("文件解析错误：" + err.message, "error");
     } finally {
       state.preventDialogClose = false;
+    }
+  }
+
+  // 作者域整域替换（重置/导入）后的主键集同步：重置直接清空对应集合（零往返），
+  // 导入从 background 重取；当前在作品型三域时原地 patch 挂载卡作者 chip（不整刷）
+  async #syncAuthorUids(domain, cleared) {
+    if (cleared) {
+      if (domain === "followings") state.followedUids = new Set();
+      else state.candidateUids = new Set();
+    } else {
+      await services.loadAuthorUidSets();
+    }
+    if (config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+      search.activeWorkRecordGrid().syncAuthorFlags();
     }
   }
 

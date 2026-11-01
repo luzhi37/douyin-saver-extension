@@ -23,11 +23,12 @@
       req: "DY_FETCH_PROFILE_OTHER_REQUEST",
       res: "DY_FETCH_PROFILE_OTHER_RESULT",
       timeout: (msg) => msg.timeout,
-      detail: (msg) => ({ secUid: msg.secUid }),
+      detail: (msg) => ({ secUid: msg.secUid, uid: msg.uid }),
     },
     FETCH_WORKS_PAGE: {
       req: "DY_FETCH_WORKS_PAGE_REQUEST",
       res: "DY_FETCH_WORKS_PAGE_RESULT",
+      // 60s 仅用于摘除内容侧结果监听器：背景侧 30s 已决定响应无效，此值不是请求超时
       timeout: () => 60000,
       detail: (msg) => ({ secUid: msg.secUid, maxCursor: msg.cursor || 0, count: msg.count }),
     },
@@ -43,6 +44,12 @@
       timeout: () => 30000,
       detail: (msg) => ({ awemeId: msg.awemeId }),
     },
+    SET_ONE_FAVORITES: {
+      req: "DY_SET_ONE_FAVORITES_REQUEST",
+      res: "DY_SET_ONE_FAVORITES_RESULT",
+      timeout: () => 30000,
+      detail: (msg) => ({ awemeId: msg.awemeId, active: msg.active === true }),
+    },
     FETCH_COLLECTION_PAGE: {
       req: "DY_FETCH_COLLECTION_PAGE_REQUEST",
       res: "DY_FETCH_COLLECTION_PAGE_RESULT",
@@ -54,6 +61,12 @@
       res: "DY_CANCEL_ONE_COLLECTION_RESULT",
       timeout: () => 30000,
       detail: (msg) => ({ awemeId: msg.awemeId }),
+    },
+    SET_ONE_COLLECTION: {
+      req: "DY_SET_ONE_COLLECTION_REQUEST",
+      res: "DY_SET_ONE_COLLECTION_RESULT",
+      timeout: () => 30000,
+      detail: (msg) => ({ awemeId: msg.awemeId, active: msg.active === true }),
     },
     GET_SECURITY_STATUS: {
       req: "DY_GET_SECURITY_STATUS_REQUEST",
@@ -270,7 +283,13 @@
         if (chrome.runtime.lastError) return;
         if (response?.ok) {
           captureCache.delete(fullWork.awemeId);
-          toast.show("已保存: " + (fullWork.desc || fullWork.awemeId).slice(0, 20), "success");
+          const title = (fullWork.desc || fullWork.awemeId).slice(0, 20);
+          const groupName = response.groupName || "未分组";
+          // added>0 为新增；否则作品已在作品域，按落库 groupId 解析的分组名提示所在组
+          toast.show(
+            response.added > 0 ? `已保存作品：${title}（入「${groupName}」）` : `作品已在作品域：${title}（分组「${groupName}」）`,
+            "success",
+          );
         } else {
           toast.show("保存失败", "error");
         }
@@ -297,7 +316,7 @@
     const script = document.createElement("script");
     script.src = INJECT_URL;
     script.onload = () => script.remove();
-    (document.documentElement || document).appendChild(script);
+    document.documentElement.appendChild(script);
   }
 
   injectMainWorldScript();

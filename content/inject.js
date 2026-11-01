@@ -42,19 +42,18 @@
       FETCH_PAGE: 15000,
       FETCH_DETAIL: 8000,
     },
-    // 取消操作端点四要素，按域组构（favorites=点赞域 digg 端点、collection=收藏 collect 端点；
-    // background CONFIG.CANCEL 仅有 collection——独立模式结构性不支持点赞取消，两侧形状不同构）：
+    // 点赞/收藏状态端点，按域组构（favorites=点赞域 digg 端点、collection=收藏 collect 端点；
+    // background CONFIG.CANCEL 仅有 collection——独立模式结构性不支持点赞，两侧形状不同构）：
+    // body(id, active)：active=false 取消（type/action=0）、true 添加（type/action=1）；
     // url 值引用端点原文
     CANCEL: {
       favorites: {
         url: "https://www.douyin.com/aweme/v1/web/commit/item/digg/?aid=6383",
-        referrer: "https://www.douyin.com/user/self?showTab=like",
-        body: (id) => "aweme_id=" + id + "&item_type=0&type=0",
+        body: (id, active = false) => "aweme_id=" + id + "&item_type=0&type=" + (active ? 1 : 0),
       },
       collection: {
         url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
-        referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
-        body: (id) => "action=0&aweme_id=" + id + "&aweme_type=0",
+        body: (id, active = false) => "action=" + (active ? 1 : 0) + "&aweme_id=" + id + "&aweme_type=0",
       },
     },
     SECURITY_KEY: "security-sdk/s_sdk_cert_key",
@@ -89,6 +88,10 @@
       CANCEL_ONE_COLLECTION_RESULT: "DY_CANCEL_ONE_COLLECTION_RESULT",
       CANCEL_ONE_FAVORITES_REQUEST: "DY_CANCEL_ONE_FAVORITES_REQUEST",
       CANCEL_ONE_FAVORITES_RESULT: "DY_CANCEL_ONE_FAVORITES_RESULT",
+      SET_ONE_COLLECTION_REQUEST: "DY_SET_ONE_COLLECTION_REQUEST",
+      SET_ONE_COLLECTION_RESULT: "DY_SET_ONE_COLLECTION_RESULT",
+      SET_ONE_FAVORITES_REQUEST: "DY_SET_ONE_FAVORITES_REQUEST",
+      SET_ONE_FAVORITES_RESULT: "DY_SET_ONE_FAVORITES_RESULT",
       BUTTON_CLICK: "DY_BUTTON_CLICK",
       CAPTURE_BROWSER_FEATURES: "DY_CAPTURE_BROWSER_FEATURES",
     },
@@ -104,6 +107,19 @@
     "fp",
     "uifid",
   ]);
+
+  // ---------- helpers ----------
+  // 分页端点 has_more 字段归一（宽松判定：服务端可能返回 true/1/"1"，缺判只会多拉一页空数据）
+  function hasMoreFlag(data) {
+    return data.has_more === true || data.has_more === 1 || data.has_more === "1";
+  }
+
+  // API 响应业务码守卫（各拉页/详情取数共用）：非 0 一律抛 API_ERROR，附 status_code 便于排障
+  function assertApiOk(data) {
+    if (data && data.status_code !== undefined && data.status_code !== 0) {
+      throw new Error("API_ERROR: status_code=" + data.status_code);
+    }
+  }
 
   // ---------- SignatureCapture ----------
   // 签名缓存：从页面 fetch 请求捕获各端点签名参数，供 ApiClient 复用。
@@ -164,7 +180,7 @@
       return url;
     }
 
-    // 供 ApiClient 各 fetch 函数组合签名参数（stripSdkKeys 仅收藏/合集用）
+    // 供 ApiClient 各 fetch 函数组合签名参数
     mergeParams(url, captured) {
       if (!captured) return url;
       for (const entry of captured.entries()) {
@@ -198,6 +214,7 @@
 
     // ===== 共享工具函数 =====
 
+    // 登录态 URL 为 /user/self 时无法从路径取真实 sec_uid：从已捕获的签名参数兜底解析
     resolveSelfSecUid() {
       const candidates = [this.#favoriteQuery, this.#postQuery, this.#followingQuery, this.#collectionQuery];
       for (const q of candidates) {
@@ -251,13 +268,9 @@
     // 与 background 侧同款：aweme_id 高 32 位 = 发布 Unix 秒（fiber 水合对象缺 create_time 的兜底推导）；
     // 区间守卫：抖音上线(2016-09) ~ 明天，防畸形 ID 产出离谱时间
     #awemeIdCreateTime(id) {
-      try {
-        if (!/^\d+$/.test(String(id))) return 0;
-        const sec = Number(BigInt(id) >> 32n);
-        return sec > 1475000000 && sec < Date.now() / 1000 + 86400 ? sec : 0;
-      } catch {
-        return 0;
-      }
+      if (!/^\d+$/.test(String(id))) return 0;
+      const sec = Number(BigInt(id) >> 32n);
+      return sec > 1475000000 && sec < Date.now() / 1000 + 86400 ? sec : 0;
     }
 
     // 与 background 侧同款：从 CDN 直链 query 解析过期时间戳
@@ -394,10 +407,12 @@
 
     #extractCover(raw) {
       const video = raw.video || {};
-      const images = this.#extractImages(raw);
+      const platform = this.#normalizeProtocol(video.cover?.url_list?.[0] || video.coverUrlList?.[0] || "");
       const isNote = (raw.awemeType || raw.aweme_type) === CONFIG.AWEME_TYPE_NOTE;
-      if (isNote && images.length > 0) return images[0];
-      return this.#normalizeProtocol(video.cover?.url_list?.[0] || video.coverUrlList?.[0] || "");
+      // 图集优先平台封面（video.cover 封面档，通常远轻于首图原图档），无封面回退首图；
+      // 展示侧仍由 options utils.pickCardCover 按变体档位取轻（3000 档 vs 1440 档）
+      if (isNote) return platform || this.#extractImages(raw)[0] || "";
+      return platform;
     }
 
     #extractImages(raw) {
@@ -410,6 +425,22 @@
         if (imgUrl) images.push(this.#normalizeProtocol(imgUrl));
       }
       return images;
+    }
+
+    // 内容项实况视频（图集每条可为纯静帧或实况=静帧+小视频）：与 #extractImages 同条件
+    // 过滤保逐位对位（无静帧的项两者同步丢弃），无视频项为空串——详情侧按索引读、缺位安全
+    #extractImageVideos(raw) {
+      const imgList = raw.images;
+      if (!Array.isArray(imgList)) return [];
+      const videos = [];
+      for (const img of imgList) {
+        const urlList = img.urlList || img.url_list || [];
+        if (!(urlList[0] || "")) continue; // 与 #extractImages 同条件跳过，保对位
+        const v = img.video?.play_addr || img.video?.playAddr || {};
+        const videoUrl = v.url_list?.[0] || v.urlList?.[0] || "";
+        videos.push(this.#normalizeProtocol(videoUrl));
+      }
+      return videos;
     }
 
     #extractMusic(raw) {
@@ -448,6 +479,7 @@
         video: vid.url,
         videoExpireAt: vid.expireAt || 0,
         images: this.#extractImages(raw),
+        imageVideos: this.#extractImageVideos(raw),
         music: this.#extractMusic(raw),
         createTime: raw.create_time || raw.createTime || this.#awemeIdCreateTime(awemeId) || 0,
       };
@@ -457,7 +489,7 @@
       return this.normalizeWork(awemeData, fromFiber ? "fiber" : "api");
     }
 
-    async extractWorksFromResponse(url, data, parsedUrl) {
+    extractWorksFromResponse(url, data, parsedUrl) {
       let list = [];
       const pathname = parsedUrl ? parsedUrl.pathname : new URL(url).pathname;
 
@@ -624,7 +656,8 @@
       return window
         .fetch(url, {
           credentials: "include",
-          headers: headers || { Referer: window.location.origin + "/" },
+          // Referer 属 forbidden header，JS 无法设置；页面上下文会按页面 URL 自动携带
+          headers: headers || {},
           method,
           signal: controller.signal,
           _dyInternal: true,
@@ -659,10 +692,8 @@
         }
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = JSON.parse(text);
-        if (data && data.status_code !== undefined && data.status_code !== 0) {
-          throw new Error("status_code=" + data.status_code);
-        }
-        const list = await workExtractor.extractWorksFromResponse(url.toString(), data);
+        assertApiOk(data);
+        const list = workExtractor.extractWorksFromResponse(url.toString(), data);
         return list[0] || null;
       } catch (e) {
         if (e && e.name === "AbortError") throw new Error("CANCELLED");
@@ -693,18 +724,21 @@
       return await resp.json();
     }
 
-    async fetchProfileOther(secUid, externalSignal) {
+    async fetchProfileOther({ secUid = "", uid = "" }, externalSignal) {
       const sigSource = signatureCapture.profileSigSource();
+      const lookup = uid ? { user_id: String(uid) } : { sec_user_id: secUid };
       const url = signatureCapture.buildUrl(
         CONFIG.API.PROFILE_OTHER,
-        Object.assign({}, CONFIG.DEVICE_PARAMS, {
-          sec_user_id: secUid,
-        }),
+        Object.assign({}, CONFIG.DEVICE_PARAMS, lookup),
       );
       // sigSource 跨端点兜底（profileQuery || followingQuery || ...），每环都必须经
       // stripSdkKeys 剥签名键——否则旧 x-secsdk-web-signature 预塞回 URL，页面包装器
-      // 不再重签，Argus 按过期签名拒绝（post/profile 已被强制 webSign 校验）
-      const merged = signatureCapture.mergeParams(url, signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(sigSource)));
+      // 不再重签，Argus 按过期签名拒绝（post/profile 已被强制 webSign 校验）。
+      // 捕获源里的另一用户标识必须删除：mergeParams 只补不删，残留 sec_user_id/user_id
+      // 会让一次请求同时带两个标识，可能查到错误用户或被服务端拒绝。
+      const captured = signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(sigSource));
+      if (captured) captured.delete(uid ? "sec_user_id" : "user_id");
+      const merged = signatureCapture.mergeParams(url, captured);
       const resp = await this.#guardedFetch(merged.toString(), {
         timeout: CONFIG.TIMEOUT.FETCH_PAGE,
         signal: externalSignal,
@@ -731,10 +765,10 @@
       const resp = await this.#guardedFetch(merged.toString(), { timeout: CONFIG.TIMEOUT.FETCH_PAGE });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
-      if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+      assertApiOk(data);
 
       const works = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
-      const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+      const hasMore = hasMoreFlag(data);
       return {
         works,
         hasMore,
@@ -763,11 +797,11 @@
       });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
-      if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+      assertApiOk(data);
       const items = (data.aweme_list || []).map((aw) =>
         workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
       );
-      const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+      const hasMore = hasMoreFlag(data);
       const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
         items,
@@ -795,17 +829,16 @@
         timeout: CONFIG.TIMEOUT.FETCH_PAGE,
         signal,
         headers: {
-          Referer: window.location.origin + "/",
           "content-type": CONFIG.FORM_CONTENT_TYPE,
         },
       });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
-      if (data.status_code !== undefined && data.status_code !== 0) throw new Error("API_ERROR");
+      assertApiOk(data);
       const items = (data.aweme_list || []).map((aw) =>
         workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
       );
-      const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+      const hasMore = hasMoreFlag(data);
       const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
         items,
@@ -818,10 +851,11 @@
   }
   const apiClient = new ApiClient();
 
-  // ---------- CancelHandler ----------
-  // 取消点赞/收藏 (tools 移植)。Tab 模式用 XHR 而非 fetch——a_bogus 签名与 XHR 原型链深度绑定。
-  class CancelHandler {
-    #cancelOne(awemeId, url, bodyFn, referrer, signal) {
+  // ---------- ReactionHandler ----------
+  // 点赞/收藏状态设置（active=false 取消、true 添加），Tab 模式用 XHR 而非 fetch——
+  // a_bogus 签名与 XHR 原型链深度绑定。
+  class ReactionHandler {
+    #postOne(awemeId, endpoint, active, signal) {
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         if (signal) {
@@ -839,10 +873,10 @@
           );
         }
         const key = apiClient.getSecurityKey();
-        xhr.open("POST", url);
+        xhr.open("POST", endpoint.url);
         xhr.withCredentials = true;
         xhr.setRequestHeader("content-type", CONFIG.CANCEL_CONTENT_TYPE);
-        xhr.setRequestHeader("Referer", referrer);
+        // Referer 属 forbidden header，XHR 无法设置；实际 Referer 由页面上下文决定
         if (key) xhr.setRequestHeader("bd-ticket-guard-ree-public-key", key);
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
@@ -855,25 +889,27 @@
         };
         xhr.onerror = () => reject(new Error("NETWORK_ERROR"));
         xhr.onabort = () => reject(new Error("CANCELLED"));
-        xhr.send(bodyFn(awemeId));
+        xhr.send(endpoint.body(awemeId, active));
       });
     }
 
     cancelOneFavorites(awemeId, signal) {
-      return this.#cancelOne(awemeId, CONFIG.CANCEL.favorites.url, CONFIG.CANCEL.favorites.body, CONFIG.CANCEL.favorites.referrer, signal);
+      return this.#postOne(awemeId, CONFIG.CANCEL.favorites, false, signal);
     }
 
     cancelOneCollection(awemeId, signal) {
-      return this.#cancelOne(
-        awemeId,
-        CONFIG.CANCEL.collection.url,
-        CONFIG.CANCEL.collection.body,
-        CONFIG.CANCEL.collection.referrer,
-        signal,
-      );
+      return this.#postOne(awemeId, CONFIG.CANCEL.collection, false, signal);
+    }
+
+    setOneFavorites(awemeId, active, signal) {
+      return this.#postOne(awemeId, CONFIG.CANCEL.favorites, active === true, signal);
+    }
+
+    setOneCollection(awemeId, active, signal) {
+      return this.#postOne(awemeId, CONFIG.CANCEL.collection, active === true, signal);
     }
   }
-  const cancelHandler = new CancelHandler();
+  const reactionHandler = new ReactionHandler();
 
   // ---------- SecurityStatus ----------
   // 安全状态查询：汇总签名捕获快照 + hook 状态，供 options 安全面板展示。
@@ -931,6 +967,9 @@
     }
 
     #installFetch() {
+      // 对称 #installXHR 的防重复 hook 守卫：扩展重载后同文档双注入时 fetch 被包两层，捕获/签名双发
+      if (window.__dyManagerFetchHooked) return;
+      window.__dyManagerFetchHooked = true;
       const self = this;
       window.fetch = function (...args) {
         const request = args[0];
@@ -944,9 +983,8 @@
             try {
               signatureCapture.captureFromUrl(url, parsedUrl);
               response.clone().json().then((data) => {
-                workExtractor.extractWorksFromResponse(url, data, parsedUrl).then((works) => {
-                  workExtractor.dispatchWorks(works);
-                }).catch(() => {});
+                const works = workExtractor.extractWorksFromResponse(url, data, parsedUrl);
+                workExtractor.dispatchWorks(works);
               }).catch(() => {});
             } catch (e) {
               console.warn("[DY] capture works failed:", e);
@@ -959,7 +997,6 @@
           return response;
         });
       };
-      window.__dyManagerFetchHooked = true;
     }
 
     #installXHR() {
@@ -1148,6 +1185,8 @@
       document.addEventListener(CONFIG.EVENTS.FETCH_COLLECTION_PAGE_REQUEST, (e) => this.#onFetchCollection(e));
       document.addEventListener(CONFIG.EVENTS.CANCEL_ONE_FAVORITES_REQUEST, (e) => this.#onCancelOneFavorites(e));
       document.addEventListener(CONFIG.EVENTS.CANCEL_ONE_COLLECTION_REQUEST, (e) => this.#onCancelOneCollection(e));
+      document.addEventListener(CONFIG.EVENTS.SET_ONE_FAVORITES_REQUEST, (e) => this.#onSetOneFavorites(e));
+      document.addEventListener(CONFIG.EVENTS.SET_ONE_COLLECTION_REQUEST, (e) => this.#onSetOneCollection(e));
       document.addEventListener("DY_GET_SECURITY_STATUS_REQUEST", (e) => this.#onGetSecurityStatus(e));
       document.addEventListener("DY_REQUEST_BROWSER_FEATURES", (e) => this.#onRequestBrowserFeatures(e));
     }
@@ -1218,8 +1257,7 @@
       }
       this.#wrapTask(requestId, CONFIG.EVENTS.FETCH_FOLLOWING_PAGE_RESULT, async (controller) => {
         const data = await apiClient.fetchFollowingPage(realSecUid, offset || 0, count, controller.signal);
-        if (data.status_code !== undefined && data.status_code !== 0)
-          throw new Error("API_ERROR: status_code=" + data.status_code);
+        assertApiOk(data);
         const items = (data.followings || []).map((item) => ({
           uid: String(item.uid || ""),
           nickname: item.nickname || "未知",
@@ -1231,7 +1269,7 @@
           lastUpdateAt: 0,
           profileUrl: "https://www.douyin.com/user/" + (item.sec_uid || ""),
         }));
-        const hasMore = data.has_more === true || data.has_more === 1 || data.has_more === "1";
+        const hasMore = hasMoreFlag(data);
         return {
           ok: true,
           items,
@@ -1243,25 +1281,26 @@
     }
 
     #onFetchProfileOther(e) {
-      const { requestId, secUid } = e.detail || {};
-      if (!requestId || !secUid) return;
+      const { requestId, secUid, uid } = e.detail || {};
+      if (!requestId || (!secUid && !uid)) return;
       const sigSource = signatureCapture.profileSigSource();
       if (!sigSource) {
         this.#dispatchResult(CONFIG.EVENTS.FETCH_PROFILE_OTHER_RESULT, { requestId, ok: false, error: "NO_SIGNATURE" });
         return;
       }
       this.#wrapTask(requestId, CONFIG.EVENTS.FETCH_PROFILE_OTHER_RESULT, async (controller) => {
-        const data = await apiClient.fetchProfileOther(secUid, controller.signal);
-        if (data.status_code !== undefined && data.status_code !== 0)
-          throw new Error("API_ERROR: status_code=" + data.status_code);
+        const data = await apiClient.fetchProfileOther({ secUid, uid }, controller.signal);
+        assertApiOk(data);
         const user = data.user || {};
-        // 计数字段供 CALIBRATE_FOLLOWING 使用；档案字段供关注域入库（IMPORT_FOLLOWING）使用，
-        // 扁平化抽取与 background 侧 #fetchProfileUser 独立分支保持一致
+        // 计数字段供 CALIBRATE_FOLLOWING / CALIBRATE_CANDIDATE 使用；档案字段供候选域入库
+        //（IMPORT_CANDIDATE）与 uid 反查（RESOLVE_USER_PROFILE）使用，扁平化抽取与
+        // background 侧 #fetchProfileUser 独立分支保持一致
         return {
           ok: true,
           awemeCount: user.aweme_count || 0,
           followerCount: user.follower_count || 0,
           nickname: user.nickname || "",
+          uniqueId: user.unique_id || "",
           avatarLarger: ((user.avatar_larger && user.avatar_larger.url_list) || [])[0] || "",
           uid: String(user.uid || ""),
           secUid: user.sec_uid || "",
@@ -1302,7 +1341,7 @@
       const { requestId, awemeId } = e.detail || {};
       if (!requestId || !awemeId) return;
       this.#wrapTask(requestId, CONFIG.EVENTS.CANCEL_ONE_FAVORITES_RESULT, (controller) =>
-        cancelHandler.cancelOneFavorites(awemeId, controller.signal).then(() => ({ ok: true })),
+        reactionHandler.cancelOneFavorites(awemeId, controller.signal).then(() => ({ ok: true })),
       );
     }
 
@@ -1310,7 +1349,23 @@
       const { requestId, awemeId } = e.detail || {};
       if (!requestId || !awemeId) return;
       this.#wrapTask(requestId, CONFIG.EVENTS.CANCEL_ONE_COLLECTION_RESULT, (controller) =>
-        cancelHandler.cancelOneCollection(awemeId, controller.signal).then(() => ({ ok: true })),
+        reactionHandler.cancelOneCollection(awemeId, controller.signal).then(() => ({ ok: true })),
+      );
+    }
+
+    #onSetOneFavorites(e) {
+      const { requestId, awemeId, active } = e.detail || {};
+      if (!requestId || !awemeId) return;
+      this.#wrapTask(requestId, CONFIG.EVENTS.SET_ONE_FAVORITES_RESULT, (controller) =>
+        reactionHandler.setOneFavorites(awemeId, active === true, controller.signal).then(() => ({ ok: true })),
+      );
+    }
+
+    #onSetOneCollection(e) {
+      const { requestId, awemeId, active } = e.detail || {};
+      if (!requestId || !awemeId) return;
+      this.#wrapTask(requestId, CONFIG.EVENTS.SET_ONE_COLLECTION_RESULT, (controller) =>
+        reactionHandler.setOneCollection(awemeId, active === true, controller.signal).then(() => ({ ok: true })),
       );
     }
 

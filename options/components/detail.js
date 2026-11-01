@@ -17,9 +17,12 @@ class Detail {
   };
 
   #index = -1;
+  // 当前展示作品的 awemeId（字符串）：详情导航按「实际渲染顺序」重锚定的键——网格在
+  // 详情打开期间重渲（渐进加载完成整渲/STORE_CHANGED 整刷）时，同一 #index 可能指向
+  // 另一作品，靠该键把展示作品钉住、并把 #index 换算到新顺序里的位置
+  #currentId = null;
   #cleanups = [];
   #loopMode = "single";
-  #detailMuted = false;         // 详情层静音偏好单一事实源：视频与图集音乐共享，跨类型切换不丢
   #detailListenersAttached = false;
   #noteWork = null;
   #noteImgIndex = 0;
@@ -41,12 +44,17 @@ class Detail {
   #mediaBreakUntil = 0;
   #imgProbeToken = 0;
   #bgProbeToken = 0;
+  // 图集实况小视频：单例元素复用；#noteClipToken 为播放代际（与 #imgProbeToken 比对失效在途回调）
+  #noteClip = null;
+  #noteClipToken = 0;
   #rmQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
   #reduceMotion() {
     return this.#rmQuery.matches;
   }
   #noteShowImage(idx) {
     this.#noteImgIndex = idx;
+    // 切条即停上一条实况小视频（单次播放语义：本条再次进入时才重播）
+    this.#stopNoteClip();
     // 预取下一张：翻页/自动播放到下一图时命中缓存（自动播放 3s/张，预取窗口充裕）
     this.#prefetchNoteImage(idx + 1);
     const url = utils.pickHttpsUrl(this.#noteWork.images[idx])
@@ -68,19 +76,90 @@ class Detail {
         if (token !== this.#imgProbeToken) return;
         dom.detailImage.style.backgroundImage = utils.cssUrl(url);
         dom.detailImage.setAttribute("aria-label", this.#noteWork.desc || "");
+        // 本条静帧就位后才起步实况小视频（切条前已由 #stopNoteClip 停掉上一条）。
+        // 关键时序：静帧提交是异步探针（网络 + decode），若小视频在探针之前同步上屏，
+        // 它会叠在「上一条仍保留的旧静帧背景」之上（零空档切图不先清背景），形成两层
+        // 错位叠加——移入提交点后，小视频只在其「同一条」静帧就位时出现，无旧帧残留
+        this.#playNoteClip(idx, token);
         // 模糊背景不再逐图跟随（2026-09 性能定案）：全屏 blur(70px) 层随每次背景源
         // 变化整体重光栅化，图集自动播放每 3s 一次 10-50ms 级 paint——背景仅在切作品
         // 时更新一次（首图，见 renderDetail），图内翻页保持
       };
       // decode 保证首帧完整可绘后再提交；decode 失败（罕见）也照常提交——背景失败不可见
-      if (typeof probe.decode === "function") probe.decode().then(doCommit, doCommit);
-      else doCommit();
+      probe.decode().then(doCommit, doCommit);
     };
     probe.onerror = () => {
       if (token !== this.#imgProbeToken) return;
       this.markMediaFail();
     };
     probe.src = url;
+  }
+
+  // ---------- 图集实况小视频（note 每条内容项可带 1-8s 静音小视频） ----------
+  // 单例元素懒建复用，叠加在 #detailImage 同槽位之上：单次播放、muted、无控件；播完（ended）
+  // 隐藏回静帧（静帧已由既有链换高清）；失败静默隐藏，不触熔断计数、不动全页静音偏好
+  #ensureNoteClip() {
+    if (this.#noteClip) return this.#noteClip;
+    const v = document.createElement("video");
+    v.className = "note-live-video";
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = "auto";
+    // 一次性绑定：守卫播放代际（#stopNoteClip 置 0 失效在途回调）
+    v.addEventListener("ended", () => {
+      if (this.#noteClipToken !== this.#imgProbeToken) return;
+      this.#hideNoteClip();
+    });
+    v.addEventListener("error", () => {
+      if (this.#noteClipToken !== this.#imgProbeToken) return;
+      this.#hideNoteClip();
+    });
+    dom.detailImage.parentElement.appendChild(v);
+    this.#noteClip = v;
+    return v;
+  }
+
+  #playNoteClip(idx, token) {
+    const url = utils.pickHttpsUrl(this.#noteWork?.imageVideos?.[idx] || "");
+    if (!url) return;
+    const v = this.#ensureNoteClip();
+    this.#noteClipToken = token;
+    if (v.dataset.src !== url) {
+      v.dataset.src = url;
+      v.src = url;
+    } else if (v.currentTime > 0) {
+      v.currentTime = 0; // 同一条再次进入：从头重播
+    }
+    v.classList.add("on");
+    v.play().catch(() => {
+      if (this.#noteClipToken !== this.#imgProbeToken) return;
+      this.#hideNoteClip();
+    });
+  }
+
+  #hideNoteClip() {
+    const v = this.#noteClip;
+    if (!v) return;
+    v.pause();
+    v.classList.remove("on");
+  }
+
+  // 停播并失效在途回调（切条/离开页面前）：保留 src 供本条再次进入瞬时重播
+  #stopNoteClip() {
+    this.#noteClipToken = 0;
+    this.#hideNoteClip();
+  }
+
+  // 释放（切作品/关闭详情，经 addCleanup）：清 src 释放缓冲
+  #releaseNoteClip() {
+    const v = this.#noteClip;
+    if (!v) return;
+    this.#noteClipToken = 0;
+    v.pause();
+    v.classList.remove("on");
+    v.removeAttribute("src");
+    v.load();
+    delete v.dataset.src;
   }
 
   // 预取指定图（仅预热 HTTP 缓存：无回调、不进熔断计数，展示探针才是计数决策点）；
@@ -300,57 +379,83 @@ class Detail {
   }
 
   #toggleNoteMute() {
-    const audio = dom.detailAudio;
-    if (!audio) return;
-    this.#detailMuted = !this.#detailMuted;
-    audio.muted = this.#detailMuted;
-    this.#syncDetailMuteBtn();
+    this.#toggleMediaMute(dom.detailAudio);
   }
 
-  // 静音按钮（图标/tooltip/aria）统一从 #detailMuted 同步：视频与图集音乐两条渲染路径共用
+  // 全页静音偏好（state.mediaMuted）在详情侧的切换：翻转标志 → 施加到当前详情媒体元素 →
+  // 同步按钮 UI 并回写网格卡片元素态（worksGrid.syncMediaMute 覆盖全部已渲染视频卡）
+  #toggleMediaMute(el) {
+    state.mediaMuted = !state.mediaMuted;
+    el.muted = state.mediaMuted;
+    this.#syncDetailMuteBtn();
+    worksGrid.syncMediaMute();
+  }
+
+  // 静音按钮（图标/tooltip/aria）统一从 state.mediaMuted 同步：视频与图集音乐两条渲染路径共用
   #syncDetailMuteBtn() {
-    dom.detailMuteBtn.innerHTML = this.#detailMuted ? config.icons.mute : config.icons.unmute;
-    const label = this.#detailMuted ? "取消静音" : "静音";
+    dom.detailMuteBtn.innerHTML = state.mediaMuted ? config.icons.mute : config.icons.unmute;
+    const label = state.mediaMuted ? "取消静音" : "静音";
     dom.detailMuteBtn.title = label;
     dom.detailMuteBtn.setAttribute("aria-label", label);
   }
 
-  // Detail 导航与网格共用同一过滤视图（建议5）：详情内翻页只在可见条目间进行
-  openDetailIndex(awemeId) {
-    const list = search.getWorksView();
-    const idx = list.findIndex((w) => w.awemeId === awemeId);
-    if (idx === -1) return null;
+  // ---------- 导航：详情与网格共用「实际渲染顺序」 ----------
+  // 虚拟网格的 #viewItems 快照（renderedItems）是用户所见卡片 DOM 的唯一权威顺序
+  //（Batch 的 Shift 连选已按此取序）。渐进加载期（作品数排序/加载中途切排序 → 页序与
+  // 视图序失配，网格静默累积待完成整渲）视图函数可能已随 dataVersion 增长，而网格仍停在
+  // 上一次渲染的顺序——此时按 getWorksView() 现算会让详情全程与网格可见顺序错位。
+  // 快照缺失（尚未渲染/清场后）才回退视图函数
+  #navList() {
+    const rendered = search.activeWorkRecordGrid()?.renderedItems();
+    return rendered || search.getWorksView();
+  }
+
+  // 展示作品在当前导航列表中的下标：优先按 #currentId 重锚定（网格重渲换了顺序时仍
+  // 指向同一作品），查不到（已删除/换域）退回旧下标
+  #resolveIndex(list) {
+    if (this.#currentId == null) return this.#index;
+    const idx = list.findIndex((w) => String(w.awemeId) === this.#currentId);
+    return idx === -1 ? this.#index : idx;
+  }
+
+  #setCurrent(idx, list) {
+    const work = list[idx] || null;
     this.#index = idx;
-    return list[idx];
+    this.#currentId = work ? String(work.awemeId) : null;
+    return work;
+  }
+
+  // Detail 导航与网格共用同一渲染顺序：详情内翻页只在可见（已渲染）条目间进行
+  openDetailIndex(awemeId) {
+    const list = this.#navList();
+    const idx = list.findIndex((w) => String(w.awemeId) === String(awemeId));
+    if (idx === -1) return null;
+    return this.#setCurrent(idx, list);
   }
 
   getCurrentWork() {
-    return search.getWorksView()[this.#index] || null;
+    const list = this.#navList();
+    return list[this.#resolveIndex(list)] || null;
   }
 
   closeDetailIndex() {
     this.runCleanups();
     this.#index = -1;
+    this.#currentId = null;
   }
 
   nextDetailIndex() {
-    if (this.#index < search.getWorksView().length - 1) {
-      this.#index++;
-      return this.getCurrentWork();
-    }
+    const list = this.#navList();
+    const idx = this.#resolveIndex(list);
+    if (idx < list.length - 1) return this.#setCurrent(idx + 1, list);
     return null;
   }
 
   prevDetailIndex() {
-    if (this.#index > 0) {
-      this.#index--;
-      return this.getCurrentWork();
-    }
+    const list = this.#navList();
+    const idx = this.#resolveIndex(list);
+    if (idx > 0) return this.#setCurrent(idx - 1, list);
     return null;
-  }
-
-  getDetailIndex() {
-    return this.#index;
   }
 
   addCleanup(fn) {
@@ -378,33 +483,25 @@ class Detail {
 
   nextOnEnd() {
     if (this.#loopMode === "single") return "single";
-    const total = search.getWorksView().length;
+    const list = this.#navList();
+    const total = list.length;
     if (this.#loopMode === "group" && total > 1) {
-      if (this.#index < total - 1) {
-        this.#index++;
-      } else {
-        this.#index = 0;
-      }
+      const idx = this.#resolveIndex(list);
+      this.#setCurrent(idx < total - 1 ? idx + 1 : 0, list);
       return "group";
     }
     return "off";
   }
 
   async removeWork(awemeId) {
-    // 作品型三域按当前域删除本地记录（点赞/收藏域仅删本地，远端取消走批量入口）
-    if (config.WORK_RECORD_DOMAINS.includes(state.domain)) {
-      await services.deleteWorkRecord(state.domain, [awemeId]);
-      store.removeWorkRecordSilent(state.domain, new Set([awemeId]));
-      state.selectedIds.delete(awemeId);
-      search.activeWorkRecordGrid().removeItems(new Set([awemeId]));
-      store.refreshGroups();
-      search.syncCount();
-      return;
-    }
-    await services.bgMsg({ type: "DELETE_WORKS", awemeIds: [awemeId] });
+    // 作品型三域（作品/点赞/收藏）网格均可打开详情，按当前域删除本地记录
+    //（点赞/收藏域仅删本地，远端取消走批量入口）；state.domain 恒属 WORK_RECORD_DOMAINS
+    await services.deleteWorkRecord(state.domain, [awemeId]);
+    store.removeWorkRecordSilent(state.domain, new Set([awemeId]));
     state.selectedIds.delete(awemeId);
-    const idx = state.works.findIndex((w) => w.awemeId === awemeId);
-    store.spliceWork(idx);
+    search.activeWorkRecordGrid().removeItems(new Set([awemeId]));
+    store.refreshGroups();
+    search.syncCount();
   }
 
   // 详情移除确认流程：底栏「移除」按钮与 Delete/Backspace 快捷键共用入口（确认弹窗，不直接删）
@@ -427,14 +524,16 @@ class Detail {
           state.preventDialogClose = true;
           try {
             await this.removeWork(work.awemeId);
-            if (search.getWorksView().length === 0) {
+            // 移除后导航列表同步收缩：原下标处已是「下一件」，越界钳到末条并按新条目重锚定
+            const list = this.#navList();
+            if (list.length === 0) {
               this.closeDetail();
             } else {
-              if (this.getDetailIndex() >= search.getWorksView().length) this.#index = search.getWorksView().length - 1;
+              const at = Math.min(Math.max(this.#resolveIndex(list), 0), list.length - 1);
+              this.#setCurrent(at, list);
               this.renderDetail();
             }
-            store.refreshGroups();
-            // 成功终态不再要求"好的"确认（建议2）
+            // 成功终态不再要求"好的"确认
             dialog.closeDialog();
             dialog.showToast("已移除该作品", "success");
           } finally {
@@ -464,14 +563,15 @@ class Detail {
   // 计数展示：bar-controls 信息位——视频为播放时间（#renderVideoProgress 维护 detailTime），
   // 图集为 K/N 图片顺序（#detailOrder，随 #noteShowImage 更新）；播放条最右端仍为作品序号
   #updateCounters(work) {
-    const total = search.getWorksView().length;
+    const list = this.#navList();
+    const total = list.length;
     // 图集顺序位（视频模式此位显示 detailTime，不由此处写入）
     if (work.type === "note" && work.images?.length) {
       dom.detailOrder.textContent = `${this.#noteImgIndex + 1}/${work.images.length}`;
     }
     // 播放条最右端：作品序号（K 为输入框，Enter 提交跳转 / Esc 还原，见 #commitCounterJump）
     if (total > 1) {
-      dom.detailCounterInput.value = String(this.getDetailIndex() + 1);
+      dom.detailCounterInput.value = String(this.#resolveIndex(list) + 1);
       dom.detailCounterTotal.textContent = ` / ${total}`;
       this.#resizeCounterInput();
       dom.detailCounter.classList.remove("hidden");
@@ -485,28 +585,31 @@ class Detail {
   // K 输入框宽度自适应（ch = 本字体数字宽）：取总位数与当前输入位数的较大者，防位数增长截断
   #resizeCounterInput() {
     const input = dom.detailCounterInput;
-    input.style.width = `${Math.max(String(search.getWorksView().length).length, input.value.length)}ch`;
+    input.style.width = `${Math.max(String(this.#navList().length).length, input.value.length)}ch`;
   }
 
   #revertCounterInput() {
-    dom.detailCounterInput.value = String(this.getDetailIndex() + 1);
+    const list = this.#navList();
+    dom.detailCounterInput.value = String(this.#resolveIndex(list) + 1);
     this.#resizeCounterInput();
   }
 
   // K 提交跳转：非数字/越界钳制到 [1, N]；相邻序号保留方向感过渡（与 ↑/↓ 同语义），远跳走普通淡入。
   // 关详情后网格滚动恢复走既有 restoreGridScroll，跳转结果自然落位
   #commitCounterJump() {
-    const total = search.getWorksView().length;
+    const list = this.#navList();
+    const total = list.length;
     const k = parseInt(dom.detailCounterInput.value, 10);
     if (total === 0 || !Number.isFinite(k)) return this.#revertCounterInput();
     const target = Math.min(Math.max(k, 1), total) - 1;
-    if (target === this.#index) return this.#revertCounterInput();
-    const dir = Math.abs(target - this.#index) === 1 ? (target > this.#index ? 1 : -1) : 0;
-    this.#index = target;
+    const cur = this.#resolveIndex(list);
+    if (target === cur) return this.#revertCounterInput();
+    const dir = Math.abs(target - cur) === 1 ? (target > cur ? 1 : -1) : 0;
+    this.#setCurrent(target, list);
     this.renderDetail(dir);
   }
 
-  // 加载指示复位（建议17）
+  // 加载指示复位
   #resetMediaStatus(isVideo) {
     dom.detailLoader.classList.toggle("hidden", !isVideo);
   }
@@ -565,18 +668,7 @@ class Detail {
     );
   }
 
-  // F 全屏：按当前可见媒体类型选择全屏容器（视频区 / 大图容器）
-  #toggleFullscreen() {
-    const isVideo = !dom.detailVideoContainer.classList.contains("hidden");
-    const target = isVideo ? dom.detailVideoContainer : dom.detailImageContainer;
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    } else {
-      target.requestFullscreen?.().catch(() => {});
-    }
-  }
-
-  // Tab 焦点圈定（建议21）：焦点在 overlay 内循环。
+  // Tab 焦点圈定：焦点在 overlay 内循环。
   // 可见性用 rects 判断而非 offsetParent——fixed 定位元素（如右上关闭钮）的 offsetParent 恒为 null
   #trapFocus(e) {
     const focusables = [...dom.detailOverlay.querySelectorAll("button, input, a[href]")]
@@ -603,14 +695,14 @@ class Detail {
     this.renderDetail();
   }
 
-  // dir: 1 下一作品 / -1 上一作品 / 0 无方向（首次打开或循环回跳），驱动建议15的方向感过渡
+  // dir: 1 下一作品 / -1 上一作品 / 0 无方向（首次打开或循环回跳），驱动方向感过渡
   renderDetail(dir = 0) {
     const isSwitch = !dom.detailOverlay.classList.contains("hidden");
     const body = dom.detailBody;
     if (isSwitch) {
       body.classList.add("detail-transitioning");
     }
-    // 方向感入场（建议15）：先清旧类再强制 reflow，保证同向连续切换也能重放动画；
+    // 方向感入场：先清旧类再强制 reflow，保证同向连续切换也能重放动画；
     // prefers-reduced-motion 时跳过位移，只保留容器淡入（CSS 侧已把动画压到不可感知）
     body.classList.remove("enter-down", "enter-up");
     if (dir !== 0 && !this.#reduceMotion()) {
@@ -694,7 +786,15 @@ class Detail {
       this.#updateCounters(work);
       this.#resetMediaStatus(isVideo);
 
+      // 安全兜底：10 秒后强制结束过渡（防网络异常卡死）；正常结束由 onReady 清理。
+      // 必须登记 cleanup：切作品后旧定时器不得再摘新过渡的 class
+      let transitionTimer = 0;
+      if (isSwitch) {
+        transitionTimer = setTimeout(() => body.classList.remove("detail-transitioning"), 10000);
+        this.addCleanup(() => clearTimeout(transitionTimer));
+      }
       const onReady = () => {
+        clearTimeout(transitionTimer);
         body.classList.remove("detail-transitioning");
       };
 
@@ -731,13 +831,6 @@ class Detail {
         this.#clearDetailImage();
         onReady();
       }
-
-      // 安全兜底：10 秒后强制结束过渡（防止网络异常卡死）
-      if (isSwitch) {
-        setTimeout(() => {
-          body.classList.remove("detail-transitioning");
-        }, 10000);
-      }
     };
 
     if (isSwitch) {
@@ -751,14 +844,14 @@ class Detail {
 
   renderDetailVideo(work, onReady) {
     const video = dom.detailVideo;
-    const readyFn = () => { if (onReady) onReady(); };
+    const readyFn = onReady;
     video.src = utils.getVideoUrl(work);
 
-    // 加载指示（建议17）：canplay 前亮 spinner
+    // 加载指示：canplay 前亮 spinner
     dom.detailLoader.classList.remove("hidden");
 
-    // 静音偏好跨作品保留：从 #detailMuted 施加到本作品（图集音乐同源，视频↔图集切换不丢）
-    video.muted = this.#detailMuted;
+    // 全页静音偏好跨作品保留：从 state.mediaMuted 施加到本作品（图集音乐同源，视频↔图集切换不丢）
+    video.muted = state.mediaMuted;
     this.#syncDetailMuteBtn();
 
     // 视频可播放时结束过渡
@@ -788,8 +881,8 @@ class Detail {
 
     video.play().catch((err) => {
       if (err.name === "NotAllowedError") {
-        // 自动播放被浏览器拦截：强制静音换播放权，并计入共享静音偏好（后续作品沿用）
-        this.#detailMuted = true;
+        // 自动播放被浏览器拦截：强制静音换播放权，并写入全页静音偏好（网格预览/后续作品沿用）
+        state.mediaMuted = true;
         video.muted = true;
         this.#syncDetailMuteBtn();
         video.play().catch(() => {});
@@ -828,7 +921,7 @@ class Detail {
     this.#noteSegOffset = 0;
     const audio = dom.detailAudio;
 
-    const readyFn = () => { if (onReady) onReady(); };
+    const readyFn = onReady;
     // 图片加载完成时结束过渡
     let readyFired = false;
     const fireReady = () => {
@@ -838,9 +931,10 @@ class Detail {
     };
     // 切到新作品先清空上个作品的图，避免链接失效时残留上一作品内容
     this.#clearDetailImage();
-    // 先加载 cover：网格卡已加载过同一 cover 大概率命中缓存，探针通过即先落为占位，
-    // 再换高清首帧。候选去重防 cover 与首帧同 URL 重复加载；全部失败才进失效态。
-    // 期间无 aria-label，杜绝中央区闪现作品标题文本（见 #clearDetailImage）
+    // 先加载 cover：网格卡已加载过同一 cover 大概率命中缓存，探针通过即先落为占位；
+    // 高清首帧（images[0]）随后经独立探针静默替换（见下方 up）。候选去重防 cover 与
+    // 首帧同 URL 重复加载；全部失败才进失效态。期间无 aria-label，杜绝中央区闪现
+    // 作品标题文本（见 #clearDetailImage）
     const candidates = [...new Set([
       utils.pickHttpsUrl(work.cover || ""),
       utils.pickHttpsUrl(work.images?.[0] || ""),
@@ -850,6 +944,7 @@ class Detail {
       fireReady();
     } else {
       const token = ++this.#imgProbeToken;
+      this.#playNoteClip(0, token);
       const tryCandidate = (i) => {
         if (i >= candidates.length) {
           // 全部失效：保持清空并显示失效态，绝不回退到上一个作品
@@ -869,6 +964,20 @@ class Detail {
           dom.detailImage.style.backgroundImage = utils.cssUrl(candidates[i]);
           dom.detailImage.setAttribute("aria-label", work.desc || "");
           fireReady();
+          // 占位后换高清首帧：cover 命中网格缓存先落屏（瞬开），原图到达再替换（图集详情
+          // 要原图细节）。静默换图不加熔断计数（与「单条候选失效不计数」同口径）
+          const hiRes = utils.pickHttpsUrl(work.images?.[0] || "");
+          if (i === 0 && hiRes && hiRes !== candidates[0]) {
+            const up = new Image();
+            up.onload = () => {
+              if (token !== this.#imgProbeToken) return; // 翻页/重渲自增代际
+              if (this.#noteWork !== work || this.#noteImgIndex !== 0) return; // 已翻走
+              if (dom.detailOverlay.classList.contains("hidden")) return; // closeDetail 不清代际
+              this.#setMediaAspect(up.naturalWidth, up.naturalHeight);
+              dom.detailImage.style.backgroundImage = utils.cssUrl(hiRes);
+            };
+            up.src = hiRes;
+          }
         };
         probe.onerror = () => {
           if (token !== this.#imgProbeToken) return;
@@ -889,14 +998,14 @@ class Detail {
     if (work.music) {
       audio.src = utils.pickHttpsUrl(work.music);
       audio.currentTime = 0;
-      // 静音偏好跨作品保留：从 #detailMuted 施加到本作品（视频同源）
-      audio.muted = this.#detailMuted;
+      // 全页静音偏好跨作品保留：从 state.mediaMuted 施加到本作品（视频同源）
+      audio.muted = state.mediaMuted;
       this.#syncDetailMuteBtn();
 
       audio.play().catch((err) => {
         if (err.name === "NotAllowedError") {
-          // 同视频路径：拦截即强制静音并计入共享偏好
-          this.#detailMuted = true;
+          // 同视频路径：拦截即强制静音并写入全页偏好
+          state.mediaMuted = true;
           audio.muted = true;
           this.#syncDetailMuteBtn();
           audio.play().catch(() => {});
@@ -911,6 +1020,7 @@ class Detail {
     this.#noteStartAutoPlay();
 
     this.addCleanup(() => this.#noteStopAutoPlay());
+    this.addCleanup(() => this.#releaseNoteClip());
   }
 
   initDetailEvents() {
@@ -933,10 +1043,10 @@ class Detail {
 
     document.addEventListener("keydown", (e) => {
       if (dom.detailOverlay.classList.contains("hidden")) return;
-      // 弹窗叠于详情层之上时全部让位（Space/M/L/F/方向键/删除键不穿透）；Esc 不经本监听，
+      // 弹窗叠于详情层之上时全部让位（Space/M/L/方向键/删除键不穿透）；Esc 不经本监听，
       // 由 main.js 的 Esc 收口统一裁决（一次按键只关一层）
       if (!dom.dialogOverlay.classList.contains("hidden")) return;
-      // Tab 焦点圈定（建议21）
+      // Tab 焦点圈定
       if (e.key === "Tab") {
         this.#trapFocus(e);
         return;
@@ -952,7 +1062,7 @@ class Detail {
         e.preventDefault();
         this.nextDetail(1);
       }
-      // 播放控制快捷键（P0-3）：焦点在控件上时不拦截——Space 应触发聚焦按钮的原生点击、
+      // 播放控制快捷键：焦点在控件上时不拦截——Space 应触发聚焦按钮的原生点击、
       // 滑块应保留原生步进，避免与详情层交互冲突
       if (!this.#isInteractiveTarget(e.target) && work) {
         if (e.key === " " || e.code === "Space") {
@@ -971,11 +1081,6 @@ class Detail {
           e.preventDefault();
           this.cycleLoopMode();
           this.updateLoopBtn(work?.type === "video" && utils.getVideoUrl(work));
-          return;
-        }
-        if (e.key === "f" || e.key === "F") {
-          e.preventDefault();
-          this.#toggleFullscreen();
           return;
         }
       }
@@ -1025,7 +1130,7 @@ class Detail {
     });
 
     // 计数 K 编辑：聚焦全选、输入仅留数字并自适应宽度；Enter 提交跳转、Esc 还原并退出
-    //（stopPropagation 拦在 document 层「Esc 关详情」之前）、失焦还原——展示值与当前作品恒一致
+    //（stopPropagation 拦在 document 层 Esc 单点收口（关弹窗/退出详情）之前）、失焦还原——展示值与当前作品恒一致
     dom.detailCounterInput.addEventListener("focus", () => dom.detailCounterInput.select());
     dom.detailCounterInput.addEventListener("input", () => {
       const input = dom.detailCounterInput;
@@ -1137,7 +1242,7 @@ class Detail {
     });
   }
 
-  // dir 透传给 renderDetail 驱动方向感过渡（建议15）
+  // dir 透传给 renderDetail 驱动方向感过渡
   nextDetail(dir = 1) {
     if (this.nextDetailIndex()) this.renderDetail(dir);
   }
@@ -1147,8 +1252,9 @@ class Detail {
   }
 
   closeDetail() {
-    // 先在索引复位前记录原位置，供关闭后滚动卡片回到相应位置（closeDetailIndex 会清空 #index）
-    const restoredIndex = this.getDetailIndex();
+    // 先在索引复位前记录展示作品的 awemeId，供关闭后滚回同一张卡：网格在详情打开期间
+    // 可能已重渲（顺序变化），按下标恢复会落到另一张卡，故按 id 定位（见 restoreGridScroll）
+    const restoredId = this.#currentId;
     this.closeDetailIndex();
     this.resetMediaElements();
     // 复位增强态 UI：加载指示隐藏，下次打开从干净状态开始
@@ -1163,7 +1269,7 @@ class Detail {
     dom.detailOverlay.style.removeProperty("--bg-url");
     dom.detailOverlay.classList.add("hidden");
     document.body.style.overflow = "";
-    worksGrid.restoreGridScroll(restoredIndex);
+    worksGrid.restoreGridScroll(restoredId);
   }
 
   resetVideo() {
@@ -1184,6 +1290,7 @@ class Detail {
 
   // 切作品时清空详情主图，杜绝链接失效时残留上一作品的内容
   #clearDetailImage() {
+    this.#stopNoteClip();
     dom.detailImage.style.backgroundImage = "";
     // div 载体以 role="img" + aria-label 提供无障碍标注，清空杜绝加载期中央区闪现作品标题
     dom.detailImage.removeAttribute("aria-label");
@@ -1284,7 +1391,7 @@ class Detail {
   updateVideoProgress(video, slider, timeSpan, opacity) {
     if (video.duration) {
       const pct = (video.currentTime / video.duration) * 100;
-      // 缓冲段可视化（建议16）：已播放实白、缓冲半透明白、未缓冲底色
+      // 缓冲段可视化：已播放实白、缓冲半透明白、未缓冲底色
       let bufferedPct = pct;
       try {
         if (video.buffered.length) bufferedPct = (video.buffered.end(video.buffered.length - 1) / video.duration) * 100;
@@ -1344,9 +1451,7 @@ class Detail {
   }
 
   toggleDetailVideoMute() {
-    this.#detailMuted = !this.#detailMuted;
-    dom.detailVideo.muted = this.#detailMuted;
-    this.#syncDetailMuteBtn();
+    this.#toggleMediaMute(dom.detailVideo);
   }
 
   // 离开扩展页面（切标签/最小化，页面转为隐藏）暂停详情播放：
@@ -1358,6 +1463,7 @@ class Detail {
     if (!work) return;
     if (work.type === "note" && work.images?.length > 0) {
       this.#noteStopAutoPlay();
+      this.#stopNoteClip();
       this.#noteUpdatePlayBtn();
       return;
     }
@@ -1380,12 +1486,24 @@ class Detail {
 
   getFilename(work, ext) {
     const nick = (work.nickname || "unknown").replace(/[\\/:*?"<>|]/g, "_");
-    return `${nick}_${work.awemeId}.${ext}`;
+    // 作者 uid 稳定、昵称会变/可重名；uid 缺失时整段省略，awemeId 始终保留（唯一主键）
+    const uid = String(work.uid || "").replace(/[\\/:*?"<>|]/g, "_");
+    const segments = [nick];
+    if (uid) segments.push(uid);
+    segments.push(work.awemeId);
+    return `${segments.join("_")}.${ext}`;
   }
 
-  async fetchBlob(url) {
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  async fetchBlob(url, signal) {
+    const resp = await fetch(url, { signal });
+    if (!resp.ok) {
+      // 404/410 = 媒体对象已不存在（作品删除/私密/审核中/仅好友可见等），归为「不可用」：
+      // 调用方跳过且不重试；其余状态码仍按下载失败处理（403 多为图片签名过期，可重同步修复）
+      const err = new Error(`HTTP ${resp.status}`);
+      err.code = resp.status === 404 || resp.status === 410 ? "MEDIA_UNAVAILABLE" : "HTTP_ERROR";
+      err.status = resp.status;
+      throw err;
+    }
     const blob = await resp.blob();
     const ext = Detail.MIME_EXT[blob.type] || "mp4";
     return { blob, ext };
@@ -1403,39 +1521,40 @@ class Detail {
   }
 
   // 拉取作品全部媒体为 [{ name, blob }]：视频=单条，图集=逐张。
-  // 取流重试内置（DOWNLOAD_MAX_RETRY / FETCH_RETRY_DELAY），失败抛错由调用方计数/汇报。
-  fetchWorkMedia(work) {
-    return this.#fetchWorkMediaWithRetry(work, 0);
+  // 取流重试内置（DOWNLOAD_MAX_RETRY / FETCH_RETRY_DELAY），失败抛错由调用方计数/汇报；
+  // signal 供批量下载取消使用（abort 立即中断在途 fetch，且不进入重试）
+  fetchWorkMedia(work, signal) {
+    return this.#fetchWorkMediaWithRetry(work, 0, signal);
   }
 
-  async #fetchWorkMediaWithRetry(w, attempt) {
+  async #fetchWorkMediaWithRetry(w, attempt, signal) {
     try {
-      return await this.#fetchWorkMediaOnce(w);
+      return await this.#fetchWorkMediaOnce(w, signal);
     } catch (err) {
-      if (attempt >= config.DOWNLOAD_MAX_RETRY) throw err;
+      // 不可用是确定性结果，重试同一死链无意义；用户取消（signal.aborted）同样不重试
+      if (signal?.aborted || err.code === "MEDIA_UNAVAILABLE" || attempt >= config.DOWNLOAD_MAX_RETRY) throw err;
       await new Promise((r) => setTimeout(r, config.FETCH_RETRY_DELAY));
-      return this.#fetchWorkMediaWithRetry(w, attempt + 1);
+      return this.#fetchWorkMediaWithRetry(w, attempt + 1, signal);
     }
   }
 
-  async #fetchWorkMediaOnce(work) {
+  async #fetchWorkMediaOnce(work, signal) {
     const entries = [];
     if (work.type === "video" && utils.getVideoUrl(work)) {
-      const { blob, ext } = await this.fetchBlob(utils.getVideoUrl(work));
+      const { blob, ext } = await this.fetchBlob(utils.getVideoUrl(work), signal);
       entries.push({ name: this.getFilename(work, ext), blob });
     } else if (work.type === "note" && work.images?.length) {
       for (const [i, img] of work.images.entries()) {
         const absUrl = utils.pickHttpsUrl(img || "");
-        const { blob, ext } = await this.fetchBlob(absUrl);
+        const { blob, ext } = await this.fetchBlob(absUrl, signal);
         entries.push({ name: this.getFilename(work, `${i + 1}.${ext}`), blob });
       }
     }
     return entries;
   }
 
-  // silent=true 时抑制单条失败 toast 并返回成功布尔（批量下载用，聚合汇报由调用方负责）。
   // 视频=单文件直下；图集=打包 zip（全或无：任一张取流失败则整体失败，不产出半成品压缩包）
-  async downloadWork(work, { silent = false } = {}) {
+  async downloadWork(work) {
     try {
       const entries = await this.fetchWorkMedia(work);
       if (entries.length === 0) return true;
@@ -1447,8 +1566,15 @@ class Detail {
       }
       return true;
     } catch (err) {
-      console.error("[DY] download failed:", err);
-      if (!silent) dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
+      // 不可用（404/410）属用户已知情况，不按下载失败报错。
+      // 日志统一 info/debug：console.warn/error 会被 chrome://extensions 错误面板收录
+      if (err.code === "MEDIA_UNAVAILABLE") {
+        console.debug("[DY] work unavailable:", work?.awemeId);
+        dialog.showToast("该作品已不可访问（可能已删除或设为私密）", "info");
+        return false;
+      }
+      console.info("[DY] download failed:", err);
+      dialog.showToast("下载失败: " + (err.message || "未知错误"), "error");
       return false;
     }
   }

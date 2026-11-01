@@ -38,11 +38,13 @@ optgroup {
 /* ===== CSS 变量 ===== */
 :root {
   --dy-bg: #161823;
+  /* 面板区底色（侧边作品栏）：比主网格高一档，与 --dy-surface 卡片形成分层，
+     避免左右两片同色网格在视觉上连成一片 */
+  --dy-bg-panel: #1c1d2a;
   --dy-surface: #252632;
   --dy-surface-hover: #2e303e;
   --dy-surface-elevated: #2c2d3a;
   --dy-primary: #fe2c55;
-  --dy-primary-glow: rgba(254, 44, 85, 0.35);
   --dy-text: #ffffff;
   --dy-text-secondary: #9a9a9a;
   --dy-text-muted: #7a7a8a;
@@ -54,13 +56,17 @@ optgroup {
   --dy-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
   --dy-card-size: 249px;
   --dy-following-card-size: 212px;
-  --topbar-height: 50px;
-  --detail-bar-height: 56px;
+  --topbar-height: 44px;
+  --detail-bar-height: 48px;
   --dy-danger: #f5222d;
   --dy-transition: 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+  --dy-ease-out: cubic-bezier(0.4, 0, 0.2, 1);
   --dy-font-size-sm: 13px;
   --dy-avatar-size: 28px;
   --dy-tab-mask-width: 24px;
+  /* 按钮内文本到边缘的统一留白：文本按钮(.dy-btn)使用 */
+  --dy-btn-pad-x: 12px;
+  --dy-btn-pad-y: 6px;
 }
 
 /* ===== 工具类 ===== */
@@ -117,10 +123,6 @@ optgroup {
 }
 
 
-:root {
-  --dy-ease-out: cubic-bezier(0.4, 0, 0.2, 1);
-}
-
 /* ===== 顶栏 ===== */
 #topBar {
   position: sticky;
@@ -133,17 +135,6 @@ optgroup {
   padding: 0 12px;
   gap: 8px;
   z-index: 100;
-}
-
-#topBar::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--dy-primary-glow), transparent);
-  opacity: 0.5;
 }
 
 /* 侧边栏折叠按钮（顶栏最右 ☰） */
@@ -197,7 +188,7 @@ optgroup {
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 6px 8px;
+  padding: 6px 4px;
   font-size: var(--dy-font-size-sm);
   font-weight: 500;
   border-radius: var(--dy-radius);
@@ -232,8 +223,17 @@ optgroup {
   gap: 2px;
   overflow-x: auto;
   padding: 2px 0;
+  /* 滚动条不得占用布局高度：全局 * 的 scrollbar-color 会让新 Chromium 忽略下方
+     ::-webkit-scrollbar{display:none}，横滚条回退为占位经典滚动条——条内横向滚动区
+     被压矮 ~15px，分组按钮居中基准上移、与顶栏右侧按钮不再对齐。scrollbar-width:none
+     跨新旧 Chromium 恒生效，滚动本身仍可（滚轮/触控板），溢出提示由 tab-overflow 遮罩承担 */
+  scrollbar-width: none;
   /* 滑块定位基准：offsetLeft/offsetWidth 相对条内测量 */
   position: relative;
+}
+
+.group-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 /* 分组切换滑块（对齐 .ds-slider 动效参数）：高亮职责整体移交滑块，
@@ -254,10 +254,6 @@ optgroup {
 
 .group-slider.no-anim {
   transition: none;
-}
-
-.group-tabs::-webkit-scrollbar {
-  display: none;
 }
 
 .group-tabs.tab-overflow {
@@ -350,7 +346,7 @@ body.batch-mode #btnBatch {
   overflow: hidden;
 }
 
-/* 主内容列：搜索栏 + 网格。搜索栏只在主列内展开，不挤占右侧两个满高侧边栏 */
+/* 主内容列：搜索栏 + 内容行。搜索栏横跨网格与侧边作品栏，不挤占最右侧菜单栏 */
 #mainCol {
   display: flex;
   flex-direction: column;
@@ -358,27 +354,36 @@ body.batch-mode #btnBatch {
   min-width: 0;
 }
 
+/* 内容行：网格（flex:1、自身滚动）+ 分割条 + 侧边作品栏左右并排。
+   min-height:0 让内容行在纵向 flex 列内获得确定高度，网格的 overflow-y 才能生效 */
+.content-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
 /* ===== 最右侧边栏（上：域切换组；中：弹性占位 + 分割线；下：功能按钮；可折叠）。
     位于 #appBody 最右（比关注域作者作品侧边栏更靠右），☰ 按钮在顶栏最右折叠/展开 */
-.left-sidebar {
-  width: 56px;
+.right-sidebar {
+  width: 48px;
   flex-shrink: 0;
   overflow: hidden;
   background: var(--dy-surface);
   border-left: 1px solid var(--dy-border);
-  /* 折叠/展开不做宽度过渡：width 动画逐帧改变 #appBody 布局，四域 auto-fill 网格
-     每帧重排且跨列阈值时跳列导致卡顿；瞬时切换只发生一次重排（跨列跳位由
-     Sidebar.preserveGridAnchor 锚点补偿拉回原视口 Y） */
+  /* 折叠/展开不做宽度过渡：width 动画逐帧改变 #appBody 布局，五域网格每帧重排
+     且跨列阈值时跳列导致卡顿；瞬时切换只发生一次重排（跨列跳位由 VirtualGrid 的
+     RO 回调锚点补偿拉回原视口 Y） */
 }
 
-.left-sidebar.collapsed {
+.right-sidebar.collapsed {
   width: 0;
   border-left-width: 0;
 }
 
 /* 内层固定宽度容器：折叠（width 0 + overflow hidden）时内容被裁切而非挤压 */
-.left-sidebar-inner {
-  width: 56px;
+.right-sidebar-inner {
+  width: 48px;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -388,7 +393,7 @@ body.batch-mode #btnBatch {
 }
 
 /* 菜单项（原下拉菜单各项，现为侧边栏窄列按钮，文字居中） */
-.left-sidebar-menu {
+.right-sidebar-menu {
   gap: 2px;
 }
 
@@ -402,7 +407,7 @@ body.batch-mode #btnBatch {
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 9px 12px;
+  padding: 9px 6px;
   border: none;
   background: transparent;
   color: var(--dy-text);
@@ -418,26 +423,34 @@ body.batch-mode #btnBatch {
   background: var(--dy-surface-hover);
 }
 
-/* 容量使用：功能区最后一行 */
+/* 容量使用：功能区最后一行（两行式——数值在上、单位在下，适配窄栏） */
 .menu-storage {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 6px 8px;
+  padding: 6px 2px;
   font-size: 11px;
+  line-height: 1.3;
   color: var(--dy-text-muted);
   user-select: none;
-  white-space: nowrap;
 }
 
 #mainGrid {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 18px 10px;
+  /* 滚动条槽位常驻：自适应卡宽按容器宽精确填满，滚动条出现/消失会反向改容器宽、
+     与布局互锁成振荡（半屏卡片闪烁 + ResizeObserver loop 报错的根因）；槽位恒定
+     后容器宽与滚动条解耦 */
+  scrollbar-gutter: stable;
+  /* 上内边距压到与左右同档（10px）：搜索栏底边到首行卡片的留白收紧，底部 18px 保持 */
+  padding: 10px 10px 18px;
   background: var(--dy-bg);
 }
 
+/* 列/轨宽由 VirtualGrid #applyLayout 以 inline style 落笔（自适应卡宽：拉伸填满容器、
+   零空白）；此 auto-fill 规则仅作 JS 未落笔（空态/初始化间隙）时的兜底 */
 .main-container {
   display: grid;
   grid-template-columns: repeat(auto-fill, var(--dy-card-size));
@@ -449,49 +462,60 @@ body.batch-mode #btnBatch {
   display: none;
 }
 
-body[data-domain="followings"] #mainGrid {
+body[data-domain="followings"] #mainGrid,
+body[data-domain="candidates"] #mainGrid {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
 }
 
-body[data-domain="followings"] .main-container {
+body[data-domain="followings"] .main-container,
+body[data-domain="candidates"] .main-container {
   flex: 1;
   min-width: 0;
   display: grid;
-  /* 固定卡宽：侧边栏开关只改列数不改卡尺寸（尺寸即侧边栏展开态应有大小）；
-     auto-fill 保证窄容器自动减列、永不横向溢出 */
+  /* 卡宽自适应已由 VirtualGrid #applyLayout 以 inline style 统一落笔（拉伸填满、
+     零空白，理想卡宽经 --dy-following-card-size 读取）；此 auto-fill 规则仅作兜底：
+     窄容器自动减列、永不横向溢出 */
   grid-template-columns: repeat(auto-fill, var(--dy-following-card-size));
   justify-content: center;
   gap: 11px;
   padding: 0px 0px;
 }
 
-body[data-domain="followings"] .main-container.hidden {
+body[data-domain="followings"] .main-container.hidden,
+body[data-domain="candidates"] .main-container.hidden {
   display: none;
 }
 
-body[data-domain="followings"] .state-message {
+body[data-domain="followings"] .state-message,
+body[data-domain="candidates"] .state-message {
   flex: 1 1 0;
   min-width: 0;
   width: 100%;
 }
 
-/* 侧边栏是关注域专属：作品型三域（works/likes/favorites）统一隐藏 */
-body:not([data-domain="followings"]) #sidebar,
-body:not([data-domain="followings"]) #sidebarResizeHandle {
-  display: none;
-}
+/* 侧边作品栏跨五域共用：关注/候选域由作者卡打开，作品/点赞/收藏域经 Ctrl/Cmd+点击
+   作品的作者名打开（内容恒为该作者的远端作品列表） */
 
 /* ===== 作品卡片 ===== */
-/* 卡片根是透明容器：圆角矩形只包封面（.work-media），标题/作者在矩形外、无背景展示 */
+/* 卡片根即卡片矩形（向侧边作品栏看齐）：底色 + 描边 + 圆角把封面与下方信息条收进同一张卡，
+   标题/作者/日期不再直接落在网格背景上、卡片归属可辨；封面区自身无描边/圆角，
+   裁切与圆角统一由根节点负责（overflow:hidden） */
 .work-card {
   position: relative;
-  width: var(--dy-card-size);
-  height: calc(var(--dy-card-size) * 4 / 3 + 44px);
+  /* --dy-card-actual 由 VirtualGrid #applyLayout 按容器宽写 inline（拉伸填满的轨宽），
+     未落笔时回退静态 --dy-card-size */
+  width: var(--dy-card-actual, var(--dy-card-size));
+  height: calc(var(--dy-card-actual, var(--dy-card-size)) * 4 / 3 + 44px);
   cursor: pointer;
   isolation: isolate;
   z-index: 1;
+  background: var(--dy-surface);
+  border: 1px solid var(--dy-border);
+  border-radius: var(--dy-radius-lg);
+  overflow: hidden;
+  transition: border-color 0.15s ease;
 }
 
 /* 入场动画仅限定首段卡（render 打 data-fade）：筛选切换/扩容时数百张卡不再同帧起
@@ -510,7 +534,7 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
 }
 
 /* 骨架静态高光：曾为 shimmer 扫光动画，万级预铺骨架下动画元素各自晋升合成层
-   + 逐帧重绘成本过高，静态化；overflow:hidden + 圆角裁切不变 */
+   + 逐帧重绘成本过高，静态化；圆角裁切由卡片根 overflow:hidden 负责 */
 .work-skeleton .work-media::after {
   content: '';
   position: absolute;
@@ -522,24 +546,23 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   opacity: 0.3;
 }
 
-.work-media:hover {
-  /* 仅封面矩形自身悬浮才触发特效（悬浮下方信息块不触发）；禁止对矩形自身加
-     transform：缩放会让 overflow:hidden 的圆角裁切在合成器层退化，封面逃出裁切
-     盖住描边与圆角（实测顶/左/右边框被吞、顶角变方）。放大感由 .work-thumb 的
-     框内 zoom 提供，描边只做点亮 */
-  border-color: rgba(254, 44, 85, 0.55);
+/* 卡片悬浮不做描边变色（2026-11-01 定案移除红色描边特效）：悬浮反馈只由
+   「图集封面 zoom / 视频起播预览」表达；禁止对卡片或媒体加 transform：缩放会让根节点
+   圆角裁切在合成器层退化，封面逃出裁切盖住描边（实测顶/左/右边框被吞、顶角变方） */
+
+/* 侧边作品栏的源卡点亮（与 .following-card.sidebar-active 同义）：作品型三域经
+   作者名打开侧栏后，标注当前侧栏对应的是哪张作品卡的作者 */
+.work-card.sidebar-active {
+  border-color: var(--dy-primary);
 }
 
 .work-media {
   position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
-  /* 媒体区矩形上圆下方：上部圆角、下部与信息块平接；圆角/描边/裁切/悬停反馈都在媒体区 */
-  border-radius: var(--dy-radius-lg) var(--dy-radius-lg) 0 0;
-  border: 2px solid rgba(255, 255, 255, 0.03);
+  /* 圆角/描边/裁切收归卡片根（向侧栏卡片看齐）：媒体区只保留裁切（悬浮 zoom 不越界）；
+     封面未就绪时的占位底：中性渐变，避免"死灰板"被误读为加载失败 */
   overflow: hidden;
-  transition: border-color 0.15s ease;
-  /* 封面未就绪时的占位底：中性渐变，避免"死灰板"被误读为加载失败 */
   background: linear-gradient(135deg, var(--dy-surface-elevated), #1e1f28);
 }
 
@@ -637,11 +660,13 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   background-position: center;
   display: block;
   /* 淡入由 .media-loading 类在探针成功后移除触发，不再用插入即播的 thumbFadeIn；
-     transform 半段是悬浮 zoom（0.15s 保持跟手），opacity 半段是就绪淡入勿改短 */
+     transform 半段是图集卡的悬浮 zoom（0.15s 保持跟手），opacity 半段是就绪淡入勿改短 */
   transition: transform 0.15s ease, opacity 0.3s ease;
 }
 
-.work-media:hover .work-thumb {
+/* 封面悬浮放大只属于图集（note）：视频卡悬浮即起播预览、封面不缩放（2026-11-01 定案；
+   类型标记由 fillCard 写入 data-type，骨架/降级卡无该键） */
+.work-card[data-type="note"] .work-media:hover .work-thumb {
   transform: scale(1.05);
 }
 
@@ -670,11 +695,10 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   bottom: 0;
   left: 0;
   right: 0;
-  /* 底部留白 5px：进度条浮在卡片底缘上方——拇指（10px 骑 3px 轨道，下探 3.5px）距
-     overflow:hidden 裁切边界仍有 1.5px 余量，完整显示不被切平；旧的贴底方案
-     （padding-bottom:0）下探出部分必然越界，缩拇指到 7px 的补丁只是减轻不是消除。
-     左右内缩 3px 让控件贴边框；渐变阴影层仍延伸到卡片底缘自然收尾 */
-  padding: 8px 3px 5px;
+  /* 底部留白 4px：进度条贴近下方信息条上缘——拇指（10px 骑 3px 轨道，下探 3.5px）底缘
+     距 media 裁切边界仅 0.5px，视觉上与卡片底部区域贴合、又不被 overflow:hidden 切平
+     （0.5px 余量防亚像素裁切）。左右内缩 3px 让控件贴边框；渐变阴影层仍延伸到卡片底缘 */
+  padding: 8px 3px 4px;
   display: none;
   flex-direction: column;
   gap: 4px;
@@ -724,9 +748,12 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   cursor: pointer;
 }
 
-/* 封面矩形外的信息块：标题一行 + 作者昵称一行，恒定 44px（8+18+2+16，虚拟网格高度数学依赖） */
+/* 封面下方的信息条：与侧栏卡片同款浅一档底色，作为卡片实体的一部分（不再裸文字浮在网格底上）；
+   flex 基础仍为 44px，并吃掉描边盒带来的亚像素余量，铺满到卡片底边（高度数学：8+18+2+16） */
 .work-info {
   height: 44px;
+  flex: 1 1 44px;
+  background: var(--dy-surface-elevated);
   padding: 8px 6px 0;
   gap: 2px;
 }
@@ -758,6 +785,21 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   color: var(--dy-primary);
 }
 
+/* 批量模式下标题/作者不呈现链接可交互视觉（只保留卡片整体缩放悬浮）：
+   普通点击让位于勾选（Ctrl/Cmd 外链旁路已移除；Ctrl/Cmd+点击作者名仍可打开作品栏） */
+body.batch-mode .work-title-text,
+body.batch-mode .work-author {
+  cursor: default;
+}
+
+body.batch-mode .work-title-text:hover {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+body.batch-mode .work-author:hover {
+  color: #fff;
+}
+
 /* 作者行右侧发布日期（createTime → utils.formatPublishDate）：行高维持 16px（.work-info 44px
    高度数学依赖）；日期赋值与作者分支解耦，作者位缺失时日期仍靠右显示 */
 .work-author-row {
@@ -776,6 +818,33 @@ body:not([data-domain="followings"]) #sidebarResizeHandle {
   font-size: 11px;
   line-height: 16px;
   color: rgba(255, 255, 255, 0.45);
+}
+
+/* 作者域状态 chip（作品/点赞/收藏域）：关注/候选命中才显示（fillCard 懒创建、降级移除）。
+   嵌在 16px 作者行内（自身 14px 行高），不改变 .work-info 44px 高度数学；
+   不可点击（pointer-events:none），不干扰作者链接与卡片点击 */
+.work-author-flag {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.work-author-flag.hidden {
+  display: none;
+}
+
+.work-author-flag-following {
+  color: #35d6b0;
+  background: rgba(53, 214, 176, 0.12);
+}
+
+.work-author-flag-candidate {
+  color: #c9a2ff;
+  background: rgba(201, 162, 255, 0.12);
 }
 
 .batch-mode .work-video-player.video-ready {
@@ -949,11 +1018,14 @@ body.batch-mode .following-checkbox {
 .sidebar {
   width: 650px;
   min-width: 0;
-  max-width: 800px;
+  /* 宽度由 JS 按档位写入（列数不封顶，止于主网格 1 列关注卡的可用上限），此处不设 max-width */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--dy-bg);
+  /* 侧栏是独立面板：底色比主网格高一档 + 左缘内阴影形成深度边界，
+     展开后左右两区不再是一片同色网格（仅视觉分隔，2026-11-01） */
+  background: var(--dy-bg-panel);
+  box-shadow: inset 12px 0 18px -14px rgba(0, 0, 0, 0.65);
   overflow: hidden;
   contain: layout style paint;
 }
@@ -967,13 +1039,20 @@ body.batch-mode .following-checkbox {
 .sidebar-body {
   flex: 1;
   overflow-y: auto;
+  /* 恒定预留滚动条槽：作品分页追加时滚动条出现/消失不再引起轨宽跳变，
+     侧栏宽度测量随之稳定（与 #mainGrid 同款定案） */
+  scrollbar-gutter: stable;
 }
 
 .sidebar-works-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  padding: 8px;
+  /* 四档固定卡宽布局：列数/轨宽由 Sidebar.#applyColumns 以 inline gridTemplateColumns
+     落笔（repeat(N, 210px)），此处 auto-fill 仅为折叠/首帧兜底。三值单一来源
+     config.SIDEBAR_CARD_*（Sidebar.initSidebar 注入 CSS 变量），var() 兜底须与 core.js 一致 */
+  grid-template-columns: repeat(auto-fill, minmax(var(--sb-card-size, 210px), 1fr));
+  justify-content: center;
+  gap: var(--sb-grid-gap, 6px);
+  padding: var(--sb-grid-padding, 8px);
   contain: layout style paint;
 }
 
@@ -984,9 +1063,24 @@ body.batch-mode .following-checkbox {
   overflow: hidden;
   cursor: pointer;
   background: var(--dy-surface);
+  /* 描边把卡片从面板底色上分离出来（主网格卡片是无底容器，两者形态本就不同） */
+  border: 1px solid var(--dy-border);
+  transition: border-color var(--dy-transition);
+  /* 纵向两段：封面链接占满余量、信息条固定高（日期 + ♥/★ + 存入 四元素行） */
+  display: flex;
+  flex-direction: column;
   /* 不用 content-visibility:auto：媒体生命周期由 Sidebar 的显式升降级（IntersectionObserver）
      管理，降级后子树本就为空；CV 的相关状态切换在滚动期每帧触发 Layerize 抖动，
      实测占风暴期 CPU 约三成 */
+}
+
+.sidebar-work-link {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-height: 0;
+  /* 图集条目悬浮 zoom 裁在封面区内（不越界压到下方信息条），与作品域 .work-media 同义 */
+  overflow: hidden;
 }
 
 .sidebar-work-cover {
@@ -996,6 +1090,37 @@ body.batch-mode .following-checkbox {
   background: var(--dy-surface-elevated);
   background-size: cover;
   background-position: center;
+  /* transform 半段是图集条目的悬浮 zoom（与作品域图集卡同速），opacity 半段是预览/封面切换 */
+  transition: opacity 0.3s ease, transform 0.15s ease;
+}
+
+/* 图集（note）条目悬浮放大封面（与作品域图集卡一致）：视频条目悬浮即起播预览、封面不缩放；
+   类型标记由 Sidebar.#createWorkItem 写入 data-type */
+.sidebar-work-item[data-type="note"] .sidebar-work-link:hover .sidebar-work-cover {
+  transform: scale(1.05);
+}
+
+/* 悬停预览播放器：叠在封面 div 之上（.sidebar-work-link 为定位锚点）——首帧可用
+   （canplay/play）才 .video-ready 提亮并让封面 .video-hidden，零空档切换同作品卡 */
+.sidebar-work-player {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  /* 预览无控件：指针事件穿透到封面链接，不抢占外链点击 */
+  pointer-events: none;
+}
+
+.sidebar-work-player.video-ready {
+  opacity: 1;
+}
+
+.sidebar-work-cover.video-hidden {
+  opacity: 0;
 }
 
 .sidebar-work-cover-placeholder {
@@ -1009,8 +1134,123 @@ body.batch-mode .following-checkbox {
   font-size: 24px;
 }
 
+/* 信息条：发布日期 + 点赞/收藏状态按钮 + 「存入」按钮（单行窄档，字号压到 10-11px） */
+.sidebar-work-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  font-size: 11px;
+  line-height: 1.2;
+  background: var(--dy-surface-elevated);
+}
+
+.sidebar-work-date {
+  flex-shrink: 0;
+  color: var(--dy-text-muted);
+  font-size: 10px;
+}
+
+/* 点赞/收藏域状态按钮（♥ 点赞 / ★ 收藏，点击切换远端状态并同步域）：两态常显——存在 =
+   .on 高亮着色，不存在 = 暗色；pending = 请求在途禁用。图标取自 SVG 符号（见 options.html 图标区） */
+.sidebar-presence {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 16px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--dy-text-muted);
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.4;
+  cursor: pointer;
+  transition: opacity var(--dy-transition), color var(--dy-transition);
+}
+
+.sidebar-presence svg {
+  display: block;
+}
+
+.sidebar-presence:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.sidebar-presence.on {
+  opacity: 1;
+}
+
+.sidebar-presence-like.on {
+  color: #ff4d6d;
+}
+
+.sidebar-presence-collect.on {
+  color: #ffb84d;
+}
+
+.sidebar-presence.pending {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 「存入」按钮承载原独立存在性徽标的三态（单控件 = 动作 + 状态）。
+   .in-works 弱化为灰（已入库无需突出）——强调色刻意避开主色红：红语义归
+   destructive/主行动 */
+
+.sidebar-work-save {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--dy-border-light);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dy-text-secondary);
+  font-size: 10px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background var(--dy-transition), color var(--dy-transition), border-color var(--dy-transition);
+}
+
+.sidebar-work-save:hover:not(:disabled) {
+  background: rgba(254, 44, 85, 0.12);
+  border-color: var(--dy-primary);
+  color: var(--dy-primary);
+}
+
+.sidebar-work-save:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 已入库：透明底 + 灰字，读作状态标签而非可点按钮（区别于「存入中…」仍保留按钮形态） */
+.sidebar-work-save.in-works {
+  background: transparent;
+  color: var(--dy-text-muted);
+}
+
 .sidebar-loader {
   padding: 16px;
+}
+
+/* 骨架/加载态显隐成对声明：通用 .hidden 在文件前部，同特异性下会被 display 值原样覆盖
+   （.sidebar-loader 全文在 .hidden 之后、无 display 声明也按 UA 默认 block），不写这条
+   则「收起」只剩元素空置——加载圈随子节点残留永挂 */
+.sidebar-loader.hidden {
+  display: none;
+}
+
+/* 列表终点提示：全部页取完时驻底；克制的中性小字，不做成条状容器 */
+.sidebar-end-notice {
+  padding: 6px 8px 14px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--dy-text-muted);
+}
+
+.sidebar-end-notice.hidden {
+  display: none;
 }
 
 .sidebar-resize-handle {
@@ -1023,8 +1263,8 @@ body.batch-mode .following-checkbox {
   z-index: 10;
 }
 
-/* 分割条：缝线贯穿全高（仅侧边栏展开时可见、可交互），
-   悬停/拖动时加粗变主色。点击切换显隐 / 拖拽调宽 */
+/* 分割条：缝线贯穿内容行全高（常驻——折叠态保留 6px 可点击条，展开只经点击），
+   悬停/拖动时加粗变主色。点击切换显隐 / 拖拽调宽（展开态） */
 .sidebar-resize-handle::before {
   content: "";
   position: absolute;
@@ -1035,6 +1275,11 @@ body.batch-mode .following-checkbox {
   width: 5px;
   background: var(--dy-border);
   transition: width 0.15s, background 0.15s;
+}
+
+/* 侧栏展开时提亮缝线：与面板底色的明度差共同构成明确的左右边界（折叠态保持低调） */
+.content-row:has(> .sidebar:not(.sidebar-zero)) .sidebar-resize-handle::before {
+  background: var(--dy-border-light);
 }
 
 /* 把手：与缝线同宽的小长块（可抓取段），悬停/拖动随缝线一起变主色 */
@@ -1076,6 +1321,7 @@ body.batch-mode .following-checkbox {
 }
 
 .icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
   transform: scale(1.1);
 }
 
@@ -1087,13 +1333,9 @@ body.batch-mode .following-checkbox {
   display: block;
 }
 
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
 .dy-btn {
   gap: 6px;
-  padding: 6px 12px;
+  padding: var(--dy-btn-pad-y) var(--dy-btn-pad-x);
   font-size: 14px;
   border: 1px solid var(--dy-border);
   border-radius: var(--dy-radius);
@@ -1170,7 +1412,7 @@ body.batch-mode .following-checkbox {
 }
 
 .dy-btn-sm {
-  padding: 4px 10px;
+  padding: var(--dy-btn-pad-y) var(--dy-btn-pad-x);
   font-size: 12px;
 }
 
@@ -1195,7 +1437,7 @@ body.batch-mode .following-checkbox {
   display: block;
 }
 
-/* ===== 详情覆盖层 ===== */
+
 /* ===== 详情覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ===== */
 #detailOverlay {
   position: fixed;
@@ -1220,20 +1462,12 @@ body.batch-mode .following-checkbox {
   background-image: var(--bg-url);
   background-size: cover;
   background-position: center;
-  /* 亮度 0.8：两侧模糊区可辨画面色彩（对齐抖音），仅轻压暗保证前景突出 */
-  filter: blur(70px) brightness(0.8);
+  /* 全亮度（对齐抖音播放器）：压暗(0.8)与边缘渐晕曾叠加致两缘过暗、左上关闭钮难辨，已废弃 */
+  filter: blur(70px);
   z-index: 0;
   contain: strict;
 }
 
-#detailOverlay::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.25) 100%);
-  z-index: 0;
-  pointer-events: none;
-}
 
 #detailOverlay>* {
   position: relative;
@@ -1303,6 +1537,20 @@ body.batch-mode .following-checkbox {
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+/* 图集实况小视频：与 #detailImage 同槽位叠加（尺寸/contain 由 .detail-body video 提供）；
+   单次播放期间显示，播完由 JS 摘除 .on 回静帧。不用 .hidden 以免与组件 display 规则
+   同特异性互踩（.hidden 配对陷阱） */
+.note-live-video {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.note-live-video.on {
+  display: block;
 }
 
 /* 主图链接失效态：详情主图已清空，叠加「链接已失效」提示，绝不回退显示上一作品 */
@@ -1393,7 +1641,8 @@ body.batch-mode .following-checkbox {
   width: 68px;
   height: 68px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.22);
+  /* 轻透明圆底：模糊底已全亮度；两轮减淡（0.22→0.15→0.08），白色 ✕ 靠薄纱锚定对比 */
+  background: rgba(0, 0, 0, 0.08);
   cursor: pointer;
   border: none;
   color: #fff;
@@ -1406,7 +1655,7 @@ body.batch-mode .following-checkbox {
 }
 
 #detailClose:hover {
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 /* 播放条：56px 通栏贴底，三分区（controls/meta/actions）沿旧结构 */
@@ -1603,7 +1852,7 @@ body.batch-mode .following-checkbox {
   z-index: 30;
   display: flex;
   flex-direction: column;
-  background: rgba(0, 0, 0, 0.22);
+  background: rgba(0, 0, 0, 0.08);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -1663,9 +1912,11 @@ body.batch-mode .following-checkbox {
   color: var(--dy-primary);
 }
 
+/* 标题锚点收缩到内容宽：bar-meta 中段的空白属 div 不属锚点——点底栏空白处不得误触
+   作品跳转；长标题经 flex-shrink + min-width:0 仍走 .text-ellipsis 截断 */
 .detail-bar-title {
   color: rgba(255, 255, 255, 0.65);
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   text-decoration: none;
   cursor: pointer;
@@ -1681,14 +1932,16 @@ body.batch-mode .following-checkbox {
   color: var(--dy-primary);
 }
 
-/* 标题右侧发布日期（createTime → utils.formatPublishDate）：.detail-bar-text 已有 flex-shrink:0，
-   标题 flex:1 自动省略、日期恒贴右 */
+/* 标题右侧发布日期（createTime → utils.formatPublishDate）：.detail-bar-text 已有 flex-shrink:0。
+   margin-left:auto 将日期钉在 meta 区右端——标题锚点已改收缩到内容宽（空白不进链接），
+   不再依赖旧「标题 flex:1 撑开推挤」机制；中段空白归 bar-meta，点按无误触跳转 */
 .detail-bar-date {
   color: rgba(255, 255, 255, 0.5);
   padding: 0 4px;
+  margin-left: auto;
 }
 
-/* 作品序号（建议12 修订版）：播放条最右端 */
+/* 作品序号：播放条最右端 */
 .detail-bar-counter {
   color: rgba(255, 255, 255, 0.5);
   padding: 0 4px;
@@ -1717,7 +1970,7 @@ body.batch-mode .following-checkbox {
   color: rgba(255, 255, 255, 0.85);
 }
 
-/* ===== 加载指示（建议17） ===== */
+/* ===== 加载指示 ===== */
 .detail-loader {
   position: absolute;
   inset: 0;
@@ -1735,7 +1988,7 @@ body.batch-mode .following-checkbox {
   border-width: 3px;
 }
 
-/* ===== 方向感过渡（建议15）：入场方向随切换方向变化，仅合成属性。
+/* ===== 方向感过渡：入场方向随切换方向变化，仅合成属性。
    动画只作用于媒体本体（视频区/大图）；导航箭头挂 .detail-body 直下，
    不参与切换动效，也不随媒体容器的 detail-transitioning 淡入淡出。
    keyframes 不含 opacity：淡入由容器过渡承担，且大图行内 opacity 淡入不可被动画覆盖 */
@@ -1769,7 +2022,7 @@ body.batch-mode .following-checkbox {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 16px;
 }
 
 .dialog-overlay.hidden {
@@ -1793,7 +2046,7 @@ body.batch-mode .following-checkbox {
 
 .dy-dialog-header {
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--dy-border);
   font-size: 16px;
   font-weight: 600;
@@ -1810,14 +2063,14 @@ body.batch-mode .following-checkbox {
 }
 
 .dy-dialog-body {
-  padding: 16px 20px;
+  padding: 12px 16px;
   overflow-y: auto;
   flex: 1;
   color: var(--dy-text);
 }
 
 .dy-dialog-footer {
-  padding: 12px 20px;
+  padding: 10px 16px;
   border-top: 1px solid var(--dy-border);
   display: flex;
   justify-content: flex-end;
@@ -1975,21 +2228,12 @@ body.batch-mode .following-checkbox {
   gap: 6px;
 }
 
-.group-list-item,
 .group-select-item {
   gap: 8px;
   padding: 12px 16px;
   border-radius: var(--dy-radius);
   transition: background var(--dy-transition);
   border: 1px solid var(--dy-border);
-}
-
-.group-list-item {
-  background: var(--dy-bg);
-}
-
-.group-list-item:hover {
-  background: var(--dy-surface-hover);
 }
 
 .group-list-item .drag-handle {
@@ -2022,7 +2266,51 @@ body.batch-mode .following-checkbox {
   outline: none;
 }
 
-.group-list-item .group-actions {
+/* 分组管理行：条目区+操作按钮共用一个卡体（同一视觉单元，hover 整行高亮）；
+   stretch 让按钮与条目栏等高，overflow hidden 让按钮 hover 底色收进行圆角 */
+.group-list-row {
+  gap: 8px;
+  align-items: stretch;
+  background: var(--dy-bg);
+  border: 1px solid var(--dy-border);
+  border-radius: var(--dy-radius);
+  transition: background var(--dy-transition);
+  overflow: hidden;
+}
+
+.group-list-row:hover {
+  background: var(--dy-surface-hover);
+}
+
+.group-list-row .group-list-item {
+  flex: 1;
+  gap: 8px;
+  padding: 8px 16px;
+}
+
+/* 行内操作按钮去独立底色/描边，与条目栏融为一体（hover 时轻高亮，不缩放）；
+   图标放大至与按钮高度匹配（svg 属性 14x14 被 CSS 覆盖） */
+.group-list-row .dy-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.group-list-row .dy-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 纯图标按钮：去掉 dy-btn .btn-icon 为「图标+文字」准备的 4px 右距，否则图标偏左 */
+.group-list-row .dy-btn .btn-icon {
+  margin-right: 0;
+}
+
+.group-list-row .dy-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: none;
+}
+
+.group-list-row .group-actions {
   display: flex;
   gap: 4px;
 }
@@ -2037,7 +2325,7 @@ body.batch-mode .following-checkbox {
   background: var(--dy-surface-hover);
 }
 
-/* ===== 备份弹窗（四域导出/导入聚合） ===== */
+/* ===== 备份弹窗（五域导出/导入聚合） ===== */
 .io-dialog {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -2073,7 +2361,7 @@ body.batch-mode .following-checkbox {
   font-size: 14px;
 }
 
-/* 入库弹窗：两行 [输入框][域入库按钮] */
+/* 工具弹窗：两行 [输入框][域入库按钮] + 一行 [说明][关注/候选校准按钮] + 一行 [说明][点赞/收藏清理按钮] */
 .import-rows {
   display: flex;
   flex-direction: column;
@@ -2084,6 +2372,13 @@ body.batch-mode .following-checkbox {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.import-calibrate-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--dy-font-size-sm);
+  color: var(--dy-text-secondary);
 }
 
 .import-row .import-input {
@@ -2106,6 +2401,43 @@ body.batch-mode .following-checkbox {
 
 .import-row .dy-btn {
   white-space: nowrap;
+}
+
+/* 工具弹窗：底部 uid 反查区块与结果区 */
+.import-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--dy-border);
+  border-radius: var(--dy-radius);
+  background: var(--dy-bg);
+}
+
+.import-result.hidden {
+  display: none;
+}
+
+.import-result-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.import-result-link {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--dy-font-size-sm);
+  color: var(--dy-primary);
+  text-decoration: none;
+}
+
+.import-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .dy-text-danger {
@@ -2201,18 +2533,11 @@ body.batch-mode .following-checkbox {
   color: var(--dy-text);
 }
 
-/* ====== 菜单分隔线（侧边栏中段占位：auto 上边距把功能按钮区压到底部） ====== */
+/* ====== 菜单分隔线（功能区分隔；底部留白由 .menu-spacer 压底） ====== */
 .menu-divider {
   height: 1px;
   background: var(--dy-border);
-  margin: auto 8px 4px;
-}
-
-/* ====== 模板工具类 ====== */
-.sidebar-work-link {
-  display: block;
-  width: 100%;
-  height: 100%;
+  margin: 0 8px 4px;
 }
 
 /* ====== 设置面板 ====== */
@@ -2382,61 +2707,44 @@ body.batch-mode .following-checkbox {
 
 
 
-/* 独立模式开关 */
+/* 独立模式开关（原生 checkbox 外观化，纯 CSS 表达 two-state，无滑块测量） */
 .settings-mode-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   font-size: 13px;
   color: var(--dy-text);
   padding: 4px 0;
 }
 
-.mode-switch {
-  display: flex;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: var(--dy-radius);
-  padding: 3px;
-  gap: 2px;
+.mode-toggle {
+  appearance: none;
+  -webkit-appearance: none;
   flex-shrink: 0;
-  position: relative;
-}
-
-.mode-slider {
-  position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 0;
-  border-radius: var(--dy-radius);
-  background: rgba(255, 255, 255, 0.12);
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.mode-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 3px 14px;
-  font-size: var(--dy-font-size-sm);
-  font-weight: 500;
-  border-radius: var(--dy-radius);
+  width: 38px;
+  height: 22px;
+  margin: 0;
   border: none;
+  border-radius: 11px;
   cursor: pointer;
-  background: transparent;
-  color: var(--dy-text-secondary);
-  transition: color 0.15s;
-  position: relative;
-  z-index: 1;
+  background-color: rgba(255, 255, 255, 0.1);
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.7) 0 8.5px, transparent 9px);
+  background-repeat: no-repeat;
+  background-position: 2px center;
+  background-size: 18px 18px;
+  transition: background-color 0.2s, background-position 0.2s;
 }
 
-.mode-btn:hover {
-  color: var(--dy-text);
+.mode-toggle:checked {
+  background-color: rgba(255, 255, 255, 0.35);
+  background-image: radial-gradient(circle, #fff 0 8.5px, transparent 9px);
+  background-position: 18px center;
 }
 
-.mode-btn.active {
-  color: #fff;
+.mode-toggle:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.35);
+  outline-offset: 2px;
 }
 
 /* 浏览器特征 */
@@ -2468,7 +2776,7 @@ body.batch-mode .following-checkbox {
   color: var(--dy-text-muted);
 }
 
-/* min/max 即时校验红框（建议9） */
+/* min/max 即时校验红框 */
 .bf-input.input-invalid {
   border-color: var(--dy-danger);
 }
@@ -2483,12 +2791,6 @@ body.batch-mode .following-checkbox {
 }
 
 /* ====== 缓存管理（独立模式区块内） ====== */
-.cache-divider {
-  height: 1px;
-  background: var(--dy-border-light);
-  margin: 8px 0;
-}
-
 .cache-item {
   display: flex;
   align-items: center;
@@ -2546,31 +2848,18 @@ body.batch-mode .following-checkbox {
   outline: none;
 }
 
-/* ====== 搜索栏清除按钮（搜索栏内「清除」与旧筛选状态条共用同形） ====== */
-.filter-clear-btn {
-  font-size: 11px;
-  background: none;
-  border: 1px solid var(--dy-border-light);
-  color: var(--dy-text-secondary);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: all var(--dy-transition);
-}
-
-.filter-clear-btn:hover {
-  color: var(--dy-text);
-  border-color: var(--dy-border);
-}
 
 /* ====== 搜索栏（菜单「搜索」在顶栏下方展开的内联工具条；收起即重置，筛选不跨收起保留） ====== */
 .search-bar {
   display: flex;
   align-items: center;
+  /* min-height 对齐顶栏（--topbar-height）：常规宽度下恰好等高单行；
+     窄窗口（如半屏）内容放不下时折行增高——固定 height + 不换行会在栏右缘
+     裁掉尾部控件（紧贴右边栏，看似被其遮挡），故不采用 */
+  min-height: var(--topbar-height);
   flex-wrap: wrap;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 0 12px;
   background: var(--dy-surface);
   border-bottom: 1px solid var(--dy-border);
   flex-shrink: 0;
@@ -2580,14 +2869,9 @@ body.batch-mode .following-checkbox {
   display: none;
 }
 
-.search-bar > svg {
-  color: var(--dy-text-muted);
-  flex-shrink: 0;
-}
-
 #searchInput {
   flex: 1;
-  min-width: 160px;
+  min-width: 0;
   background: none;
   border: none;
   outline: none;
@@ -2602,7 +2886,7 @@ body.batch-mode .following-checkbox {
 .sb-domain-filters {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   flex-wrap: wrap;
 }
 
@@ -2610,69 +2894,114 @@ body.batch-mode .following-checkbox {
   display: none;
 }
 
-/* 搜索应用后的结果数（随筛选实时刷新） */
-.sb-count {
-  font-size: 12px;
-  color: var(--dy-text-secondary);
-  white-space: nowrap;
-}
-
-/* 搜索栏勾选项（逆序 / 已关注 / 未关注）共用 */
-.sb-check {
+/* 输入区内联按钮：✕（清除全部筛选，原行尾「清除」移此）/ 🔍（显式搜索） */
+.sb-input-clear,
+.sb-input-go {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--dy-text-secondary);
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-}
-
-.sb-check input {
-  /* 中性白勾选，不用主题红（--dy-primary） */
-  accent-color: var(--dy-text);
-  margin: 0;
-  cursor: pointer;
-}
-
-.sb-seg {
-  display: inline-flex;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: var(--dy-radius);
-  padding: 2px;
-  gap: 2px;
-}
-
-.sb-seg-btn {
+  justify-content: center;
   border: none;
+  border-radius: var(--dy-radius);
   background: transparent;
   color: var(--dy-text-secondary);
-  font-size: 12px;
-  padding: 3px 10px;
-  border-radius: calc(var(--dy-radius) - 2px);
+  font-size: 13px;
   cursor: pointer;
-  white-space: nowrap;
+  padding: 0;
   transition: background var(--dy-transition), color var(--dy-transition);
 }
 
-.sb-seg-btn:hover {
+.sb-input-clear:hover,
+.sb-input-go:hover {
+  background: rgba(255, 255, 255, 0.1);
   color: var(--dy-text);
 }
 
-.sb-seg-btn.active {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+.sb-input-go svg {
+  display: block;
 }
 
-.sb-close {
-  width: 26px;
-  height: 26px;
-  border-radius: var(--dy-radius);
+/* 搜索应用后的结果数（关键词经显式搜索后更新；其余筛选随变更刷新） */
+.sb-count {
+  font-size: var(--dy-font-size-sm);
   color: var(--dy-text-secondary);
-  font-size: 14px;
-  flex-shrink: 0;
+  white-space: nowrap;
 }
+
+/* 搜索筛选自绘下拉（范围/类型/排序同构）：菜单浮层走 elevated 表面 + 边框 + 投影，激活项用主题红 */
+.sb-scope {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: var(--dy-font-size-sm);
+  border-radius: var(--dy-radius);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dy-text);
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  white-space: nowrap;
+  transition: background var(--dy-transition);
+}
+
+.sb-scope:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.sb-scope-arrow {
+  font-size: 14px;
+  color: var(--dy-text-secondary);
+  line-height: 1;
+}
+
+.sb-scope-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  gap: 2px;
+  background: var(--dy-surface-elevated);
+  border: 1px solid var(--dy-border);
+  border-radius: var(--dy-radius);
+  box-shadow: var(--dy-shadow-lg);
+  z-index: 200;
+}
+
+/* 自带 display 值的组件类与 .hidden 同用须成对声明（否则同特异性被覆盖、hidden 失效） */
+.sb-scope-menu.hidden {
+  display: none;
+}
+
+.sb-scope-option {
+  border: none;
+  background: transparent;
+  color: var(--dy-text-secondary);
+  font-size: var(--dy-font-size-sm);
+  padding: 6px 12px;
+  border-radius: calc(var(--dy-radius) - 2px);
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+  transition: background var(--dy-transition), color var(--dy-transition);
+}
+
+.sb-scope-option:hover {
+  background: var(--dy-surface-hover);
+  color: var(--dy-text);
+}
+
+.sb-scope-option.active {
+  color: var(--dy-primary);
+  font-weight: 600;
+}
+
 /* ===== 快捷键速查弹窗 ===== */
 .shortcut-help {
   display: grid;

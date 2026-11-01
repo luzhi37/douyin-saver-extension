@@ -1,9 +1,9 @@
-> 本文件是面向 **AI Agent**（Claude Code 等）的技术参考，内容侧重于实现细节与设计约束。
-> 人类用户请先阅读 [README.md](./README.md) 了解功能与安装。
+> 本文件是面向 **AI Agent**（Claude Code 等）的技术参考：只保留架构骨架、协议索引与最易踩的红线。
+> 完整机制、实测数据与历史踩坑见 `docs/*.md`（文末索引）；人类用户请先阅读 [README.md](./README.md) 了解功能与安装。
 
 # AGENTS.md — 抖音数据管理 (Douyin Data Manager)
 
-任何具体行为以源码为准。深度技术细节已拆分到 `docs/*.md`，见下方[文档索引](#文档索引)。
+任何具体行为以源码为准；本文件与分册冲突时，以分册与源码为准。
 
 ## 代码布局规范
 
@@ -19,121 +19,76 @@ config/const 定义          ┐ 常量在最顶部；执行语句不得出现�
 ```
 
 - **`background/` 按职责分子目录、每类独立成文件（文件名 = kebab-case 类名）** — 子目录划分与 `main.js` 组合根见 [docs/12](./docs/12-class-map.md) 类职责总表；类间循环 import 靠 live binding 在调用时安全消解
+- **`options/` 共享全局只存在于 `core.js`** — `config` / `dom` / `state` / `store` / `utils` / `runtimeConfig` / `services` 七个对象在此定义并 export；类内自引用一律 `this.xxx()`，不用模块级单例变量（完整约定见 [docs/13](./docs/13-design-red-lines.md)）
 
 ## 四层架构
 
 ```
-inject.js (主世界)          — fetch hook, 按钮注入, 抓取逻辑
+inject.js (主世界)          — fetch/XHR hook, 签名捕获, 按钮注入, 抓取逻辑
     ↓ CustomEvent
-content.js (隔离世界)       — 桥接, requestResponse 模式
+content.js (隔离世界)       — 桥接, requestResponse 模式, 作品捕获 LRU
     ↓ chrome.runtime.sendMessage
 background/ (Service Worker) — ES 模块化：core.js 共享基础 + identity/data/tasks 子目录类模块 + main.js 组合根（消息路由 App.route）
     ↓ chrome.runtime.sendMessage
-options/ (管理 UI)          — ES 模块化：core.js 共享基础（7 全局对象）+ 类模块（grids/components/data/sync）+ main.js 组合根（事件绑定/订阅/init）
+options/ (管理 UI)          — ES 模块化：core.js 共享基础 + 类模块（grids/components/data/sync）+ main.js 组合根（事件绑定/订阅/init）
 ```
 
-## 四域存储模型
+## 五域存储模型
 
 ```js
 DOMAIN_CONFIG = {
   works:       { storeName, groupsName, defaultGroups, itemKey: 'works',       idField: 'awemeId' },
   followings:  { storeName, groupsName, defaultGroups, itemKey: 'followings',  idField: 'uid', idToString: true },
-  favorites:       { storeName, groupsName, defaultGroups, itemKey: 'favorites',       idField: 'awemeId' },
-  collections:   { storeName, groupsName, defaultGroups, itemKey: 'collections',   idField: 'awemeId' },
+  favorites:   { storeName, groupsName, defaultGroups, itemKey: 'favorites',   idField: 'awemeId' },
+  collections: { storeName, groupsName, defaultGroups, itemKey: 'collections', idField: 'awemeId' },
+  candidates:  { storeName, groupsName, defaultGroups, itemKey: 'candidates',  idField: 'uid', idToString: true },
 }
 ```
 
-- `works` — `{ [awemeId]: Work }`（每条含 `video` 直链与 `videoExpireAt`；三级取链与防短效覆盖长效细则见 docs/02）
-- `favorites` / `collections` — 与 `works` 同构的 Work 记录（itemKey 各自独立）；无独立保存消息，落库经 `persistScan` 的 `mergeAndSave`（persist="favorites"/"collections"）与跨域 `SAVE_WORKS`
-- `followings` — `{ [uid]: Following }`（7 个稳定字段：uid/nickname/avatarLarger/followerCount/awemeCount/profileUrl/lastUpdateAt；计数与 lastUpdateAt 仅由校准写入、未校准占位 0 且 `SAVE_FOLLOWINGS` 对 0 值保留旧计数——见 docs/01/04/10）
-- `*_groups`（四域同构）— `[{ id, name, fixed, order? }]`
+- `works` — `{ [awemeId]: Work }`（含 `video` 直链与 `videoExpireAt`；三级取链与长短效防覆盖见 [docs/02](./docs/02-independent-sync-works.md)）
+- `favorites` / `collections` — 与 `works` 同构的 Work 记录；无独立保存消息，落库经 `persistScan` 的 `mergeAndSave` 与跨域 `SAVE_WORKS`
+- `followings` / `candidates` — 作者档案 7 字段（`uid/nickname/avatarLarger/followerCount/awemeCount/profileUrl/lastUpdateAt`）；关注=账号原生镜像，候选=扩展自建池（链接收录/关注域批量入库/手动校准，无账号同步源）；计数与 `lastUpdateAt` 仅由校准写入，0 值保留旧计数（见 [docs/01](./docs/01-project-architecture.md) / [docs/04](./docs/04-independent-calibrate-followings.md) / [docs/10](./docs/10-storage-write-and-import.md)）
+- `*_groups`（五域同构）— `[{ id, name, fixed, order? }]`，显示序一律经 `utils.normalizeGroups`（IDB `getAll` 主键序不是显示序）
 
 ## 消息协议
 
-`App.route()`（`background/main.js`）switch 分发所有 `chrome.runtime.sendMessage`。**消息类型总表（含载荷语义、分页参数、双模分支、进度消息载荷）已迁至 [docs/01](./docs/01-project-architecture.md)「消息类型总表」**，此处仅保留类型名速查：
+`App.route()`（`background/main.js`）switch 分发所有 `chrome.runtime.sendMessage`。**完整类型总表（载荷语义、分页参数、双模分支、进度载荷）见 [docs/01](./docs/01-project-architecture.md)「消息类型总表」**；此处仅速查：
 
-- 数据操作：`SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS` / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`；作品型三域 `GET_*` 支持分页）
-- 分组管理：`GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`
-- 工具：`IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS` / `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING` / `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG`
-- 扫描入口：`FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION`
-- 入库：`IMPORT_USER_WORKS` / `IMPORT_FOLLOWING`（过程消息 `IMPORT_WORKS_PROGRESS`）
-- 存储广播：`STORE_CHANGED`（**仅在 `changed>0` 时广播**，载荷两种形态见 docs/01）
-- 取消入口：`CANCEL_FAVORITES` / `CANCEL_COLLECTION`；取消信号 `CANCEL_ACTIVE_TASK`
-- Tab 转发：`FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER` / `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`
-- 进度消息：`SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` / `IMPORT_PROGRESS`
+- 数据操作：`SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（`{ domain, ids }`，三作品域主键直取）/ `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `SAVE_CANDIDATES` / `GET_CANDIDATES` / `DELETE_CANDIDATES` / `MOVE_CANDIDATES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`。作品型三域 `GET_*` 支持 `page`/`cursor` keyset 分页与 `ascending`（保存时间升序）；作者域单发全量
+- 分组 / 工具：`GET_GROUPS` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`；`IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS`（`{ domain? }` 或 `{ bytesOnly:true }`）/ `GET_AUTHOR_UID_SETS` / `GET_SECURITY_STATUS` / `SET_MODE` / `RESOLVE_SEC_UID` / `RESOLVE_USER_PROFILE` / `RELOAD_CONFIG` / 凭据刷新族（`CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE`）
+- 扫描 / 入库 / 校准：`FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION`（列表扫描入口，与校准分离）；`IMPORT_USER_WORKS` / `IMPORT_CANDIDATE`（过程消息 `IMPORT_WORKS_PROGRESS`）；`CALIBRATE_FOLLOWING`（侧栏单用户关注）/ `CALIBRATE_FOLLOWINGS`（工具弹窗批量关注）/ `CALIBRATE_CANDIDATE`（侧栏单用户候选）/ `CALIBRATE_CANDIDATES`（工具弹窗批量候选，进度 `CALIBRATE_PROGRESS`）
+- 状态切换 / 取消：`SET_FAVORITES` / `SET_COLLECTION { awemeId, active, work? }`（侧边作品栏 ♥/★：远端成功后才落库或删本地；点赞无独立模式分支）；`CANCEL_FAVORITES` / `CANCEL_COLLECTION` / `CANCEL_ACTIVE_TASK`（取消信号须经 background→content→inject 送达抖音 document）
+- Tab 转发（background→tab）：`FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER`（`{ secUid? , uid? }` 二选一）/ `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `SET_ONE_FAVORITES` / `SET_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`
+- 进度 / 广播：`SYNC_PROGRESS` / `SYNC_DONE` / `FOLLOWING_PROGRESS` / `CALIBRATE_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` / `IMPORT_PROGRESS` / `STORE_CHANGED`（**仅在 `changed>0` 时广播**；point/bulk 两种载荷见 [docs/01](./docs/01-project-architecture.md)）
 
 ## 响应式状态管理
 
-`store.on()` 事件 → 处理的完整映射表（含 `'work-record-appended'` 渐进分页回填等细则）已迁至 [docs/11](./docs/11-options-ui.md)「响应式状态管理（store.on 事件表）」。
+`store.on()` 事件 → 处理的完整映射表（含 `'work-record-appended'` 渐进分页回填、`'grid-total(s)'` 分组计数）已迁至 [docs/11](./docs/11-options-ui.md)「响应式状态管理（store.on 事件表）」。
 
 ## Class 职责总表
 
-options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类机制红线指引）已迁至 [docs/12-class-map.md](./docs/12-class-map.md)；`background/` 子目录划分与组合根见其「background/ 类单例」表。
+options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类机制红线指引）见 [docs/12-class-map.md](./docs/12-class-map.md)；`background/` 子目录划分与组合根见其「background/ 类单例」表。
 
-## 设计约定与知识点陷阱
+## 高频红线（完整版见 docs/13）
 
-> 本节只保留规则红线；机制原理、历史踩坑与实测数据见各条目指向的分册。未单独标注依据的条目，均为 [docs/11](./docs/11-options-ui.md)。
+> 下面是最易踩的 12 条；完整规则、机制原理与历史踩坑见 [docs/13-design-red-lines.md](./docs/13-design-red-lines.md)。未单独标注依据时，机制定案见 [docs/11](./docs/11-options-ui.md)。
 
-### 编码约定
-
-- **所有共享全局变量定义在 `options/core.js` 顶部** — `config` / `dom` / `state` / `store` / `utils` / `runtimeConfig` / `services` 在此定义并 export，其余模块经 ES import 引用；类内自引用一律 `this.xxx()`，不用模块级单例变量。
-- **私有方法用 `#` 语法**；class field 箭头仅用于 add/remove 对称的事件回调（如 `Sidebar.#onResizeDown/Move/Up`）。
-- **词汇与 API 关键词一一对应：点赞=favorite（域键 favorites、链路 FETCH_FAVORITES 族、延迟 syncFavorites/cancelFavorites）、收藏=collection(s)（域键 collections、链路 FETCH_COLLECTION 族、延迟 syncCollection/cancelCollection）、作品/关注=works/followings** — 每个语义恰好一个词，like/digg 词形标识符全仓清零（favorite/collect/digg/listcollection 仅存于端点路径、`API_PATTERNS`、DNR urlFilter、`URL_FAVORITE_TAB` 值 `?showTab=like` 等**字符串值**）。历史教训：域键曾误用 favorites 指收藏、又曾以 likes 作点赞近义词与链路 favorite 并存，两次一词两用后于 v2.0.3 定案为域键=链路同词；本版本不再携带 IDB 改名迁移（升级前须先在旧版导出备份），导出带 `schemaVersion: 2`、导入按版本区分旧备份（favorites 键 v1=收藏数据、v2=点赞数据，旧收藏备份误投点赞域报 `LEGACY_COLLECTION_BACKUP`）。取消操作四要素按域组构：inject `CANCEL.favorites`（digg 端点）/`CANCEL.collection`（collect 端点）与 background `CANCEL.collection` 同构。延迟键按业务链路命名（含独立的 `importWorks`），禁止跨链路借用。
-- **aweme 为平台实体词，视同端点值白名单** — 记录字段 `awemeId`（持久化！）、API 响应字段 `aweme_list`/`aweme_id`/`aweme_type`、`AWEME_TYPE_NOTE`、`transformAwemeItem` 保留 aweme 词形，禁止"规范化"为 works（改名牵涉数据迁移且与 API 字段脱钩）。
-- **动词语义定案：SYNC_WORKS ≠ 列表扫描** — `SYNC_WORKS` 是对**已存**作品逐条重取详情；`FETCH_FOLLOWING/FETCH_FAVORITES/FETCH_COLLECTION` 是列表扫描入口。延迟键族统一 `sync*` 前缀（syncFollowings/syncFavorites/syncCollection 服务于对应 FETCH_* 扫描），属既定族名非动词错位。
-- **捕获层词汇分层：页面捕获事件用域词、签名捕获用端点词** — inject 派发的 `DY_CAPTURE_WORKS`（按钮捕获，载荷为 Work 记录）与 fetch-hook 被动捕获用域词 works；`signatureCapture` 的 `postQuery/favoriteQuery/collectionQuery/detailQuery/followingQuery/profileQuery` 按其拦截的端点原文命名，两者分层自洽、勿互改。单作品详情两条通道名字含 detail 词根且传输分层：tab 转发 `FETCH_WORK_DETAIL`（带任务控制）、WorkSaver 直调 `FETCH_DETAIL`（免任务控制）——事件名不同不可合并，合并会导致同一请求双触发双取数。
-
-### 消息与通信
-
-- **取消信号必须发到抖音 document** — `DY_CANCEL_ACTIVE_TASK` 经 background→content→inject 路径送达，不能直接在 options 页 dispatch（路径差异见 [docs/01](./docs/01-project-architecture.md) / [docs/09](./docs/09-inject-tab-mode.md)）。
-- **同步 requestId 时序差异** — `SYNC_WORKS` 立即返回 requestId（进度经 `Sync.#requestId` 严格过滤）；`FETCH_FOLLOWING` 等 fetch 完成才返回，收集期 `Sync.#requestId` 尚为 null，进度过滤必须兼容（null 时全收、拿到后严格过滤，见 [docs/03](./docs/03-independent-sync-followings.md)）。
-
-### 网络与签名
-
-- **取消点赞/收藏用 XHR 而非 fetch（Tab 模式）** — a_bogus 签名与 XHR 原型链深度绑定，fetch 发不出有效签名；独立模式仅取消收藏由 background 直接 `fetch()` POST（取消点赞路由层拒绝 `UNSUPPORTED_INDEPENDENT`），Referer / Sec-Fetch-* 靠 DNR 规则网络层注入（见 docs/06/08/09）。
-- **独立模式全端点需 Argus webSign 签名** — listcollection 缺签名 403 `Signature Not Found`；`IndependentClient.request` 默认开启（`options.webSign !== false`），aweme/post 亦被风控间歇强制同款校验（算法与盐轮换处置见 docs/05）。
-- **API 请求统一用 `window.fetch` + `_dyInternal` 标志** — inject 六个 API 请求函数经 Fetch Hook 但不被捕获；走 `origFetch.call(window, ...)` 绕过 Hook 会错过页面包装器注入的签名参数（见 docs/09）。
-
-### 数据语义
-
-- **inject `extractVideo` 与 background `formatWork` 取链语义必须保持一致** — 三级优先定案见 docs/02/09（长效 playApi 作为整体类目优先于 CDN、只在同类内部比分辨率；禁止改回混池挑最高分辨率；fiber 分支有意不同勿混改）。
-- **「已关注/未关注」归属判定走方案A：作品 `uid` 实时关联关注全集** — 全集 `state.followedUids`（init/域切换/`followings` 事件三处刷新）；记录无 `uid` 或全集未加载成功时**不归判**，避免把已关注作者作品误算为未关注引入误删；**禁止改用扫描快照 `authorFollowed` 做该判定的主判据**（细节见 docs/11「SearchBar」）。
-
-### UI 交互与 CSS
-
-- **批量勾选必须用 `Batch.updateCheckboxDOM`** — 只设 `innerHTML` 不加/移除 `checked` 类则图标透明不可见；`handleBatchSelectAll` 按域选择 checkbox（作品域 `.work-checkbox`，关注域 `.following-checkbox`）。勾选框**显隐由 `body.batch-mode` 纯 CSS 驱动**，JS 禁止逐元素写 inline display；勾选框随填充创建、降级（clearCard）即移除，退出批量只清 `.checked` 的。**批量禁选文本走 `#mainGrid` mousedown preventDefault，禁止用 CSS user-select**（全网格级联重算是进入批量模式卡顿主因，见 docs/11）。
-- **短操作弹窗锁定** — `state.preventDialogClose = true` + `try/finally` 解锁；`CANCEL_ACTIVE_TASK` 仅当 `state.activeDialog` 存在时发送。
-- **弹窗 footer 按钮键盘直达（无焦点设计）** — Enter=顶层弹窗主动作（footer 按钮 danger>primary 推断、ghost 永不占）、Ctrl+Enter 仅显式 `hotkey: "ctrl+enter"` 可占；登记随 footer 增清同步（`updateDialog` 清空即失效、`addDialogBtn` 追加补登），按钮内 `.dy-btn-kbd` 徽标显示实际绑定、与槽位解析同源；输入框一律让位、焦点在弹窗内部操作按钮时走原生激活（**✕ 默认落点除外，Enter 仍直达主动作**），弹窗开启时弹窗外的 Enter/Space 被 `preventDefault` 屏蔽；Esc 仍归 main.js 单点收口、Tab 不管理。见 docs/11「弹窗 footer 按钮键盘直达」。
-- **`state.activeDialog` 在弹窗挂载时由 `Dialog.#mountLayer` 写入（恒等于顶层 onClose）** — 只在 `closeDialog` 出栈时补写会使「本次打开后的首次关闭」静默失效（机制与回归教训见 docs/11）。无 onClose 的弹窗该值为 null，走兜底关闭。
-- **Esc 关闭优先级在 main.js 单点收口（红线）** — 弹窗 → 详情 → 退出批量 → 收起搜索，一次按键只关一层；**detail 监听不得自管 Esc**——同事件多 document 监听串行执行，main.js 先关掉弹窗后 detail 查到的 dialogOverlay 已是关闭态，detail 若自管 Esc 会连详情一并关掉。计数输入框内 Esc 走其自身监听（stopPropagation 还原编辑、不关详情）。
-- **详情层双形态进度条**（视频连续轨道/图集分段音乐驱动，seek 统一 `#applySeek`）、`.media-view` 宽度随媒体宽高比自适应（`--media-aspect` 由 `Detail.#setMediaAspect` 写入，切作品复位 9:16）与模糊背景 `brightness(0.8)` 为既定视觉，定案细节见 docs/11（2026-09-29 修订：废弃横版 39.3vw 封顶）。
-- **安全面板值截断依赖 CSS，展开/收起 selector 兼容两种状态** — `row.querySelector('.sec-truncate, .sec-expanded')`（见 docs/09）。
-- **自带 display 值的组件类与 `.hidden` 同用必须成对声明 `.X.hidden { display: none }`** — 同特异性下通用 `.hidden` 被后部组件规则覆盖，hidden 静默失效。
-- **搜索栏收起即重置，筛选不跨收起保留** — `closeSearchBar()` 必须先调 `clearSearchFilters()`；域切换**不**重置；筛选状态**不落 URL hash**（P1-8 的刷新恢复已移除：hash 残留会让搜索栏在从没打开过它的会话里被「自动展开」，main.js init 仅保留一次性残留清理，全仓无 hash 读写方）（见 docs/11「SearchBar」）。
-
-### 渲染与虚拟化
-
-> 管线全景、机制细节与历史踩坑见 [docs/11](./docs/11-options-ui.md)；本节只保留规则红线。
-
-- **快滚门控** — 快滚判定在 scroll 事件时刻做（scrollTop 帧间差超 `FAST_SCROLL_THRESHOLD`），rAF 侧（catchUp/drain 轮询两个读取者）不推进判定基准、drain 轮询经 epoch 计数检测停稳：快滚态挂起填充 drain、跳过 `#demote`；停稳后 `#refillBand` 丢弃沿路积压（**丢弃前必须全量重新 observe**）只补落点带区；滚轮级滚动帧间位移低于阈值、scrollFast 恒 false，由 `#scheduleSettleCheck` 在滚动静止一帧后补同款收口（幂等），勿让滚轮路径失去停稳收口。容器级事件委托（click/pointerover/out/input）一律绑 `#mainGrid` 而非容器——清场换壳后零重绑。
-- **网格卡片层禁用 `content-visibility: auto`** — `.work-card`/`.work-skeleton`/`.following-card` 一律不加（屏外跳过渲染会让远跳落点骨架延迟出现）；sidebar 的 CV 禁令是另一条理由，互不影响。
-- **侧边栏虚拟化** — 条目只挂 meta、进视口限量发探针、整页 fragment 追加（禁止创建即全量急切加载）；observer root 必须显式传 `dom.sidebarBody`；`#promoteItem`/`#demoteItem` 原地升降级、根节点不换；不用 `content-visibility:auto`。
-- **VirtualGrid 虚拟化（分圈观察 + 双向 + 原地切换）** — 分圈观察哨兵链推进填充（哨兵被删须立刻续接）；整渲收尾必须补一次视口追赶（`#finishRender` → `#scheduleCatchUp`：原位整刷前后内容等高时无 scroll 事件，哨兵链够不着视口，视口骨架将永久滞留灰卡）；填充/卸载 IO 的 root 必须显式传 `#mainGrid`（同 sidebar 的 `dom.sidebarBody` 规则）；两段式铺设（首段同步 + 余量游离态拼装一次挂载，禁止逐帧向容器追加）；预铺有上限（`GRID_PREMOUNT_CAP`）+ 滚近底部扩容（`#extendIfNeeded`，倍增 + 单步上限 `GRID_EXTEND_STEP`）；`fillSlots` 落点按键前缀自锚定回填，占位卡在 fill IO 回调中**不得 unobserve**；`removeItems` 必须同步收缩 `#slots` 与 `#totalSlots`；`insertItems` 位插与 `removeItems` 对偶——state 与 `#slots` 必须同任务内对位 splice、头插卡须插队到待观察队列最前；8ms 时间预算填充，勿改回固定张数/帧；填充/降级原地切换、禁止换根节点；卸载降级经 `#pendingDemotes` 队列按 `DEMOTE_FRAME_BUDGET_MS` 预算分帧（快滚期保持冻结、让位于填充队列），勿改回 IO 回调内同步成批降级；卸载圈滞回勿调近；`render()`/`abortRender()` 重置须同清队列与 `#slots`。
-- **STORE_CHANGED 收口优先增量、整刷仅作兜底** — 新增落当前视图走 `tryHeadInsert` 头插，禁止改回「视图内新增→`loadDomainData` 整刷」；头插与在途分页的交错窗口守卫（`services.isGridLoading()`/`grid.isScrollFrozen()`/`state.gridSlots` 等）不过必须整刷兜底、不得绕过；增量路径的规模守卫在 `applyBulkChanged` 入口（bulk 补拉 id 数 > `GRID_PREMOUNT_CAP` 直接整刷兜底；点载荷 ≤ UPSERTS_MAX、头插输入随之有界，`tryHeadInsert` 不重复设防）；落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引 prev 遍历同序；bulk 载荷只带 id 集、记录经 `GET_WORKS_BY_IDS` 补拉（管线全景与红线见 docs/11「STORE_CHANGED 增量收口」）。
-- **分组与域切换同序列清场（点击即清空）** — 切换瞬间 `appShell.clearActiveGrid()`：abortRender×4 + 样式塌缩（height:0/overflow:hidden/visibility:hidden）+ 旧子树空闲期一次性销毁；「冻结-定格」与「不清场保无闪烁」均已定案否决/禁止。数据侧配套 `loadDomainData` 分页渐进（followings 单发全量）。
-- **`state.dataVersion` 是视图缓存的失效判据（红线）** — store 域数据变更方法与 `loadFollowedUids` 自动自增；绕过 store 封装的原地写入（main.js `tryHeadInsert`/`applyStoreUpserts`、detail.js `removeWork`）必须手动自增。`getWorksView`/`getFollowingsView` 返回共享缓存数组，调用方一律只读。筛选态（封闭视图）预铺恒为 `GRID_PREMOUNT_CAP_FILTER`、扩容必须带真实键（封闭态无 fillSlots 回填方，无键占位卡永久灰卡）；机制与红线见 docs/11「视图阶段缓存与筛选切换性能」。
-- **悬停预览的媒体事件用 `pointerover/out` 委托，禁用 `pointerenter/leave`** — enter/leave 不冒泡，容器级委托收不到卡片进入事件；跨界只触发一次靠 `relatedTarget && media.contains(relatedTarget)` 判断。
-
-### 媒体体系
-
-- **媒体加载有全局熔断** — 失败密集超阈值进入冷却期，期间跳过重试直接降级；新增媒体重试逻辑必须接入 `Detail.markMediaFail / markMediaOk / mediaRetryBlocked`。
-- **卡片预览静音是全局联动，详情播放器独立** — 三域卡片静音走 `WorksGrid.#togglePreviewMute()`（共享 `#previewMuted`），填充与悬停起播读该标志保证继承；详情层静音偏好 `Detail.#detailMuted` 为视频/图集音乐共享的单一事实源（渲染路径统一施加，勿读元素 `muted` 回写偏好），勿与卡片联动。
-- **离开扩展页面即暂停全部播放** — `visibilitychange`(hidden) 触发：卡片预览走 `WorksGrid.stopAllMedia`，详情走 `Detail.pauseOnHidden`；仅页面真正隐藏时暂停，窗口失焦不暂停。
-- **全站媒体一律 `div`+`background-image`，禁止改回 `<img src>`** — 离屏探针先行、成功才提交背景图；在途探针回调必须先校验代际；切换路径旧背景保持到新背景提交（零空档）。
+1. **`state.dataVersion` 是视图缓存唯一失效判据** — store 数据变更方法自动自增；绕过封装的原地写入（`tryHeadInsert`/`applyStoreUpserts`）必须手动自增。`getWorksView`/`getAuthorRecordsView` 返回共享缓存数组，调用方一律只读。
+2. **虚拟网格窗口化** — `GRID_MOUNT_MAX`(600) 是活动 DOM 硬上限；活动窗口（`#syncWindow`/`#remountWindow`）+ 尾部占位（`#syncTailReserve`）+ 滚近键控扩容（`#extendIfNeeded`）维持恒定挂载量。**禁止改回「预挂/后台补铺余量卡」**；硬不变量 `total ≤ GRID_MOUNT_MAX ⟺ #headTrim === 0`；整窗重挂按 itemKey 复用重叠卡，禁止整窗重克隆回灰骨架。
+3. **分页回填按视图下标** — 页序与视图序对齐（saved 排序键）时 `fillSlots(view.length - pageView.length)` 逐页续填；作品数排序或中途切排序（`isPageAligned` 失配）时静默累积、完成整渲。`work-record-appended` 的 domain/groupId 双校验不得省略。
+4. **详情导航顺序 = 网格已渲染顺序** — Detail 取 `VirtualGrid.renderedItems()`，快照缺失才回退 `getWorksView()`；展示作品以 `#currentId` 钉住，关闭详情按 awemeId `restoreGridScroll`，不得用下标。
+5. **批量勾选与 Shift 连选** — 必须走 `Batch.updateCheckboxDOM`（否则图标透明）；Shift 区间按 `renderedItems()` 取序（与挂载卡 DOM 同序）；用户重定义结果集时 `Batch.resetSelection` 作废选区与锚点；Ctrl/Cmd 旁路仅保留作者卡/作者名（打开侧边作品栏），作品标题/作者外链无旁路。
+6. **搜索栏与键盘** — `S` 键开关搜索栏（不自动聚焦输入框）；Esc 层级「弹窗 → 详情 → 失焦」；搜索显式提交（Enter/🔍，输入不即时响应）；收起即 `clearSearchFilters`；域切换只重置搜索态、栏位保持展开；筛选不落 URL hash；范围匹配口径必须与提示文案一致（作品 ID=作者 uid 精确，`awemeId` 不参与）。
+7. **弹窗锁定与键盘直达** — 长操作 `state.preventDialogClose = true` + `try/finally`；`state.activeDialog` 在 `Dialog.#mountLayer` 挂载时写入；footer Enter=主动作、Ctrl+Enter 仅显式绑定；Esc 由 main.js 单点收口，详情不得自管 Esc。
+8. **媒体体系** — 媒体加载全局熔断，重试必须接入 `Detail.markMediaFail/markMediaOk/mediaRetryBlocked`；静音偏好全页单一 `state.mediaMuted`（网格/详情/侧栏同步）；页面隐藏即停播；媒体一律 `div`+`background-image`（探针先行、代际守卫），禁止 `<img src>`；图集 `imageVideos[]` 与 `images[]` 逐位对位，实况小视频必须在静帧提交点才起播。
+9. **作者域状态 chip** — 仅经 `GET_AUTHOR_UID_SETS` 取关注/候选主键集（`getAllKeys` 不物化记录），作品型三域等首屏后经 `services.whenFirstScreen` 再取；刷新后 `WorksGrid.syncAuthorFlags()` 只 toggle 挂载卡，**禁止整刷**；禁止改用 `authorFollowed` 或往 Work 写派生字段。
+10. **布局 / DOM** — 网格卡片层禁用 `content-visibility: auto`；容器级事件委托绑 `#mainGrid`；填/卸载 IO root 显式传 `#mainGrid`；自带 display 的组件类必须成对声明 `.X.hidden`；禁止换卡片根节点；`#mainGrid` 保持 `scrollbar-gutter: stable`。
+11. **词汇与 API 关键词** — 点赞=favorite（`favorites` 域/`FETCH_FAVORITES` 族）、收藏=collection(s)（`collections` 域/`FETCH_COLLECTION` 族）、作品/关注/候选=works/followings/candidates；`like`/`digg` 标识符清零（仅端点等字符串值保留）；`aweme` 为平台实体词（`awemeId`/`aweme_list`/`aweme_type`）；`SYNC_WORKS` 是重取已存作品详情，不是列表扫描。
+12. **网络与存储写入** — 点赞/收藏状态设置走 XHR（Tab 模式，签名绑 XHR 原型链）；独立模式仅收藏直连 POST，点赞拒绝 `UNSUPPORTED_INDEPENDENT`；API 请求统一 `window.fetch` + `_dyInternal`；`STORE_CHANGED` 仅在 `changed>0` 广播、bulk 只带 id 集；fav/col 落库经 `SAVE_WORKS`/`persistScan`；作者域 0 值计数不得覆盖已校准值；分组显示序必须经 `normalizeGroups`。
 
 ## config 分组速查
 
-- **options/core.js 顶层 `config`（50 键）** — 权威键表与默认值见 [docs/01](./docs/01-project-architecture.md)「配置项说明 · options/core.js 顶层 `config`」。
+- **options/core.js 顶层 `config`（59 键）** — 权威键表与默认值见 [docs/01](./docs/01-project-architecture.md)「配置项说明 · options/core.js 顶层 config」。
 - **background/core.js `CONFIG`**（`TIMEOUT`/`DELAY`/`SYNC`/`STORAGE_KEYS`/`DNR_RULES`/`GROUPS`/`PAGE`/`BROADCAST`/`CANCEL`/`FATAL_ERRORS`/`WEBID_API`/`WEB_SIGN_SALT` 等）与 `runtimeConfig` 对象（从 `chrome.storage.local` 读入叠加进 `CONFIG`，SW 冷启动补 reload；键表同见 docs/01「配置项说明」）——运行时状态已塌缩为类私有字段，类职责见 [docs/12](./docs/12-class-map.md)「background/ 类单例」表。
 
 ## 文档索引
@@ -141,17 +96,18 @@ options 侧 15 类与 background 侧 17 类/对象的职责对照表（含每类
 技术文档已按单一职责拆分为编号分册（术语规范见 01：**Tab模式**=页面注入脚本方式；**独立模式**=纯后台逆向请求流程）：
 
 | 文档 | 阅读场景 |
-|------ | ---------- |
-| [docs/01-project-architecture.md](./docs/01-project-architecture.md) | 项目架构：双模运行与路由隔离、代码布局约束、四域存储模型、消息类型总表、进度消息载荷、全局配置 |
+|------|----------|
+| [docs/01-project-architecture.md](./docs/01-project-architecture.md) | 项目架构：双模运行与路由隔离、代码布局约束、五域存储模型、消息类型总表、进度消息载荷、全局配置 |
 | [docs/02-independent-sync-works.md](./docs/02-independent-sync-works.md) | 独立模式同步作品（SYNC_WORKS / formatWork 三级取链） |
 | [docs/03-independent-sync-followings.md](./docs/03-independent-sync-followings.md) | 独立模式同步关注（FETCH_FOLLOWING 分页采集） |
-| [docs/04-independent-calibrate-followings.md](./docs/04-independent-calibrate-followings.md) | 关注计数校准（批量 calibrateStats + 侧边栏单用户 CALIBRATE_FOLLOWING）+ 最近更新日期 lastUpdateAt（作品第一页 max create_time 采集） |
+| [docs/04-independent-calibrate-followings.md](./docs/04-independent-calibrate-followings.md) | 作者域计数校准（工具弹窗批量 + 侧边栏单用户，关注/候选两域各自独立）+ 最近更新日期 lastUpdateAt |
 | [docs/05-independent-scan-collection.md](./docs/05-independent-scan-collection.md) | 独立模式扫描收藏（listcollection 线格式 + Argus webSign 定案、绑定域实验、盐轮换处置） |
 | [docs/06-independent-cancel-collection.md](./docs/06-independent-cancel-collection.md) | 独立模式取消收藏（background 直连 POST 循环） |
 | [docs/07-independent-fetch-user-works.md](./docs/07-independent-fetch-user-works.md) | 作者主页作品分页（FETCH_WORKS_PAGE 双模分支） |
 | [docs/08-dnr-rules.md](./docs/08-dnr-rules.md) | 全部 DNR 动态规则（7 条）、优先级关系与排障 |
 | [docs/09-inject-tab-mode.md](./docs/09-inject-tab-mode.md) | Tab模式注入侧技术方案：签名捕获/三种签名策略/_dyInternal、事件桥、按钮注入、取消信号 |
 | [docs/10-storage-write-and-import.md](./docs/10-storage-write-and-import.md) | 存储写入与导入合并：mergeWork/计数保护/丢失检测/reconcileImportGroups 三级对账 |
-| [docs/11-options-ui.md](./docs/11-options-ui.md) | 管理页渲染与交互：VirtualGrid/Sidebar 虚拟化与分圈观察、媒体探针体系与全局熔断、store.on 事件表、勾选 DOM 约定、弹窗锁定与取消门控、CSS 协同约定 |
+| [docs/11-options-ui.md](./docs/11-options-ui.md) | 管理页渲染与交互：VirtualGrid 窗口化/尾部占位、Sidebar 虚拟化、媒体探针与熔断、store.on 事件表、勾选 DOM 约定、弹窗锁定 |
 | [docs/12-class-map.md](./docs/12-class-map.md) | 类职责总表：options 侧与 background/ 侧全部类/对象的职责对照与红线指引 |
-| [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md)   | 参考项目 TikTokDownloader 算法/凭据模块 + Douyin API 端点总表                  |
+| [docs/13-design-red-lines.md](./docs/13-design-red-lines.md) | 设计红线与知识点陷阱完整版（编码/消息/签名/数据语义/UI/渲染/媒体，自 AGENTS.md 迁出） |
+| [docs/TIKTOK_REFERENCE.md](./docs/TIKTOK_REFERENCE.md) | 参考项目 TikTokDownloader 算法/凭据模块 + Douyin API 端点总表 |

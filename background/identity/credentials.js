@@ -123,11 +123,11 @@ class Credentials {
       const ua = this.userAgent;
       const resp = await fetch(CONFIG.WEBID_API + "?" + CONFIG.WEBID_QUERY, {
         method: "POST",
+        // Referer / User-Agent 属 forbidden header，fetch 设置会被浏览器静默丢弃；
+        // 需要的值随 body 上报（见下），不要在这里重复设置
         headers: {
           Accept: "*/*",
           "Content-Type": "text/plain;charset=UTF-8",
-          Referer: "https://www.douyin.com/?recommend=1",
-          "User-Agent": ua,
         },
         body: JSON.stringify({
           app_id: 6383,
@@ -178,20 +178,25 @@ class Credentials {
     const { savedWebId } = await chrome.storage.local.get("savedWebId");
     if (savedWebId) return savedWebId;
     const webid = await this.fetchWebIdFromApi();
-    if (webid) {
-      await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
-      await this.syncWebIdCookie(webid);
-    }
+    await this.#persistWebId(webid);
     return webid;
   }
 
-  async refreshWebIdChain() {
+  // webid 缓存清理（refreshWebIdChain / refreshWebId 共用）
+  async #resetWebIdCache() {
     await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+  }
+
+  async #persistWebId(webid) {
+    if (!webid) return;
+    await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
+    await this.syncWebIdCookie(webid);
+  }
+
+  async refreshWebIdChain() {
+    await this.#resetWebIdCache();
     const webid = await this.fetchWebIdFromApi();
-    if (webid) {
-      await chrome.storage.local.set({ savedWebId: webid, savedWebIdTime: Date.now() });
-      await this.syncWebIdCookie(webid);
-    }
+    await this.#persistWebId(webid);
     return webid;
   }
 
@@ -266,6 +271,7 @@ class Credentials {
         message.features.platform || navigator.platform,
         message.features,
       );
+      this.#autoRefreshCredentials();
     }
     sendResponse({ ok: true });
   }
@@ -276,14 +282,14 @@ class Credentials {
     await chrome.storage.local.remove(["savedMsToken", "savedMsTokenTime"]);
     const msToken = await this.getMsToken();
     const { savedMsTokenTime } = await chrome.storage.local.get("savedMsTokenTime");
-    sendResponse({ ok: true, msToken, time: savedMsTokenTime || null });
+    sendResponse?.({ ok: true, msToken, time: savedMsTokenTime || null });
   }
 
   async refreshWebId(sendResponse) {
-    await chrome.storage.local.remove(["savedWebId", "savedWebIdTime"]);
+    await this.#resetWebIdCache();
     const webId = await this.getWebId();
     const { savedWebIdTime } = await chrome.storage.local.get("savedWebIdTime");
-    sendResponse({ ok: true, webId, time: savedWebIdTime || null });
+    sendResponse?.({ ok: true, webId, time: savedWebIdTime || null });
   }
 
   // 重建 ABogus 需跨类经 TabBridge 向页面索取最新特性
@@ -343,7 +349,7 @@ class Credentials {
       const rawCookie = pairs.join("; ");
       const time = Date.now();
       await chrome.storage.local.set({ savedCookie: rawCookie, savedCookieTime: time });
-      sendResponse({
+      sendResponse?.({
         ok: true,
         pairs: cookies.map((c) => ({ key: c.name, value: c.value })),
         rawCookie,
@@ -351,8 +357,16 @@ class Credentials {
         time,
       });
     } catch (e) {
-      sendResponse({ ok: false, error: e.message });
+      sendResponse?.({ ok: false, error: e.message });
     }
+  }
+
+  // 抖音页面加载时机顺带自动刷新三项独立模式凭据（fire-and-forget，不阻塞 capture 响应）：
+  // cookie 快照先行（msToken 第二来源与 UIFID/odin_tt 兜底都读它），msToken/webid 并行兑换。
+  // 与设置面板手动刷新同链路，sendResponse 缺省即静默执行。
+  async #autoRefreshCredentials() {
+    await this.refreshCookie();
+    await Promise.allSettled([this.refreshMsToken(), this.refreshWebId()]);
   }
 }
 const credentials = new Credentials();

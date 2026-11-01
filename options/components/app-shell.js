@@ -1,15 +1,16 @@
 // ---------- AppShell（应用壳：域切换 / 全局错误态 / 弹窗关闭入口） ----------
-import { dom, state, services, store, utils } from '../core.js';
+import { dom, state, services, store } from '../core.js';
 import { worksGrid, favoritesGrid, collectionsGrid } from '../grids/works-grid.js';
-import { followingsGrid } from '../grids/followings-grid.js';
+import { followingsGrid, candidatesGrid } from '../grids/author-grid.js';
 import { detail } from './detail.js';
+import { search } from './search-bar.js';
 import { sidebar } from './sidebar.js';
 import { settings } from './settings.js';
 import { dialog } from './dialog.js';
 
-// ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 / 左侧边栏折叠 ----------
+// ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 / 右侧边栏折叠 ----------
 class AppShell {
-  static LEFT_SIDEBAR_KEY = "douyin_left_sidebar_collapsed";
+  static RIGHT_SIDEBAR_KEY = "douyin_right_sidebar_collapsed";
 
   constructor() {
     this.#bindEvents();
@@ -17,7 +18,8 @@ class AppShell {
 
   updateDomainSlider(domain) {
     const btn = document.querySelector(`.ds-btn[data-domain="${domain}"]`);
-    if (!btn || !dom.dsSlider || !dom.domainSwitch) return;
+    // 仅保留对域名字符串的防御（未知域查不到按钮）；dom 引用为静态模板元素恒存在
+    if (!btn) return;
     const parentRect = dom.domainSwitch.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
     // 纵向排列：滑块按 Y 位移 + 高度指示当前域
@@ -27,20 +29,24 @@ class AppShell {
     dom.dsSlider.style.height = `${height}px`;
   }
 
-  toggleLeftSidebar() {
-    const collapsed = !dom.leftSidebar.classList.contains("collapsed");
-    // 左侧边栏折叠同样改变主网格宽度，auto-fill 跨列阈值时卡片跳位：
-    // 锚定视口内最上方卡片，折叠前后保持其视口 Y
-    const anchor = utils.topVisibleGridCard();
-    sidebar.preserveGridAnchor(anchor, () => {
-      dom.leftSidebar.classList.toggle("collapsed", collapsed);
-      localStorage.setItem(AppShell.LEFT_SIDEBAR_KEY, collapsed ? "1" : "");
-    });
+  toggleRightSidebar() {
+    const collapsed = !dom.rightSidebar.classList.contains("collapsed");
+    // 折叠改变主网格宽度（跨列阈值时卡片跳位）：改完 class 同步落轨宽 + 锚点补偿
+    // （网格侧把视口内最上方卡拉回原 Y）。不走 RO 回调——RO 内写容器尺寸会触发
+    // 浏览器的 ResizeObserver loop 告警
+    dom.rightSidebar.classList.toggle("collapsed", collapsed);
+    localStorage.setItem(AppShell.RIGHT_SIDEBAR_KEY, collapsed ? "1" : "");
+    this.#activeGrid().syncContainerWidth();
   }
 
-  initLeftSidebar() {
-    const collapsed = localStorage.getItem(AppShell.LEFT_SIDEBAR_KEY) === "1";
-    dom.leftSidebar.classList.toggle("collapsed", collapsed);
+  // 当前域的活动网格（右栏折叠后同步落宽用；统一走 search.gridForDomain）
+  #activeGrid() {
+    return search.gridForDomain();
+  }
+
+  initRightSidebar() {
+    const collapsed = localStorage.getItem(AppShell.RIGHT_SIDEBAR_KEY) === "1";
+    dom.rightSidebar.classList.toggle("collapsed", collapsed);
   }
 
   // 分组/域切换共用的同步清场：中止所有网格未完成的渲染/拼装（防旧骨架卡在下一帧
@@ -50,6 +56,7 @@ class AppShell {
   clearActiveGrid() {
     worksGrid.abortRender();
     followingsGrid.abortRender();
+    candidatesGrid.abortRender();
     favoritesGrid.abortRender();
     collectionsGrid.abortRender();
     // 万级子树的同步 innerHTML="" 拆卸是大→小切组「慢一拍」的主源（整树脱离 +
@@ -62,6 +69,7 @@ class AppShell {
     dom.mainContainer = fresh;
     worksGrid.attachContainer(fresh);
     followingsGrid.attachContainer(fresh);
+    candidatesGrid.attachContainer(fresh);
     favoritesGrid.attachContainer(fresh);
     collectionsGrid.attachContainer(fresh);
     this.#destroyDetached(stale);
@@ -70,13 +78,12 @@ class AppShell {
   // 空闲分批销毁脱离渲染树的旧网格子树：每轮 8ms 预算、逐个移除直接子节点，
   // 拆卸与 GC 压力摊到空闲帧，不与点击→首屏的渲染路径竞争
   #destroyDetached(node) {
-    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 0));
     const step = () => {
       const deadline = performance.now() + 8;
       while (node.firstChild && performance.now() < deadline) {
         node.firstChild.remove();
       }
-      if (node.firstChild) idle(step);
+      if (node.firstChild) window.requestIdleCallback(step);
     };
     step();
   }
@@ -86,21 +93,30 @@ class AppShell {
 
     this.clearActiveGrid();
 
+    // 域切换只重置搜索态（清筛选 + 收菜单），搜索栏保持展开（2026-10-28 定案）；
+    // refresh=false：网格随后即清场重载，此处重渲纯属浪费
+    search.resetSearchState(false);
     state.selectedIds.clear();
+    // 计数占位（见 SearchBar.syncCount）：首屏未到前 K 恒 0，N 取与分组 tab 同源的
+    // 缓存权威总量（有缓存即 0/Total，无缓存显示「…」）；首页到达后由 loadDomainData 校正
+    const allTotal = state.gridTotals[`${domain}|all`];
+    state.gridPending = true;
+    state.gridTotal = allTotal != null ? { domain, groupId: "all", total: allTotal } : null;
+    dom.sbCount.textContent = allTotal != null ? `0/${allTotal}` : "…";
     store.set("batchMode", false);
 
     detail.closeDetail();
-    if (dom.sidebar) {
-      const isExpanded = !dom.sidebar.classList.contains("sidebar-zero");
-      if (isExpanded) {
-        sidebar.setSidebarWidth(0);
-        sidebar.saveSidebarWidth(0);
-      }
+    // 域切换显式归零：尾部占位（#syncTailReserve）使 wipe clamp 不再触发（重渲任务内总高
+    // 即恢复终值、旧偏移合法存留）。置于 closeDetail 之后，防其滚动恢复覆盖归零
+    dom.mainGrid.scrollTop = 0;
+    if (!dom.sidebar.classList.contains("sidebar-zero")) {
+      sidebar.setSidebarWidth(0);
+      sidebar.saveSidebarWidth(0);
     }
     sidebar.clearSidebarActive();
-    state.currentFollowingSecUid = null;
+    state.currentAuthorSecUid = null;
 
-    // 域样式经 data-domain 属性挂载（CSS 按属性选择器适配四域）
+    // 域样式经 data-domain 属性挂载（CSS 按属性选择器适配五域）
     document.body.dataset.domain = domain;
 
     document.querySelectorAll(".ds-btn").forEach((tab) => {
@@ -112,19 +128,20 @@ class AppShell {
     state.currentGroupId = "all";
   }
 
-  renderErrorState(msg, detail) {
+  renderErrorState(msg, detailText) {
     dom.emptyState.classList.add("hidden");
     dom.mainContainer.classList.add("hidden");
     dom.errorState.querySelector("p").textContent = msg;
     const hint = dom.errorState.querySelector(".error-hint");
-    if (hint) hint.textContent = detail || "请检查网络后重试";
+    hint.textContent = detailText || "请检查网络后重试";
     dom.errorState.classList.remove("hidden");
   }
 
-  // 加载域数据的统一错误包装：捕获异常进入全局错误态（main.js 三处加载点共用）
+  // 加载域数据的统一错误包装：捕获异常进入全局错误态（main.js 三处加载点共用）。
+  // 取数方向随搜索栏排序：保存时间(升) 走从最旧一端分页，页序即视图序（逐页续填）
   async loadDomainDataSafe() {
     try {
-      await services.loadDomainData();
+      await services.loadDomainData(search.fetchAscending());
     } catch (err) {
       console.error("[DY] load domain data failed:", err);
       this.renderErrorState("数据加载失败", err.message);
@@ -148,23 +165,16 @@ class AppShell {
   }
 
   #bindEvents() {
-    dom.btnSidebarToggle?.addEventListener("click", () => this.toggleLeftSidebar());
+    dom.btnSidebarToggle?.addEventListener("click", () => this.toggleRightSidebar());
     document.querySelectorAll(".ds-btn").forEach((tab) => {
       tab.addEventListener("click", () => this.switchDomain(tab.dataset.domain));
     });
     // resize 的全局布线在 main.js 组合根（rAF 节流单入口，同时重算域滑块与分组 tab）：
     // 本类只提供 updateDomainSlider，不再自挂第二个 window 监听
+    // 重试当前域加载（统一走 loadDomainDataSafe，不再硬编码 works 域）
     dom.btnRetry.addEventListener("click", async () => {
       dom.errorState.classList.add("hidden");
-      try {
-        const groupId = state.currentGroupId;
-        const works = await services.loadWorks(groupId);
-        if (state.currentGroupId !== groupId) return;
-        store.set("works", works);
-      } catch (err) {
-        console.error("[DY] load works failed:", err);
-        this.renderErrorState("数据加载失败", err.message);
-      }
+      await this.loadDomainDataSafe();
     });
   }
 }

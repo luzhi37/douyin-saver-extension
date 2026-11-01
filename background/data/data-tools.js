@@ -7,20 +7,23 @@ import { domainStore } from "./domain-store.js";
 // ---------- DataTools ----------
 // 导入导出 / 重置 / 统计（域感知）
 class DataTools {
+  // 分组对账：本地既有分组（含用户拖拽顺序）为唯一权威，导入只做「id/名称映射 + 追加新组」。
+  // storage.getGroups 的数组序是 IDB 主键(id)序，必须先经 utils.normalizeGroups 还原 order 序，
+  // 否则导入会把自定义分组（custom_+UUID）按 UUID 字典序重排，即用户可见的「分组顺序紊乱」
   async reconcileImportGroups(domain, data, items) {
     const importedGroups = data.groups || [];
     if (importedGroups.length === 0) return;
     const groupsName = domainStore.groupsName(domain);
     const def = domainStore.defaultGroups(domain);
     const existingList = await storage.getGroups(groupsName);
-    const existing = existingList.length ? existingList : def.map((g) => ({ ...g }));
-    const fixed = existing.filter((g) => g.fixed);
-    const imported = importedGroups.filter((g) => !g.fixed);
+    const existing = utils.normalizeGroups(existingList.length ? existingList : def.map((g) => ({ ...g })));
+    const fixedIds = new Set(CONFIG.DEFAULT_GROUPS.map((g) => g.id));
     const existingIds = new Set(existing.map((g) => g.id));
     const existingNames = new Map(existing.map((g) => [g.name, g.id]));
     const groupIdMap = new Map();
     const newGroups = [];
-    for (const g of imported) {
+    for (const g of importedGroups) {
+      if (!g || !g.id || fixedIds.has(g.id)) continue; // 固定分组由本地定义，不参与对账
       if (existingIds.has(g.id)) {
         groupIdMap.set(g.id, g.id);
       } else if (existingNames.has(g.name)) {
@@ -30,8 +33,9 @@ class DataTools {
         groupIdMap.set(g.id, g.id);
       }
     }
-    const merged = [...fixed, ...existing.filter((g) => !g.fixed), ...newGroups];
-    merged.forEach((g, i) => (g.order = i));
+    // 新组一律追加到末尾：先压到既有序号之后，避免文件内 order 把新组插进既有分组之间
+    newGroups.forEach((g, i) => (g.order = existing.length + i));
+    const merged = utils.normalizeGroups([...existing, ...newGroups]);
     await storage.putGroups(groupsName, merged);
     for (const item of items) {
       if (item.groupId && groupIdMap.has(item.groupId)) {
@@ -65,14 +69,19 @@ class DataTools {
           && !Array.isArray(data.collections) && Array.isArray(data.favorites)) {
         data.collections = data.favorites; // 旧收藏备份导入收藏域
       }
+      // 候选域兼容旧关注域备份：旧文件只有 followings 键（账户关注镜像），手动导入候选域时
+      // 按作者档案读取；不做自动迁移，仅在用户显式选择该文件时生效
+      if (domain === CONFIG.STORAGE_KEYS.CANDIDATES
+          && !Array.isArray(data.candidates) && Array.isArray(data.followings)) {
+        data.candidates = data.followings;
+      }
       const items = domainStore.extractImportItems(data, domain);
       if (items.length === 0) {
         // 原 options 侧 isDomainData 前置校验职责移入：非该域数据/空数组统一报空
         return sendResponse({ ok: false, error: "IMPORT_EMPTY" });
       }
-      if (Array.isArray(data.groups)) {
-        await this.reconcileImportGroups(domain, data, items);
-      }
+      // reconcileImportGroups 内部对缺组/空组静默返回，此处不再重复判型
+      await this.reconcileImportGroups(domain, data, items);
 
       const groupsName = domainStore.groupsName(domain);
       const def = domainStore.defaultGroups(domain);
@@ -83,24 +92,21 @@ class DataTools {
         if (!validGroupIds.has(item.groupId)) item.groupId = CONFIG.GROUPS.DEFAULT_ID;
       }
 
-      if (domain === CONFIG.STORAGE_KEYS.FOLLOWINGS) {
-        const result = await domainStore.mergeAndSaveFollowings(domain, items, true);
+      if (CONFIG.AUTHOR_RECORD_DOMAINS.includes(domain)) {
+        const result = await domainStore.mergeAndSaveAuthors(domain, items);
         sendResponse({ ok: true, ...result });
       } else {
         // 分块落库：单事务 10 万级 put 会长时间独占 SW 的 IndexedDB——按块 mergeAndSave
         //（旧记录单事务 getBatch 批量读，块内成本 O(块大小)），逐块回报 IMPORT_PROGRESS；
         // 计数跨块累计，响应只带计数（不再 spread 单次 mergeAndSave 的 written/addedIds
-        // 全记录——旧实现万级导入的响应体因此膨胀至 MB 级，消费方只读 added/updated/total）
+        // 全记录——旧实现万级导入的响应体因此膨胀至 MB 级，消费方只读 added/updated/invalid）
         const invalid = items.filter((w) => !w || !w[DOMAIN_CONFIG[domain].idField]).length;
         let added = 0;
         let updated = 0;
-        let changed = 0;
-        let last = null;
         for (let i = 0; i < items.length; i += CONFIG.IMPORT_CHUNK) {
-          last = await domainStore.mergeAndSave(domain, items.slice(i, i + CONFIG.IMPORT_CHUNK));
-          added += last.added;
-          updated += last.updated;
-          changed += last.changed;
+          const result = await domainStore.mergeAndSave(domain, items.slice(i, i + CONFIG.IMPORT_CHUNK));
+          added += result.added;
+          updated += result.updated;
           utils.sendMessageSafe({
             type: "IMPORT_PROGRESS",
             domain,
@@ -108,14 +114,7 @@ class DataTools {
             total: items.length,
           });
         }
-        sendResponse({
-          ok: true,
-          added,
-          updated,
-          changed,
-          total: last ? last.total : await domainStore.facade(domain).count(),
-          invalid,
-        });
+        sendResponse({ ok: true, added, updated, invalid });
       }
     } catch (err) {
       sendResponse({ error: err.message });
@@ -137,7 +136,7 @@ class DataTools {
           domain,
           exportedAt: new Date().toISOString(),
           [cfg.itemKey]: Object.values(items),
-          groups: groups.length ? groups : def,
+          groups: utils.normalizeGroups(groups.length ? groups : def),
         },
         null,
         2,
@@ -159,25 +158,14 @@ class DataTools {
     }
   }
 
-  async getStats(sendResponse) {
+  // msg.domain    → 只统计该域的分组计数（切域/切组渲染分组 tab 用，避免拖上全部五域）
+  // msg.bytesOnly → 只回存储占用字节（存储指示器独立刷新用，不做任何 count）
+  // 两者都缺省视为非法请求；计数只走索引 count/countByGroup，不 getAll 反序列化整表，避免大数据量下整表读取 + 大对象分配
+  async getStats(sendResponse, msg) {
     try {
-      // 分组 tab 每次切换/刷新都会走到这里：只做索引计数，不 getAll 反序列化整表，
-      // 避免大数据量下每次统计都产生整表读取 + 大对象分配
-      const dsWorks = domainStore.facade(CONFIG.STORAGE_KEYS.WORKS);
-      const dsFollowings = domainStore.facade(CONFIG.STORAGE_KEYS.FOLLOWINGS);
-      const dsFavorites = domainStore.facade(CONFIG.STORAGE_KEYS.FAVORITES);
-      const dsCollections = domainStore.facade(CONFIG.STORAGE_KEYS.COLLECTIONS);
-      const [works_groups, followings_groups, favorites_groups, collections_groups, est] = await Promise.all([
-        dsWorks.getGroups(),
-        dsFollowings.getGroups(),
-        dsFavorites.getGroups(),
-        dsCollections.getGroups(),
-        storage.estimate(),
-      ]);
-
-      const bytes = est ? est.usage : 0;
-
-      async function buildDomainStats(ds, groups) {
+      const buildDomainStats = async (domain) => {
+        const ds = domainStore.facade(domain);
+        const groups = await ds.getGroups();
         const total = await ds.count();
         const groupCounts = { all: total };
         await Promise.all(
@@ -187,19 +175,23 @@ class DataTools {
           }),
         );
         return { total, groupCounts };
+      };
+      const byteUsage = async () => (await storage.estimate()).usage;
+
+      if (msg.bytesOnly) {
+        sendResponse({ ok: true, stats: { bytes: await byteUsage() } });
+        return;
       }
 
-      const [works, followings, favorites, collections] = await Promise.all([
-        buildDomainStats(dsWorks, works_groups),
-        buildDomainStats(dsFollowings, followings_groups),
-        buildDomainStats(dsFavorites, favorites_groups),
-        buildDomainStats(dsCollections, collections_groups),
-      ]);
+      const domainNames = new Set(Object.keys(DOMAIN_CONFIG));
+      if (msg.domain && domainNames.has(msg.domain)) {
+        // 按域收窄：只算当前域；不再捆绑存储估算（存储指示器走 bytesOnly 独立刷新）
+        const stats = await buildDomainStats(msg.domain);
+        sendResponse({ ok: true, stats: { [msg.domain]: stats } });
+        return;
+      }
 
-      sendResponse({
-        ok: true,
-        stats: { works, followings, favorites, collections, bytes },
-      });
+      sendResponse({ ok: false, error: "BAD_PARAMS" });
     } catch (err) {
       sendResponse({ error: err.message });
     }

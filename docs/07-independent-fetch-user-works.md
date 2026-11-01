@@ -1,6 +1,6 @@
 # 07 · 独立模式（逆向）— 获取用户作品列表
 
-> 职责边界：`FETCH_WORKS_PAGE` 的双模实现——作者主页作品分页（`/aweme/v1/web/aweme/post/`），供管理页作者侧边栏滚动加载。独立模式为 background 单次直连；Tab 模式为 sendToTab → inject `fetchAuthorWorks`。侧边栏的渲染与虚拟化不在本文范围（见 [12-class-map](./12-class-map.md) `Sidebar` 条目与 AGENTS.md 渲染红线）。
+> 职责边界：`FETCH_WORKS_PAGE` 的双模实现——作者主页作品分页（`/aweme/v1/web/aweme/post/`），供管理页作者侧边栏滚动加载。独立模式为 background 单次直连；Tab 模式为 `tabBridge.fetchWorksPage` → inject `fetchAuthorWorks`。侧边栏的渲染与虚拟化不在本文范围（见 [12-class-map](./12-class-map.md) `Sidebar` 条目与 AGENTS.md 渲染红线）。
 
 ## 概述
 
@@ -23,8 +23,9 @@ options Sidebar 滚动近底
         │                     hasMore: has_more===true|1, maxCursor: data.max_cursor || "" })
         │       异常 → sendResponse({ ok:false, error: e.message })
         │
-        └─ false：sendToTab("FETCH_WORKS_PAGE", { secUid, cursor, count:PAGE.POST,
-                    timeout: CONFIG.TIMEOUT.REQUEST }, sendResponse)
+        └─ false：tabBridge.fetchWorksPage(message, sendResponse)
+                    （内部 tabBridge.send("FETCH_WORKS_PAGE", { secUid, cursor, count:PAGE.POST,
+                    timeout: CONFIG.TIMEOUT.REQUEST }, sendResponse)）
              → content BRIDGE（固定 60s 兜底超时）→ DY_FETCH_WORKS_PAGE_REQUEST
              → inject fetchAuthorWorks(secUid, maxCursor, count)
                   url = buildUrl(API.POST, DEVICE_PARAMS + { sec_user_id, max_cursor, count })
@@ -56,7 +57,7 @@ async function fetchAuthorWorks(secUid, startCursor, count)
 
 | 模式 | 层级 |
 |------|------|
-| Tab模式 | sendToTab 超时（`msg.timeout` = CONFIG.TIMEOUT.REQUEST，默认 30s）+ content.js requestResponse 固定 60s 兜底 |
+| Tab模式 | tabBridge.send 超时（`msg.timeout` = CONFIG.TIMEOUT.REQUEST，默认 30s）+ content.js requestResponse 固定 60s 兜底 |
 | 独立模式 | independentClient.request 单层超时（runtimeConfig.timeoutRequest，默认 30s） |
 
 ## 关键代码片段
@@ -149,7 +150,7 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | a_bogus 被拒 `web_id_sign_invalid` | independentClient.request 内部刷新 webid 重试一次 | 内建恢复 |
 | Argus 风控间歇强制 webSign（403 `Signature Not Found`） | request 默认叠加 webSign 后消除；盐轮换会复发 | 按 [05](./05-independent-scan-collection.md) 复发处置指南更新 `CONFIG.WEB_SIGN_SALT` |
 | Tab模式签名缓存缺失（冷启动未浏览过作者页） | 发出裸参数请求，服务端大概率拒绝或返回错误码 | **待补充**：可对齐 following/favorite 的做法在缓存缺失时显式回 `NO_SIGNATURE` 引导用户先浏览页面 |
-| 双层超时（Tab） | sendToTab 先 TIMEOUT 并补发 CANCEL_ACTIVE_TASK | content 60s 兜底仅在 background 未及时应答时生效 |
+| 双层超时（Tab） | tabBridge.send 先 TIMEOUT 并补发 CANCEL_ACTIVE_TASK | content 60s 兜底仅在 background 未及时应答时生效 |
 | 无限递归保护 | — | 依赖 `sidebarLoading` 标志 + `hasMore=false` 终止；cursor 不前进的服务端异常响应会自然停摆（待补充：可加连续空页熔断） |
 
 ## 配置项说明
@@ -160,11 +161,11 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | `config.SIDEBAR_SCROLL_THRESHOLD`（options/core.js） | 100px | 触发加载的距底阈值 |
 | `runtimeConfig.timeoutRequest` | 30000ms | 独立模式单请求超时；Tab模式 msg.timeout 同源 |
 | `inject CONFIG.TIMEOUT.FETCH_PAGE` | 15000ms | Tab模式 inject 侧 fetch 超时 |
-| content BRIDGE FETCH_WORKS_PAGE timeout | 60000ms 固定 | 事件桥兜底超时 |
+| content BRIDGE FETCH_WORKS_PAGE timeout | 60000ms 固定 | 仅用于摘除内容侧结果监听器；背景 30s 超时决定响应无效，不承担请求超时 |
 
 ## 衍生长任务：作者作品批量入库（IMPORT_USER_WORKS）
 
-> 同端点的循环形态：菜单「入库」弹窗（options `AuthorImport`）触发，把**任意作者**（不要求在关注域）的全部作品分页批量落库作品域。双模循环壳抽为共用模块 `tasks/author-works-import.js` 的 `runAuthorWorksImport(secUid, fetchPage, sendResponse)`——去重/落库/进度/取消守卫/收尾全在壳内，两个任务类只注入各自取页器：Tab 模式 `scanTasks.importUserWorks` 经 `tabBridge.sendAsync` 取页；独立模式 `independentTasks.importUserWorks` 直连 `API.POST` 取页（取页器内抛错即记入 `lastError`）。
+> 同端点的循环形态：菜单「工具」弹窗（options `AuthorImport`）触发，把**任意作者**（不要求在关注域）的全部作品分页批量落库作品域。双模循环壳抽为共用模块 `tasks/author-works-import.js` 的 `runAuthorWorksImport(secUid, fetchPage, sendResponse)`——去重/落库/进度/取消守卫/收尾全在壳内，两个任务类只注入各自取页器：Tab 模式 `scanTasks.importUserWorks` 经 `tabBridge.sendAsync` 取页；独立模式 `independentTasks.importUserWorks` 直连 `API.POST` 取页（取页器内抛错即记入 `lastError`）。
 
 ### 与收藏扫描（#paginate）的结构差异
 
@@ -191,13 +192,13 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 
 | 消息 | 语义 | 实现位置 |
 |------|------|----------|
-| `IMPORT_FOLLOWING { secUid }` | profile/other 单请求收录作者档案入关注域；`formatFollowingFromProfile` + `#fetchLatestWorkTime` 补 lastUpdateAt；`mergeAndSaveFollowings` 非 import 分支（已在域保组/新作者落未分组） | `scanTasks.importFollowing`（双模分支内联，与 `calibrateOne` 共用 `#fetchProfileUser`） |
+| `IMPORT_CANDIDATE { secUid }` | profile/other 单请求收录作者档案入候选域；`formatAuthorFromProfile` + `#fetchLatestWorkTime` 补 lastUpdateAt；`mergeAndSaveAuthors` 非 import 分支（已在域保组/新作者落未分组）；响应回传 `candidate`、`added`（0=作者已存在）与 `groupName`（落库 groupId 解析的分组名，toast 提示所在组） | `scanTasks.importCandidate`（双模分支内联，与 `calibrateOne` 共用 `#fetchProfileUser`） |
 
 ## 相关文档
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | formatWork 字段模型；sendToTab/requestResponse 协议 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | formatWork 字段模型；tabBridge.send/requestResponse 协议 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 骨架与三级取链（formatWork 与 inject extractVideo 双实现约束） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3（独立模式 GET 头改写） |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | fetchAuthorWorks 所在的签名复用体系与 `_dyInternal` 保护 |
