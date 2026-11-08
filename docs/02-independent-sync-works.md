@@ -6,7 +6,7 @@
 
 同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口唯一：`sync.syncCurrentGroup()`（当前分组全量刷新，经 `syncAwemeIds` → `startSync` 发出；详情页直链失效走 `FETCH_DETAIL`/`FETCH_WORK_DETAIL` 族，不经本消息）。background 按 `independentClient.loadMode()` 分流到 `independentTasks.syncWorks`。该 handler：
 
-- 先**立即 ack** `{ ok, true, requestId, total }`（长任务协议：结果经进度消息异步回报）；
+- 先**立即 ack** `{ ok: true, requestId, total }`（长任务协议：结果经进度消息异步回报）；
 - 循环逐条 `independentClient.request(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，a_bogus + webSign，后者由 request 默认叠加）；
 - 每条经 `formatWork` 归一化后暂存，全部完成后一次性 `domainStore.mergeAndSave(allWorks)` 落库；
 - 失败条目记入 errors 不中断批次。
@@ -71,8 +71,8 @@ async function independentTasks.syncWorks(awemeIds, sendResponse)
 // 出参（ack）：{ ok: true, requestId: string, total: number }
 // 进度：SYNC_PROGRESS*N → SYNC_DONE
 
-credentials.credentials.ensureABogus()          // background/identity/credentials.js：读 browserFeatures → new ABogus(ua, platform, features)
-credentials.credentials.buildBaseParams(extra)  // background/identity/credentials.js：环境参数全集（见下），返回普通对象供 URLSearchParams 序列化
+credentials.ensureABogus()          // background/identity/credentials.js：读 browserFeatures → new ABogus(ua, platform, features)
+credentials.buildBaseParams(extra)  // background/identity/credentials.js：环境参数全集（见下），返回普通对象供 URLSearchParams 序列化
 independentClient.request(apiPath, params, options?) -> Promise<object>  // background/identity/independent-client.js，见通用请求骨架
 formatters.formatWork(aw) -> Work|null   // background/core.js：无 aweme_id 返回 null
 domainStore.mergeAndSave(domain, works) -> Promise<{ added, updated, changed, total, written, addedIds }>
@@ -86,8 +86,9 @@ async function independentClient.request(apiPath, params, options = {}) {
   const { savedCookie } = await chrome.storage.local.get("savedCookie");
   if (!savedCookie) throw new Error("NO_COOKIE");           // 门禁：必须已有 cookie 快照
   params.msToken = await credentials.getMsToken();
+  const method = options.method || "GET";
   const qs = new URLSearchParams(params).toString();        // qs 即最终查询串（不含 a_bogus），键序即发送序
-  const a_bogus = credentials.sign(qs, method, await credentials.credentials.getClockSkew());
+  const a_bogus = credentials.sign(qs, method, await credentials.getClockSkew());
   let urlQuery = qs + "&a_bogus=" + a_bogus;
   // webSign 默认开启（options.webSign !== false）：追加 timestamp + x-secsdk-web-signature（算法见 05）
   // … fetch(url, { credentials:"include", referrer, UA=abOgus.userAgent, signal }) …
@@ -286,7 +287,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、五域存储模型、FATAL_ERRORS 分类 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、六域存储模型、FATAL_ERRORS 分类 |
 | 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / domainStore.mergeAndSave 的合并语义（本册只讲调用时序） |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentClient.request 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |

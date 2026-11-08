@@ -10,7 +10,7 @@
 
 ```
 options Sidebar 滚动近底
-  → 守卫：sidebarLoading || !sidebarCursor || !currentFollowingSecUid → 直接返回
+  → 守卫：sidebarLoading || !sidebarCursor || !state.currentAuthorSecUid → 直接返回
   → bgMsg({ type:"FETCH_WORKS_PAGE", secUid, cursor })
     → background switch "FETCH_WORKS_PAGE" → independentClient.loadMode()
         ├─ true：independentTasks.fetchWorksPage(secUid, cursor, sendResponse)

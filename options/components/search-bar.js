@@ -1,14 +1,19 @@
 // ---------- SearchBar ----------
-import { config, dom, state, services } from '../core.js';
-import { followingsGrid, candidatesGrid } from '../grids/author-grid.js';
-import { worksGrid, favoritesGrid, collectionsGrid } from '../grids/works-grid.js';
+import { config, dom, state, services, utils } from '../core.js';
+import { authorKeyOf } from "../../shared/author-sort.js";
+import { followingsGrid, candidatesGrid, reviewAuthorsGrid } from '../grids/author-grid.js';
+import { worksGrid, favoritesGrid, collectionsGrid, reviewWorksGrid } from '../grids/works-grid.js';
 import { batch } from '../data/batch.js';
+import { SelectMenu } from './select-menu.js';
 
 // ---------- 检索：搜索/排序 ----------
 // 数据层过滤（见 docs/11）：state.works/followings 保持全量，
 // 网格与 Detail 统一从视图函数取列表；VirtualGrid 按 id 解析点击，不受过滤影响。
 // 视图函数返回共享缓存数组（三段流水线见 #viewCache），调用方一律只读——不得原地
 // sort/reverse/push 返回数组，需要变更序自行拷贝
+
+// 纯数字关键词额外参与 UID 匹配；昵称匹配始终生效（纯数字昵称不得被漏掉）
+const UID_QUERY_RE = /^\d+$/;
 
 // ---------- 归一化字段侧表 ----------
 // 记录对象 → 小写匹配字段惰性缓存：关键词过滤每遍对每条记录做 toLowerCase 的成本
@@ -20,10 +25,9 @@ function lcFields(w) {
   let m = lcMemo.get(w);
   if (!m) {
     m = {
-      desc: (w.desc || "").toLowerCase(),
       nick: (w.nickname || "").toLowerCase(),
       uidLc: w.uid == null ? "" : String(w.uid).toLowerCase(),
-      ak: w.uid || w.nickname || "", // 作者簇键（authorCount 排序口径，与 rank Map 同源）
+      ak: authorKeyOf(w), // 作者簇键（authorCount 排序口径，与 rank Map / 后台视图同源）
     };
     lcMemo.set(w, m);
   }
@@ -33,7 +37,6 @@ function lcFields(w) {
 class SearchBar {
   #searchState = {
     keyword: "",
-    scope: "author", // author 作者昵称(默认) | title 标题(仅作品型三域) | id 作者UID精确（关注域=uid子串）
     sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品型三域）
     followingsSort: "works", // works 作品数 | update 最近更新（仅关注域）
     workType: "all", // 作品类型（仅作品型三域）：all 全部 | video 视频 | note 图集
@@ -58,14 +61,21 @@ class SearchBar {
   // 判据不会漂移；域/分组切换必经数据重载（dataVersion 自增 → 数组重建），不存在
   // 「DOM 已被清场但数组恒等」的假跳过
   #lastRenderedView = null;
+  // authorCount 写入/切离时由 main.js 注入的整域重载入口（避免 SearchBar 反向依赖 app-shell）
+  #reloadHandler = null;
+  // 四个自绘下拉的统一控制器（键盘/ARIA/开合/选中；DOM 结构由 options.html 提供）
+  #selects = null;
 
   constructor() {
+    this.#selects = this.#buildSelects();
     this.#bindEvents();
+    this.syncPagingState();
   }
 
-  // 作品型三域（works/favorites/collections）共用作品视图；followings 独立
+  // 作品型三域（works/favorites/collections）与回顾域作品批次共用作品视图；
+  // 回顾域作者批次走作者视图
   #isWorkRecordDomain() {
-    return config.WORK_RECORD_DOMAINS.includes(state.domain);
+    return utils.isWorkRecordDomain();
   }
 
   // ---------- 数据层：过滤与排序视图 ----------
@@ -80,18 +90,84 @@ class SearchBar {
       : this.#searchState.followingsSort !== "works";
   }
 
-  // 取数方向：升序「保存时间(升)」需从最旧一端分页（loadDomainData 的方向参数）。
-  // 仅作品型三域的 saved 排序键可对齐；作者数排序页序由全库 rank 决定，方向无意义
+  // 当前分页模式：saved 走 keyset（ascending 仅保存时间升序）；authorCount 走后台
+  // 作者视图游标（方向翻转作者簇，不翻转簇内）。review 域不参与 authorCount 分页
+  fetchPagingMode() {
+    if (!config.AUTHOR_COUNT_PAGING || !config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+      return { sort: "saved", direction: "desc", ascending: false };
+    }
+    if (this.#searchState.sort === "authorCount") {
+      return { sort: "authorCount", direction: this.#searchState.reverse ? "asc" : "desc", ascending: false };
+    }
+    return { sort: "saved", direction: "desc", ascending: this.#searchState.reverse };
+  }
+
+  // 降级专用：搜索栏仍显示“作品数”，但分页按 saved 拉取（AUTHOR_VIEW_INCOMPLETE）
+  fetchSavedPaging() {
+    return { sort: "saved", direction: "desc", ascending: this.#searchState.reverse };
+  }
+
+  syncPagingState() {
+    state.pagingMode = this.fetchPagingMode();
+  }
+
+  // 取数方向：升序「保存时间(升)」需从最旧一端分页（loadDomainData 的方向参数）
   fetchAscending() {
-    return this.#isWorkRecordDomain() && this.#searchState.sort === "saved" && this.#searchState.reverse;
+    return this.fetchPagingMode().ascending;
   }
 
   // 页序是否与当前视图序单调一致（可逐页按视图下标续填，无需完成态整渲）：
-  // saved 排序键天然可按取数方向对齐；作者数排序的 rank 依赖全量数据，一律不可对齐。
-  // 取数方向须与当前视图方向一致——加载中途切排序/逆序会失配，交回静默累积 + 完成整渲
-  isPageAligned(ascending) {
-    if (!this.#isWorkRecordDomain() || this.#searchState.sort !== "saved") return false;
-    return Boolean(ascending) === this.#searchState.reverse;
+  // saved 按 ascending 与 reverse 对齐；authorCount 要求 trusted 视图 + 方向一致。
+  // 任一失配 → 静默累积 + 完成态整渲兜底
+  isPageAligned(event) {
+    if (!this.#isWorkRecordDomain()) return false;
+    if (this.#searchState.sort === "authorCount") {
+      return (
+        event?.mode === "authorCount" &&
+        event.direction === state.pagingMode.direction &&
+        this.#isAuthorOrderTrusted()
+      );
+    }
+    return event?.mode === "saved" && Boolean(event.ascending) === this.#searchState.reverse;
+  }
+
+  // authorCount 是否处于可信视图态（batch / detail 据此判断走本地收口还是整域重载）
+  isAuthorOrderActive() {
+    return state.pagingMode.sort === "authorCount" && Boolean(state.authorViewOrder);
+  }
+
+  #isAuthorOrderTrusted() {
+    const order = state.authorViewOrder;
+    return Boolean(
+      state.pagingMode.sort === "authorCount" &&
+        this.#searchState.sort === "authorCount" &&
+        order &&
+        order.domain === state.domain &&
+        order.groupId === state.currentGroupId &&
+        order.direction === state.pagingMode.direction,
+    );
+  }
+
+  // authorCount 完整视图下是否允许本地增量摘卡：当前 trusted 视图的所有作者页均已到达、
+  // 且不在分页加载中。任一不满足都必须整域重载校准（在途游标与本地顺序不可混用）。
+  // 顺序刻意保持稳定（不立即重排），显式切排序/分组/域时由后台作者视图恢复严格序
+  isAuthorViewPatchable() {
+    const order = state.authorViewOrder;
+    return Boolean(
+      this.#isAuthorOrderTrusted() &&
+        order.complete === true &&
+        !services.isGridLoading(),
+    );
+  }
+
+  setReloadHandler(fn) {
+    this.#reloadHandler = typeof fn === "function" ? fn : null;
+  }
+
+  reloadForPageOrder(options) {
+    if (this.#reloadHandler) return this.#reloadHandler(options);
+    this.refreshGridView(true);
+    return undefined;
   }
 
   // 页级过滤（对齐模式逐页续填用）：只做关键词/类型过滤、保持页内顺序；无筛选返回原数组。
@@ -110,7 +186,22 @@ class SearchBar {
     const source = state[state.domain]; // 作品型三域：数据源即当前域数组
     const kw = s.keyword.trim().toLowerCase();
     const c = this.#viewCache;
-    const baseKey = `${state.domain}|${state.dataVersion}|${kw}|${s.scope}|${s.workType}`;
+    // authorCount trusted：items 已是后台权威视图序，只做关键词/类型过滤，
+    // 跳过 rank、排序与 reverse 翻转（方向已由后台作者簇顺序表达）
+    if (this.#isAuthorOrderTrusted()) {
+      const items = state.authorViewOrder.items;
+      const baseKey = `authorCount|${state.domain}|${state.currentGroupId}|${state.authorViewOrder.direction}|${state.dataVersion}|${kw}|${s.workType}`;
+      if (c.baseKey !== baseKey) {
+        const needsFilter = Boolean(kw) || s.workType !== "all";
+        c.base = needsFilter ? this.#filterWorkRecord(items, kw) : items;
+        c.baseKey = baseKey;
+        c.baseSource = items;
+        c.sortKey = baseKey;
+        c.viewKey = baseKey;
+      }
+      return c.base;
+    }
+    const baseKey = `${state.domain}|${state.dataVersion}|${kw}|${s.workType}`;
     if (c.baseKey !== baseKey || c.baseSource !== source) {
       c.base = this.#filterWorkRecord(source, kw);
       c.baseKey = baseKey;
@@ -136,8 +227,8 @@ class SearchBar {
     return c.view;
   }
 
-  // base 段：关键词 + 类型两层过滤（匹配字段走 lcFields 惰性缓存；各范围匹配
-  // 字段与口径见 #searchState.scope 注释，行为与搜索栏提示文案严格对齐）
+  // base 段：关键词 + 类型两层过滤（匹配字段走 lcFields 惰性缓存；昵称子串始终
+  // 参与，纯数字关键词额外按作者 uid 匹配，行为与搜索栏提示文案严格对齐）
   #filterWorkRecord(source, kw) {
     const s = this.#searchState;
     let list = source;
@@ -152,24 +243,11 @@ class SearchBar {
   #matchWorkRecord(w, kw) {
     const s = this.#searchState;
     if (kw) {
-      // 关键词按「范围」取匹配字段（见 docs/11）
+      // 昵称子串匹配始终生效（纯数字昵称同样可搜）；纯数字关键词额外按作者 UID
+      // 精确匹配（uid 约 19 位纯数字；作品 awemeId 不参与任何关键词匹配）
       const m = lcFields(w);
-      switch (s.scope) {
-        case "author":
-          // 昵称子串匹配；UID 查找归「ID」范围（2026-10-14 起行为严格对齐提示文案）
-          if (!m.nick.includes(kw)) return false;
-          break;
-        case "title":
-          if (!m.desc.includes(kw)) return false;
-          break;
-        case "id":
-          // 作者 UID 精确（uid 约 19 位纯数字，子串匹配会让任意数字关键词大面积误命中）；
-          // 作品 awemeId 不参与任何关键词匹配
-          if (m.uidLc !== kw) return false;
-          break;
-        default:
-          return false; // 未知范围：按旧实现（switch 无命中返回 undefined）不匹配
-      }
+      const nickHit = m.nick.includes(kw);
+      if (!nickHit && !(UID_QUERY_RE.test(kw) && m.uidLc === kw)) return false;
     }
     if (this.#isWorkRecordDomain() && s.workType !== "all") {
       // 类型下拉（全部/视频/图集，默认全部）：formatWork 保证 type 只有两值
@@ -191,13 +269,41 @@ class SearchBar {
     // 重复字符串拼接与 Map 查找（万级列表排序的主要开销）
     const dec = base.map((w) => {
       const m = lcFields(w);
-      return { w, r: rank.get(m.ak) ?? 0, t: w.createTime || 0 };
+      return {
+        w,
+        r: rank.get(m.ak) ?? 0,
+        t: Number(w.createTime) || 0,
+        sa: Number(w.savedAt) || 0,
+        id: String(w.awemeId ?? ""),
+      };
     });
-    dec.sort((a, b) => (reverse ? b.r - a.r : a.r - b.r) || b.t - a.t);
+    dec.sort(
+      (a, b) =>
+        (reverse ? b.r - a.r : a.r - b.r) ||
+        b.t - a.t ||
+        b.sa - a.sa ||
+        (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+    );
     return dec.map((d) => d.w);
   }
 
   #authorRank(source) {
+    // authorCount page0 的全组 counts 是权威口径；本地 fallback 时优先用它，避免
+    // 只加载到部分页时 rank 缺失/低估导致作者簇位置漂移
+    const order = state.authorViewOrder;
+    if (
+      order &&
+      order.domain === state.domain &&
+      order.groupId === state.currentGroupId &&
+      order.counts &&
+      order.counts.size > 0
+    ) {
+      return new Map(
+        [...order.counts.entries()]
+          .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+          .map(([key], i) => [key, i]),
+      );
+    }
     // 失效判据 = dataVersion 且 source 引用（原地追加变更引用不变，dataVersion 是唯一可靠信号）
     if (this.#rankCache.version === state.dataVersion && this.#rankCache.source === source) {
       return this.#rankCache.rank;
@@ -221,20 +327,14 @@ class SearchBar {
     const source = state[domain];
     const kw = s.keyword.trim().toLowerCase();
     const c = this.#viewCache;
-    const baseKey = `author|${domain}|${state.dataVersion}|${kw}|${s.scope}`;
+    const baseKey = `author|${domain}|${state.dataVersion}|${kw}`;
     if (c.baseKey !== baseKey || c.baseSource !== source) {
-      // 作者域无标题维度：title 范围（域切换残留）按昵称处理。
       // 无关键词也须拷贝后再排序，不得原地改动 state[domain]
       c.base = kw
         ? source.filter((f) => {
             const m = lcFields(f);
-            switch (s.scope) {
-              case "author":
-              case "title":
-                return m.nick.includes(kw);
-              case "id":
-                return m.uidLc.includes(kw);
-            }
+            // 昵称子串始终参与；纯数字关键词额外按 uid 子串（作者域无作品 ID 维度）
+            return m.nick.includes(kw) || (UID_QUERY_RE.test(kw) && m.uidLc.includes(kw));
           })
         : [...source];
       c.baseKey = baseKey;
@@ -261,31 +361,29 @@ class SearchBar {
   }
 
   // ---------- UI 同步 ----------
-  // 域切换后搜索栏的域相关联动：筛选组显隐（作品型 vs 关注域各有排序维度）/范围文案/占位符/下拉选中
+  // 域切换后搜索栏的域相关联动：筛选组显隐（作品型 vs 关注域各有排序维度）/占位符/下拉选中
   syncForDomain() {
     const isWorkRecord = this.#isWorkRecordDomain();
     dom.sbWorkFilters.classList.toggle("hidden", !isWorkRecord);
     dom.sbFollowFilters.classList.toggle("hidden", isWorkRecord);
-    this.syncScopeUIForDomain();
-    this.#updateSearchPlaceholder();
     this.syncFilterUI();
     this.syncCount();
   }
 
-  // store.on("domain") 的搜索栏联动入口：搜索栏展开期间才同步域差异
+  // store.on("domain") 的搜索栏联动入口：搜索框常驻，域切换后必须同步域差异
   onDomainChanged() {
-    if (this.#isSearchBarOpen()) this.syncForDomain();
+    this.syncForDomain();
   }
 
   // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数。
   // 视图全程只计算一次，同一结果贯穿渲染与计数（历史实现经 renderCards/syncCount 各算
   // 一遍，大库下重复付出整段过滤+排序成本）；结果数组与上次实际渲染恒等时跳过重渲
   // （切了不改变结果集的筛选、重复点击同段），只刷新计数。
-  // resetScroll：用户重定义结果集（排序/关键词/范围/类型/逆序/清除）时传 true——
+  // resetScroll：用户重定义结果集（排序/关键词/类型/逆序/清除）时传 true——
   // 重渲后显式回顶。尾部占位（#syncTailReserve）使「wipe clamp 天然回顶」失效（重渲任务内
   // 总高即恢复终值、旧偏移合法存留），不显式归零会表现为「跟随锚点」停在深处
   refreshGridView(resetScroll = false) {
-    // 锚点属旧视图：用户重定义结果集（排序/关键词/范围/类型/逆序/清除）且视图确已变化时，
+    // 锚点属旧视图：用户重定义结果集（排序/关键词/类型/逆序/清除）且视图确已变化时，
     // 选区与 Shift 锚点一并作废（批量模式保留）——重排后旧选区会散落到视口/挂载窗口外
     // 不可见却仍参与批量移动/删除；锚点同理且位置不可见，保留会让重排后的首次 Shift
     // 点击跨到任意位置、圈出大段区间（2026-10-29 定案，见 docs/11「Shift 连选」）。
@@ -303,34 +401,30 @@ class SearchBar {
     this.syncCount(view.length);
   }
 
-  // 结果数 K/N：K 为当前过滤视图条数，N 为当前域全量条数。
+  // 结果数 K：当前过滤视图条数。N 不再展示——分组按钮（全部/当前组）已给出总量。
   // count 可由调用方注入（refreshGridView 已持有视图）；缺省经视图函数取（内部有阶段缓存）。
-  // 加载期 N 取后台权威总量 state.gridTotal（作品型三域 = page:0 total，作者域 = 全量长度），
-  // K 随页增长而 N 恒定——避免「首页到达前显示旧缓存数字、到达后又被打成已加载 600」的
-  // 4969/4969 → 600/600 突变。切域/切组后首屏未到的空窗（gridPending）K 恒 0、N 取
-  // state.gridTotals 缓存（与分组 tab 同源）→ 显示 0/Total；无缓存才显示占位「…」。
-  // 加载完成后 N 回落为已加载条数（此时等于 total，新增/删除即时反映）
+  // 切域/切组后首屏未到的空窗（gridPending）K 恒 0：有同源分组缓存时显示 0，
+  // 无缓存才显示占位「…」；首页到达后随各刷新路径更新
   syncCount(count) {
     const gt = state.gridTotal;
     const match = gt && gt.domain === state.domain && gt.groupId === state.currentGroupId;
     if (state.gridPending) {
-      // 网格已清场、首屏数据未到：K 恒 0（不读旧缓存视图）；N 用已知权威总量
-      dom.sbCount.textContent = match ? `0/${gt.total}` : "…";
+      dom.sbCount.textContent = match ? "0" : "…";
       return;
     }
     if (count === undefined) {
       count = this.#isWorkRecordDomain() ? this.getWorksView().length : this.getAuthorRecordsView().length;
     }
-    const total = services.isGridLoading() && match ? gt.total : state[state.domain].length;
-    dom.sbCount.textContent = `${count}/${total}`;
+    dom.sbCount.textContent = String(count);
   }
 
-  // 五域 → 网格实例统一映射（AppShell 右栏折叠与 Batch 等按域取网格共用）
+  // 各域 → 网格实例统一映射（AppShell / Batch 等按域取网格共用）
   gridForDomain(domain = state.domain) {
     if (domain === "followings") return followingsGrid;
     if (domain === "candidates") return candidatesGrid;
     if (domain === "favorites") return favoritesGrid;
     if (domain === "collections") return collectionsGrid;
+    if (domain === "review") return state.reviewKind === "authors" ? reviewAuthorsGrid : reviewWorksGrid;
     return worksGrid;
   }
 
@@ -340,77 +434,24 @@ class SearchBar {
   }
 
   syncFilterUI() {
-    // 下拉（范围/类型/作品排序/作者域排序同构）：值文案随激活项，菜单项高亮主题红
-    this.#syncSelectUI(dom.sbScope, "data-scope", this.#searchState.scope, "作者");
-    this.#syncSelectUI(dom.sbType, "data-type", this.#searchState.workType, "全部");
+    // 下拉（类型/作品排序/作者域排序同构）：值文案随激活项，菜单项白字 + 红色 ✓
+    this.#selects.type.sync(this.#searchState.workType, "全部");
     // 排序下拉：排序键与方向合并为单值（key-desc / key-asc），两域各自一套 token
     const dir = this.#searchState.reverse ? "asc" : "desc";
-    this.#syncSelectUI(dom.sbSort, "data-sort", `${this.#searchState.sort}-${dir}`, "保存时间(降)");
-    this.#syncSelectUI(dom.sbFollowSort, "data-fsort", `${this.#searchState.followingsSort}-${dir}`, "作品数(降)");
-  }
-
-  #syncSelectUI(el, attr, value, fallback) {
-    const opt = el.querySelector(`.sb-scope-option[${attr}="${value}"]`);
-    el.querySelector(".sb-scope-value").textContent = opt ? opt.textContent : fallback;
-    el.querySelectorAll(".sb-scope-option").forEach((btn) => {
-      btn.classList.toggle("active", btn.getAttribute(attr) === value);
-    });
-  }
-
-  // 范围段的域差异：「标题」仅作品型三域；关注域下「作者」按钮文案为「昵称」，残留 title 范围回退「作者」
-  syncScopeUIForDomain() {
-    const isWorkRecord = this.#isWorkRecordDomain();
-    dom.sbScopeTitle.classList.toggle("hidden", !isWorkRecord);
-    dom.sbScopeAuthor.textContent = isWorkRecord ? "作者" : "昵称";
-    if (!isWorkRecord && this.#searchState.scope === "title") this.#searchState.scope = "author";
-  }
-
-  #updateSearchPlaceholder() {
-    const placeholders = this.#isWorkRecordDomain()
-      ? { author: "输入作者昵称", title: "输入作品标题文案", id: "输入作者 UID" }
-      : { author: "输入昵称", title: "输入昵称", id: "输入 UID" };
-    dom.searchInput.placeholder = placeholders[this.#searchState.scope];
-  }
-
-  #isSearchBarOpen() {
-    return !dom.searchBar.classList.contains("hidden");
-  }
-
-  #closeSelectMenu(el) {
-    el.querySelector(".sb-scope-menu").classList.add("hidden");
+    this.#selects.sort.sync(`${this.#searchState.sort}-${dir}`, "保存时间(降)");
+    this.#selects.followSort.sync(`${this.#searchState.followingsSort}-${dir}`, "作品数(降)");
   }
 
   #closeAllSelectMenus() {
-    for (const el of [dom.sbScope, dom.sbType, dom.sbSort, dom.sbFollowSort]) this.#closeSelectMenu(el);
+    for (const select of Object.values(this.#selects)) select.close();
   }
 
-  // ---------- 展开 / 收起 ----------
-  // 展开入口唯一（toggleSearchBar 的收起态分支）：展开即回填已应用关键词，任何展开路径
-  // 均不自动聚焦输入框（2026-10-28 定案；仅用户点击输入框才获得焦点）
-  openSearchBar() {
-    dom.searchBar.classList.remove("hidden");
-    this.syncForDomain();
-    dom.searchInput.value = this.#searchState.keyword;
-  }
-
-  // 搜索态全量重置但栏位保持展开（域切换用：重置筛选 + 收起下拉菜单，不隐藏搜索栏）。
+  // ---------- 重置 ----------
+  // 搜索态全量重置（域切换用：重置筛选 + 收起下拉菜单）；搜索框常驻，不存在收起态。
   // refresh=false 时重置不做重渲——网格随域切换即清场重载
   resetSearchState(refresh = true) {
     this.clearSearchFilters(refresh);
     this.#closeAllSelectMenus();
-  }
-
-  closeSearchBar({ refresh = true } = {}) {
-    if (!this.#isSearchBarOpen()) return;
-    // 收起即重置：搜索栏内的关键词/排序/下拉筛选等改动一律不保留，
-    // 网格恢复全量，下次展开从默认初始状态开始
-    this.resetSearchState(refresh);
-    dom.searchBar.classList.add("hidden");
-  }
-
-  toggleSearchBar() {
-    if (this.#isSearchBarOpen()) this.closeSearchBar();
-    else this.openSearchBar();
   }
 
   // 显式搜索：输入不即时响应，回车（IME 组合中让位）或点击 🔍 才实施
@@ -421,7 +462,7 @@ class SearchBar {
     this.refreshGridView(true);
   }
 
-  // ✕ 按钮：仅清除搜索输入文本（去掉关键词过滤），其余筛选（范围/排序/类型）就地保留
+  // ✕ 按钮：仅清除搜索输入文本（去掉关键词过滤），其余筛选（排序/类型）就地保留
   clearSearchInput() {
     dom.searchInput.value = "";
     if (!this.#searchState.keyword) return; // 无关键词：无过滤可去，无需重渲
@@ -435,17 +476,74 @@ class SearchBar {
     // 视图的最新内容；此时若仍刷新，只会因视图缓存随 dataVersion 重建、数组身份失配而
     // 白闪一次（wipe + cap 1500 重挂，视口封面清空再回填）。判据须在重置状态前捕获
     const wasActive = this.isFilterActive();
+    const wasAuthorCount = this.#searchState.sort === "authorCount";
     this.#searchState.keyword = "";
-    this.#searchState.scope = "author";
     this.#searchState.sort = "saved";
     this.#searchState.followingsSort = "works";
     this.#searchState.workType = "all";
     this.#searchState.reverse = false;
     dom.searchInput.value = "";
-    this.syncScopeUIForDomain();
-    this.#updateSearchPlaceholder();
     this.syncFilterUI();
-    if (wasActive && refresh) this.refreshGridView(true);
+    this.syncPagingState();
+    if (wasAuthorCount) state.authorViewOrder = null;
+    if (wasActive && refresh) {
+      // 离开 authorCount 且加载未完成：旧载页序与新 pagingMode 混合，整域重载；
+      // 其余场景 state[domain] 已是 savedAt 序，本地重排即可
+      if (wasAuthorCount && services.isGridLoading()) this.reloadForPageOrder();
+      else this.refreshGridView(true);
+    }
+  }
+
+  // ---------- 下拉控制器 ----------
+  // 三个下拉的差异只在「选中后写哪个状态」，开合/键盘/ARIA 统一由 SelectMenu 承担
+  #buildSelects() {
+    return {
+      type: new SelectMenu(
+        dom.sbType,
+        (opt) => {
+          this.#searchState.workType = opt.dataset.type;
+          this.syncFilterUI();
+          this.refreshGridView(true);
+        },
+        { optionAttr: "data-type" },
+      ),
+      sort: new SelectMenu(
+        dom.sbSort,
+        (opt) => {
+          const raw = opt.dataset.sort;
+          const sep = raw.lastIndexOf("-");
+          const prevSort = this.#searchState.sort;
+          this.#searchState.sort = raw.slice(0, sep);
+          this.#searchState.reverse = raw.slice(sep + 1) === "asc";
+          this.syncFilterUI();
+          this.syncPagingState();
+          // 进入/离开 authorCount 或加载中途切排序：旧页序与新视图口径不一致，整域重载；
+          // 其余本地可重排（authorCount → saved 时 state[domain] 已是 savedAt 序）
+          if (
+            this.#searchState.sort === "authorCount" ||
+            prevSort === "authorCount" ||
+            services.isGridLoading()
+          ) {
+            this.reloadForPageOrder();
+          } else {
+            this.refreshGridView(true);
+          }
+        },
+        { optionAttr: "data-sort" },
+      ),
+      followSort: new SelectMenu(
+        dom.sbFollowSort,
+        (opt) => {
+          const raw = opt.dataset.fsort;
+          const sep = raw.lastIndexOf("-");
+          this.#searchState.followingsSort = raw.slice(0, sep);
+          this.#searchState.reverse = raw.slice(sep + 1) === "asc";
+          this.syncFilterUI();
+          this.refreshGridView(true);
+        },
+        { optionAttr: "data-fsort" },
+      ),
+    };
   }
 
   // ---------- 事件绑定 ----------
@@ -456,62 +554,7 @@ class SearchBar {
       this.applySearchInput();
     });
     dom.btnSearchGo.addEventListener("click", () => this.applySearchInput());
-    // 自绘下拉（范围/类型/排序同构）：控件点击开合、选项点击应用；点击栏外收起。
-    // Esc 仅在菜单已开时拦截并 stopPropagation——将 Esc 留给菜单自身收起、不再冒泡
-    // 到 main.js 的弹窗关闭单点收口（搜索栏现由 S 键开关，Esc 不再关搜索栏）
-    this.#bindSelectMenu(dom.sbScope, (opt) => {
-      this.#searchState.scope = opt.dataset.scope;
-      this.syncFilterUI();
-      this.#updateSearchPlaceholder();
-      this.refreshGridView(true);
-    });
-    this.#bindSelectMenu(dom.sbType, (opt) => {
-      this.#searchState.workType = opt.dataset.type;
-      this.syncFilterUI();
-      this.refreshGridView(true);
-    });
-    document.addEventListener("click", (e) => {
-      for (const el of [dom.sbScope, dom.sbType, dom.sbSort, dom.sbFollowSort]) {
-        if (!el.contains(e.target)) this.#closeSelectMenu(el);
-      }
-    });
-    this.#bindSelectMenu(dom.sbSort, (opt) => {
-      const raw = opt.dataset.sort;
-      const sep = raw.lastIndexOf("-");
-      this.#searchState.sort = raw.slice(0, sep);
-      this.#searchState.reverse = raw.slice(sep + 1) === "asc";
-      this.syncFilterUI();
-      this.refreshGridView(true);
-    });
-    this.#bindSelectMenu(dom.sbFollowSort, (opt) => {
-      const raw = opt.dataset.fsort;
-      const sep = raw.lastIndexOf("-");
-      this.#searchState.followingsSort = raw.slice(0, sep);
-      this.#searchState.reverse = raw.slice(sep + 1) === "asc";
-      this.syncFilterUI();
-      this.refreshGridView(true);
-    });
     dom.btnClearInBar.addEventListener("click", () => this.clearSearchInput());
-    dom.btnSearchMenu.addEventListener("click", () => this.toggleSearchBar());
-  }
-
-  #bindSelectMenu(el, onSelect) {
-    el.addEventListener("click", (e) => {
-      const opt = e.target.closest(".sb-scope-option");
-      if (opt) {
-        onSelect(opt);
-        this.#closeSelectMenu(el);
-        return;
-      }
-      el.querySelector(".sb-scope-menu").classList.toggle("hidden");
-    });
-    el.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape") return;
-      if (!el.querySelector(".sb-scope-menu").classList.contains("hidden")) {
-        e.stopPropagation();
-        this.#closeSelectMenu(el);
-      }
-    });
   }
 }
 

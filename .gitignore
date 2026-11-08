@@ -18,6 +18,4 @@ tests/
 .cursor/
 .windsurf/
 .zed/
-like_test/
 *tmp*/
-test/

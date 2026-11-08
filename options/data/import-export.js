@@ -3,6 +3,7 @@ import { config, dom, state, store, services } from '../core.js';
 import { dialog } from '../components/dialog.js';
 import { search } from '../components/search-bar.js';
 import { groups } from './groups.js';
+import { appShell } from '../components/app-shell.js';
 
 // ---------- ImportExport ----------
 // 数据维护弹窗（菜单「维护」）：五域导出/导入/重置三列聚合于一处，不随当前域自适应，
@@ -19,6 +20,8 @@ class ImportExport {
     const importCol = body.querySelector("#ioImportCol");
     const resetCol = body.querySelector("#ioResetCol");
     for (const [domain, meta] of Object.entries(config.DOMAINS_META)) {
+      // 回顾域只持久化批次引用，不参与导出/导入/重置
+      if (meta.canImportExport === false) continue;
       const exportBtn = document.createElement("button");
       exportBtn.className = "dy-btn io-action";
       exportBtn.textContent = `${meta.label}域导出`;
@@ -128,7 +131,7 @@ class ImportExport {
 
       // 仅导入目标域为当前域时刷新视图；其余域在下次域切换时自然加载
       if (domain === state.domain) {
-        await services.loadDomainData();
+        await appShell.loadDomainDataSafe();
         await groups.renderGroupTabs();
       }
 

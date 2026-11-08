@@ -20,6 +20,26 @@ class Groups {
     }
   }
 
+  // 域切换/分组刷新：分组表 + count（已并入 *_groups）只读 groups 一张小表。
+  // 计数由数据写入同事务维护；这里不做数据 store 扫描
+  async getWithStats(domain, sendResponse) {
+    try {
+      const groupsName = domainStore.groupsName(domain);
+      const def = domainStore.defaultGroups(domain);
+      const snap = await storage.getGroupsWithStats(groupsName);
+      const list = snap.groups.length ? snap.groups : def.map((g) => ({ ...g, count: 0 }));
+      const groups = utils.normalizeGroups(list);
+      const counts = { all: snap.total };
+      for (const g of groups) {
+        if (g.id === "all") continue;
+        counts[g.id] = snap.counts[g.id] || 0;
+      }
+      sendResponse({ groups, counts, total: snap.total });
+    } catch (err) {
+      sendResponse({ error: err.message });
+    }
+  }
+
   async add(domain, name, sendResponse) {
     try {
       const groupsName = domainStore.groupsName(domain);

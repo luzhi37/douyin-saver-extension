@@ -1,6 +1,6 @@
 # 10 · 存储写入与导入合并
 
-> 职责边界：两个数据域的**写入路径语义**——作品/关注落库时的合并规则、计数保护、同批顺序保证、丢失检测，以及导入数据的分组对账。IndexedDB 结构与 chrome.storage.local 键表见 [01](./01-project-architecture.md)；各采集流程（同步/扫描）如何调用到这里的见 [02](./02-independent-sync-works.md) / [03](./03-independent-sync-followings.md) / [05](./05-independent-scan-collection.md)。
+> 职责边界：作品型三域与作者域两域的**写入路径语义**——作品/关注落库时的合并规则、计数保护、同批顺序保证、丢失检测，以及导入数据的分组对账。IndexedDB 结构与 chrome.storage.local 键表见 [01](./01-project-architecture.md)；各采集流程（同步/扫描）如何调用到这里的见 [02](./02-independent-sync-works.md) / [03](./03-independent-sync-followings.md) / [05](./05-independent-scan-collection.md)。
 
 ## 概述
 
@@ -8,9 +8,9 @@
 
 | 函数 | 服务消息 | 域 |
 |------|----------|----|
-| `domainStore.mergeAndSave` | `SAVE_WORKS`（抖音标签页保存按钮、options 未关注作品入库）与 background 直调（SYNC_WORKS 收尾、persistScan 扫描落库） | 作品型三域 |
-| `domainStore.mergeAndSaveAuthors`（经 `followingsHandlers.save` / `candidatesHandlers.save`） | `SAVE_FOLLOWINGS`（同步落库）/ `SAVE_CANDIDATES`（关注域批量入库） | followings / candidates |
-| `reconcileImportGroups` | `IMPORT_DATA` 的前置步骤 | 两域通用 |
+| `domainStore.mergeAndSave` | `SAVE_WORKS`（抖音标签页保存按钮、侧边栏「存入」、点赞/收藏域批量存入作品域）、`IMPORT_DATA`（作品型三域分块）与 background 直调（SYNC_WORKS 收尾、persistScan 扫描落库） | 作品型三域 |
+| `domainStore.mergeAndSaveAuthors`（经 `followingsHandlers.save` / `candidatesHandlers.save`，或任务类/导入路径直调） | `SAVE_FOLLOWINGS`（同步落库）/ `SAVE_CANDIDATES`（关注域批量入库）/ `IMPORT_CANDIDATE`（链接收录）/ `IMPORT_DATA`（作者域） | followings / candidates |
+| `reconcileImportGroups` | `IMPORT_DATA` 的前置步骤 | 五个导入域通用 |
 
 共同设计原则：**用户手动整理的成果优先于新采集数据**——分组归属（groupId）、首次保存时间（savedAt）、已校准计数不被采集结果冲掉。
 
@@ -21,7 +21,7 @@
   手动保存（抖音标签页按钮）/ 未关注作品入库 → SAVE_WORKS { works }
   SYNC_WORKS 收尾 / persistScan 扫描落库 → background 直调 domainStore.mergeAndSave
     → domainStore.mergeAndSave
-        valid = 过滤有 awemeId 的条目（空集 → {added:0,updated:0,total:0} 直接返回）
+        valid = 过滤有 awemeId 的条目（空集 → { added:0, updated:0, changed:0, total: await ds.count(), written:[], addedIds:[] } 直接返回）
         单事务 getBatch 批量读旧记录（按入参序对位，缺失为 null）→ mergeWork(w, old) 逐条合并
         putBatch(toWrite，仅真实变更集) → count() 得总数
         → 返回 { added, updated, changed, total, written, addedIds }
@@ -57,7 +57,7 @@
     → 作品型三域按 CONFIG.IMPORT_CHUNK(2000) 分块逐块 mergeAndSave，IMPORT_PROGRESS 逐块
       回报（单事务 10 万级 put 长时间独占 SW 的 IDB）；计数跨块累计，响应只带计数——
       不再 spread 单次 mergeAndSave 的 written/addedIds 全记录（旧实现万级导入响应体
-      膨胀至 MB 级，消费方只读 added/updated/total）
+      膨胀至 MB 级，消费方只读 added/updated/invalid）
 ```
 
 ## 接口 / 方法签名
@@ -96,7 +96,7 @@ async function reconcileImportGroups(domain, data, items) -> void   // 就地改
 async function dataTools.import(text, domain, sendResponse)
 async function dataTools.export(domain, sendResponse)  // { ok, text }——text 为 SW 侧序列化好的
                                                        // 缩进 JSON（schemaVersion:2 + domain + exportedAt + [itemKey] + groups）
-async function dataTools.reset(domain, sendResponse)   // clear(store) + putGroups(defaultGroups)
+async function dataTools.reset(domain, sendResponse)   // clear(store) + putGroups(defaultGroups, { resetCounts: true })
 ```
 
 ## 关键代码片段
@@ -105,12 +105,17 @@ async function dataTools.reset(domain, sendResponse)   // clear(store) + putGrou
 
 ```js
 function mergeWork(w, old) {
+  const uid = w.uid != null && w.uid !== "" ? String(w.uid) : String(old?.uid || "");
+  const createTime = Number(w.createTime) || utils.awemeIdCreateTime(w.awemeId) || 0;
   const merged = {
     ...w,
-    groupId: old?.groupId || w.groupId || CONFIG.GROUPS.DEFAULT_ID,  // 手动分组不丢
-    savedAt: old?.savedAt || w.savedAt || Date.now(),                // 首次保存时间不变
-    createTime: w.createTime || awemeIdCreateTime(w.awemeId) || 0,   // 发布时间恒非零（aweme_id 高 32 位推导）
+    uid,                                                             // 类型归一化（作者数索引硬前提）
+    groupId: String(old?.groupId || w.groupId || CONFIG.GROUPS.DEFAULT_ID),  // 手动分组不丢
+    savedAt: Number(old?.savedAt || w.savedAt) || Date.now(),        // 首次保存时间不变
+    createTime,                                                      // 发布时间恒非零（aweme_id 高 32 位推导）
   };
+  delete merged.desc;             // 旧版导入文件可能携带
+  delete merged.authorFollowed;   // 已移除字段：旧导出/历史记录落库前剔除
   // 旧记录已存长效 v1/play 链接而新结果是短效 CDN 直链 → 保留旧链接，
   // 避免手动添加的作品被同步以短效直链覆盖降级
   if (old && isLongLivedVideoUrl(old.video) && !isLongLivedVideoUrl(w.video)) {
@@ -129,6 +134,7 @@ stored[uid] = {
   // 计数仅由校准更新：常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
   followerCount: f.followerCount > 0 ? f.followerCount : old?.followerCount || 0,
   awemeCount:    f.awemeCount    > 0 ? f.awemeCount    : old?.awemeCount    || 0,
+  lastUpdateAt:  f.lastUpdateAt  > 0 ? f.lastUpdateAt  : old?.lastUpdateAt  || 0,
   uid,
   groupId: old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,  // 本地整理优先；仅新记录采用来值
   savedAt: old?.savedAt ?? baseTime - i,   // 新条目按批次内序号倒推毫秒 → 列表顺序稳定
@@ -158,8 +164,13 @@ lostUids = oldKeys \ stamps 键集
 本地既有分组（名称 + 用户拖拽顺序）是唯一权威；导入只做 id/名称映射与新组追加。
 
 ```js
-const existing = utils.normalizeGroups(await storage.getGroups(groupsName)); // 主键(id)序 → 本地 order 序
-for (const g of importedGroups.filter((g) => !FIXED_IDS.has(g.id))) {       // 固定分组由本地定义
+const existingList = await storage.getGroups(groupsName);
+const existing = utils.normalizeGroups(existingList.length ? existingList : def.map((g) => ({ ...g }))); // 主键(id)序 → 本地 order 序
+const fixedIds = new Set(CONFIG.DEFAULT_GROUPS.map((g) => g.id));           // 固定分组由本地定义
+const existingIds = new Set(existing.map((g) => g.id));
+const existingNames = new Map(existing.map((g) => [g.name, g.id]));
+for (const g of importedGroups) {
+  if (!g || !g.id || fixedIds.has(g.id)) continue;
   if (existingIds.has(g.id))         groupIdMap.set(g.id, g.id);                 // ① 按 ID 匹配
   else if (existingNames.has(g.name)) groupIdMap.set(g.id, existingNames.get(g.name)); // ② 按名称匹配
   else { newGroups.push(g);          groupIdMap.set(g.id, g.id); }               // ③ 新建
@@ -179,7 +190,7 @@ for (const item of items) {
 
 | 场景 | 表现 | 处理 |
 |------|------|------|
-| 导入数据无该域条目数组 | `extractImportItems` 返回 `[]` | followings 域会因 EMPTY 报 `{ok:false}`；works 域静默零写入 |
+| 导入数据无该域条目数组 | `extractImportItems` 返回 `[]` | 所有域统一返回 `{ ok:false, error:"IMPORT_EMPTY" }` |
 | 导入的 groupId 既对不上 ID 也对不上名称 | 映射到新建分组；若仍不在有效集合 | 兜底回退 `uncategorized` |
 | 固定分组（all/uncategorized）出现在导入数据 | 被固定分组 id 白名单过滤 | 当前库固定分组原样保留且排序居首 |
 | 导入文件的分组顺序与本地不同 | 既有分组按本地 order 原样保留 | 新组追加到末尾；文件内 `order` 不参与本地排序 |
@@ -193,9 +204,9 @@ for (const item of items) {
 |------|------|------|
 | `CONFIG.GROUPS.DEFAULT_ID` | `"uncategorized"` | 所有分组失效路径的最终回退目标 |
 | `CONFIG.GROUPS.ID_PREFIX` | `"custom_"` | ADD_GROUP 生成的自定义分组 id 前缀 |
-| `config.STORAGE_MAX_BYTES`（options/core.js） | 10MB | 导入体积门禁提示（UI 侧校验） |
+| `config.STORAGE_MAX_BYTES`（options/core.js） | 10MB | 存储指示器的占用百分比展示（`Groups.#applyStorageIndicator`）；不做导入体积门禁 |
 | `config.TRASH_GROUP_NAME`（options/core.js） | `'稍后删除'` | 丢失关注手动移入的目标分组名 |
-| 默认分组定义 | `CONFIG.DEFAULT_GROUPS`（五域共用一份） | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源；消费处 `.map` 拷贝避免污染共享引用 |
+| 默认分组定义 | `CONFIG.DEFAULT_GROUPS`（六域共用一份） | `{all, uncategorized}` 两个 fixed 组；RESET_DOMAIN / 首装初始化来源；消费处 `.map` 拷贝避免污染共享引用 |
 
 ## 相关文档
 

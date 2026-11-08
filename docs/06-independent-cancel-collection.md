@@ -8,14 +8,14 @@ options 批量操作对选中条目发起批量取消（batch.js 按域派发 `C
 
 ```
 CANCEL_COLLECTION → independentClient.loadMode()
-  ├─ true  → independentTasks.cancel(awemeIds, "collection", persistDomain, sendResponse)
+  ├─ true  → independentTasks.cancel(awemeIds, persistDomain, sendResponse)
   └─ false → scanTasks.runCancelBatch(awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", persistDomain, …)   // Tab模式
 ```
 
 独立模式实现要点：
 
-- 端点四要素集中在 `CONFIG.CANCEL.collection`（url / body 函数 / content-type / referrer），当前仅此一个 kind；
-- 前置校验：awemeIds 非空（`EMPTY`）、`savedCookie` 存在（`NO_COOKIE`）、kind 存在（`UNKNOWN_KIND`）；
+- 端点四要素集中在 `CONFIG.CANCEL.collection`（url / body 函数 / content-type / referrer），当前仅此一个收藏端点；
+- 前置校验：awemeIds 非空（`EMPTY`）、`savedCookie` 存在（`NO_COOKIE`）；当前仅收藏一个端点，无 `kind` 参数；
 - 密钥头 `bd-ticket-guard-ree-public-key` 取自 `browserFeatures.securityKey`——该值由 inject 在抖音页面采集 localStorage 而来（需用户曾访问过 douyin.com；采集机制见 [09](./09-inject-tab-mode.md)），缺失时**不带该头**继续尝试；
 - SW 的 `fetch()` 无法设置 Referer（forbidden header），精确 Referer 与 Sec-Fetch-* 同源元数据由 DNR rules 3/5 在网络层补齐；
 - 取消信号在 background 循环内自消化（`utils.withCancelGuard()` 监听 `CANCEL_ACTIVE_TASK`），不经 content→inject；
@@ -27,10 +27,9 @@ CANCEL_COLLECTION → independentClient.loadMode()
 options 批量操作「取消收藏」（选中条目）
   → bgMsg({ type:"CANCEL_COLLECTION", awemeIds, domain })
     → background switch → independentClient.loadMode() === true
-      → independentTasks.cancel(awemeIds, "collection", domain, sendResponse)
+      → independentTasks.cancel(awemeIds, domain, sendResponse)
           ├─ 校验：!Array||empty → { ok:false, error:"EMPTY" }
           ├─         !savedCookie → { ok:false, error:"NO_COOKIE" }
-          ├─         CONFIG.CANCEL[kind] 不存在 → { ok:false, error:"UNKNOWN_KIND" }
           ├─ key = browserFeatures.securityKey || ""
           ├─ requestId = randomUUID()；guard = utils.withCancelGuard()
           ├─ sendResponse({ ok:true, requestId, total })        // 立即 ack
@@ -67,8 +66,8 @@ options 批量操作「取消收藏」（选中条目）
 
 ```js
 // background/tasks/independent-tasks.js
-async function independentTasks.cancel(awemeIds, kind, persistDomain, sendResponse)
-// awemeIds: string[]；kind: "collection"；persistDomain: 取消成功后删本地记录的目标域
+async function independentTasks.cancel(awemeIds, persistDomain, sendResponse)
+// awemeIds: string[]；persistDomain: 取消成功后删本地记录的目标域（当前仅收藏端点）
 // 出参（ack）：{ ok:true, requestId, total }；后续结果仅经 CANCEL_PROGRESS / CANCEL_DONE 消息
 // 进度：CANCEL_PROGRESS*N → CANCEL_DONE
 
@@ -89,8 +88,7 @@ async function scanTasks.runCancelBatch(awemeIds, tabType, progressType, persist
 ## 关键代码片段
 
 ```js
-const ep = CONFIG.CANCEL[kind];
-if (!ep) return sendResponse({ ok: false, error: "UNKNOWN_KIND" });
+const ep = CONFIG.CANCEL.collection;
 …
 const resp = await fetch(ep.url, {
   method: "POST",
@@ -151,7 +149,7 @@ body: action=0&aweme_id=7267428670501915945&aweme_type=0
 
 | 配置 | 默认 | 作用 |
 |------|------|------|
-| `CONFIG.CANCEL.collection.*` | 见上文流程图 | 端点四要素；新增其他 kind（如点赞）时在此扩展并由路由放行独立分支 |
+| `CONFIG.CANCEL.collection.*` | 见上文流程图 | 端点四要素；新增其他端点（如点赞）时在此扩展并由路由放行独立分支 |
 | `runtimeConfig.cancelCollectionDelayMin/Max` | 500/1000ms | 条目间延迟 |
 | `browserFeatures.securityKey` | — | ticket-guard 公钥（localStorage `security-sdk/s_sdk_cert_key` 的 data 字段剥 `pub.` 前缀，由 inject 采集） |
 | DNR rule 5 / rule 3 | — | Sec-Fetch-* 补齐与精确 Referer 生效的前提（见 08） |

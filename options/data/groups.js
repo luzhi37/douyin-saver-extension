@@ -8,32 +8,98 @@ import { detail } from '../components/detail.js';
 class Groups {
   // 新增分组请求进行中：防双击重复提交
   #addingGroup = false;
-  // 重建代际：GET_GROUPS/GET_STATS 往返期间若又发生重建（域切换/分组 CRUD），旧帧作废
+  // 重建代际：GET_DOMAIN_GROUPS 往返期间若又发生重建（域切换/分组 CRUD），旧帧作废
   #renderGen = 0;
 
-  // 两段式重建（消除「切域时分组栏慢一拍」）：① 轻量 GET_GROUPS 先出分组名 + 激活态，tab
-  // 结构即刻就位；② 按当前域异步补计数（GET_STATS {domain} 只统计一个域，不再为一个域的
-  // 按钮拖上全部五域聚合）。存储指示器走独立 fire-and-forget，不占本关键路径
+  // 名称与计数拆成两个 span：计数用更弱的字号/颜色，同时保留文本级 diff 以维持
+  // 高频计数刷新的短路径（不重建 tab、不重置横向滚动与滑块）
+  #setTabContent(tab, name, count) {
+    const nameEl = tab.querySelector(".group-tab-name");
+    const countEl = tab.querySelector(".group-tab-count");
+    if (!nameEl || !countEl) return false;
+    let dirty = false;
+    if (nameEl.textContent !== name) {
+      nameEl.textContent = name;
+      dirty = true;
+    }
+    const countText = count == null ? "" : String(count);
+    if (countEl.textContent !== countText) {
+      countEl.textContent = countText;
+      dirty = true;
+    }
+    return dirty;
+  }
+
+  // 单次原子快照渲染：GET_DOMAIN_GROUPS 只读 *_groups 一张小表（count 字段，O(分组数)），
+  // 名称/顺序/计数同一响应到达后一次渲染，tab 一次成型——不保留快照、不显示进度计数。
+  // 计数由 background 写入同事务维护，不扫数据表；域切换时先 clearForDomainSwitch()
+  // 清空旧域 tab，快照到达后直接落正确名称/顺序/数字
   async renderGroupTabs() {
     const gen = ++this.#renderGen;
+    // 先发分组快照，再发存储指示器字节查询，避免 bytesOnly 抢后台消息队列
+    const pending = services.loadDomainGroups(state.domain);
     this.#refreshStorageIndicator();
-    const groupList = await services.loadGroups();
-    if (gen !== this.#renderGen) return; // 期间已触发新一次重建：本帧作废
-    // 首段先带出已知计数（同一 state.gridTotals 缓存：page-0 total 与 GET_STATS 都写入，
-    // 与搜索栏 K/N 同源）——命中时直接带数字，未命中（本会话首访）先只出名字，page-0 /
-    // 第二段回填
+    try {
+      const snapshot = await pending;
+      if (gen !== this.#renderGen) return; // 期间已触发新一次重建：本帧作废
+      this.#renderTabs(snapshot.groups, snapshot.counts);
+    } catch (err) {
+      // 快照失败：退回分组名（无数字），不显示旧域/旧计数
+      console.warn("[DDM] load domain groups failed:", err);
+      if (gen !== this.#renderGen) return;
+      try {
+        const groupList = await services.loadGroups();
+        if (gen !== this.#renderGen) return;
+        this.#renderTabs(groupList, {});
+      } catch {
+        /* 分组也取不到：保持空栏，等待下一次重建 */
+      }
+    }
+  }
+
+  // tab 集合/顺序/名称未变时只 patch 文本，不重建节点：计数类刷新（STORE_CHANGED 收口、
+  // 详情删除等）高频走这条短路径，保横向滚动位置、hover/focus 与滑块连续性；结构有变
+  //（域切换/分组增删改名排序）才整条重建
+  #renderTabs(groupList, counts) {
+    const existing = dom.groupTabs.querySelectorAll(".group-tab");
+    let sameStructure = existing.length > 0 && existing.length === groupList.length;
+    if (sameStructure) {
+      for (let i = 0; i < groupList.length; i++) {
+        const tab = existing[i];
+        if (tab.dataset.groupId !== groupList[i].id || tab.dataset.groupName !== groupList[i].name) {
+          sameStructure = false;
+          break;
+        }
+      }
+    }
+    if (sameStructure) {
+      let dirty = false;
+      for (let i = 0; i < groupList.length; i++) {
+        const g = groupList[i];
+        const tab = existing[i];
+        const active = g.id === state.currentGroupId;
+        if (tab.classList.contains("active") !== active) {
+          tab.classList.toggle("active", active);
+          dirty = true;
+        }
+        if (this.#setTabContent(tab, g.name, counts?.[g.id])) dirty = true;
+      }
+      // 数字位数影响 tab 宽度：只在视觉真变时重定滑块/遮罩
+      if (dirty) {
+        this.updateGroupSlider(false);
+        this.updateTabMask();
+      }
+      return;
+    }
     dom.groupTabs.innerHTML = "";
-    const pairs = [];
     for (const g of groupList) {
       const tab = document.getElementById("groupTabTemplate").content.cloneNode(true).firstElementChild;
       tab.classList.toggle("active", g.id === state.currentGroupId);
       tab.dataset.groupId = g.id;
       tab.dataset.groupName = g.name;
-      const c = state.gridTotals[`${state.domain}|${g.id}`];
-      tab.textContent = c == null ? g.name : `${g.name} (${c})`;
+      this.#setTabContent(tab, g.name, counts?.[g.id]);
       tab.addEventListener("click", () => this.#switchGroup(g.id));
       dom.groupTabs.appendChild(tab);
-      pairs.push([g, tab]);
     }
     // 滑块随重建重建：只在新集合落定时无动画就位（带动画会从旧位置横穿飞过）
     const slider = document.createElement("div");
@@ -41,77 +107,21 @@ class Groups {
     dom.groupTabs.appendChild(slider);
     this.updateGroupSlider(false);
     this.updateTabMask();
-
-    // 第二段（不 await）：计数是装饰性补丁。GET_STATS 的分组 count 在 3 万级库上与
-    // 首页 page-0 / 续页游标读并发会抢 IDB（实测把首页往返从 ~150ms 拖到 ~1s、把首段
-    // 计数增长拖住），故分两级延后：首屏渲染落笔后 → 网格加载空闲（最多 5s）再取；
-    // 期间 tab 沿用 state.gridTotals 缓存（page-0 会即时校正当前分组）
-    const domain = state.domain;
-    const waitedGroupId = state.currentGroupId;
-    services.whenFirstScreen(domain, waitedGroupId).then(() => {
-      if (gen !== this.#renderGen) return; // 期间已重建：跳过，新帧会自行补计数
-      // 续页保护窗：GET_STATS 的分组 count 在大域上与续页游标读并发，会把「600 → 增长」
-      // 的首段拖住（切 3 万域实测首段停顿数百 ms）；等网格加载空闲（最多 5s，期间 tab
-      // 沿用 state.gridTotals 缓存计数）后再取，避免与续页抢 IDB
-      const start = performance.now();
-      const kick = () => {
-        if (gen !== this.#renderGen) return;
-        if (services.isGridLoading() && performance.now() - start < 5000) {
-          setTimeout(kick, 100);
-          return;
-        }
-        this.#fillGroupCounts(gen, domain, pairs).catch(() => {});
-      };
-      kick();
-    });
   }
 
-  async #fillGroupCounts(gen, domain, pairs) {
-    const stats = await services.loadStats(domain);
-    if (gen !== this.#renderGen) return; // 期间已重建：跳过，新帧会自行补计数
-    const domainStats = stats[domain] || { total: 0, groupCounts: {} };
-    // 权威总量同步进 state 缓存：搜索栏切域/切组的「0/Total」占位、分组 tab 首段数字与
-    // page-0 校正共用同一份（见 onGridTotal）
-    for (const [gid, count] of Object.entries(domainStats.groupCounts || {})) {
-      state.gridTotals[`${domain}|${gid}`] = count;
-    }
-    for (const [g, tab] of pairs) {
-      if (!tab.isConnected) continue; // 已被替换的游离节点：跳过
-      tab.textContent = `${g.name} (${domainStats.groupCounts?.[g.id] ?? 0})`;
-    }
-    this.updateGroupSlider(false); // 计数改变了 tab 宽度：滑块重定
-    this.updateTabMask();
+  // 域切换：旧域的名称/顺序/计数全部失效，立即清空（随后 renderGroupTabs 用新域快照重建）
+  clearForDomainSwitch() {
+    this.#renderGen++;
+    dom.groupTabs.innerHTML = "";
   }
 
-  // 首页权威 total 到达即校正当前分组的 tab 数字（与搜索栏 K/N 的 N 同源）：tab 集合在
-  // page-0 之前重建，本会话首访时只有名字——这里补上数字，不必等 GET_STATS（大域上被
-  // 延后到加载空闲）；缓存在 state.gridTotals 中与切域「0/Total」占位共用
+  // 首页权威 total 到达即校正当前分组的 tab 数字（搜索栏只显示 K，不再展示该总量）：
+  // 快照通常已含正确计数；page-0 与快照之间若发生写入，以 page-0 的当前分组 total 为准
   onGridTotal({ domain, groupId, total } = {}) {
     if (!domain || domain !== state.domain || total == null) return;
     const tab = dom.groupTabs.querySelector(`.group-tab[data-group-id="${groupId}"]`);
     if (!tab || !tab.isConnected) return;
-    tab.textContent = `${tab.dataset.groupName || ""} (${total})`;
-    this.updateGroupSlider(false); // 数字改变了 tab 宽度：滑块重定
-    this.updateTabMask();
-  }
-
-  // 进度式分组计数（加载中的「全部」视图逐页累计）：非当前分组 tab 数字随续页出现并增长
-  //（与 K/N 的「已加载」口径一致），不必等延后的 GET_STATS；「全部」tab 用 page-0 权威
-  // total，不参与累计；加载完成后 GET_STATS 会把数字校正为权威值
-  onGridTotals({ domain, counts } = {}) {
-    if (!domain || domain !== state.domain || !counts) return;
-    let changed = false;
-    for (const [gid, c] of Object.entries(counts)) {
-      if (gid === "all") continue;
-      const tab = dom.groupTabs.querySelector(`.group-tab[data-group-id="${gid}"]`);
-      if (!tab || !tab.isConnected) continue;
-      const text = `${tab.dataset.groupName || ""} (${c})`;
-      if (tab.textContent !== text) {
-        tab.textContent = text;
-        changed = true;
-      }
-    }
-    if (!changed) return;
+    this.#setTabContent(tab, tab.dataset.groupName || "", total);
     this.updateGroupSlider(false); // 数字改变了 tab 宽度：滑块重定
     this.updateTabMask();
   }
@@ -324,7 +334,7 @@ class Groups {
   #applyStorageIndicator(bytes) {
     const pct = bytes / config.STORAGE_MAX_BYTES;
     const used = (bytes / 1024 / 1024).toFixed(pct > 0.1 ? 1 : 2);
-    // 两行式：数值在上、单位在下（窄栏 48px 内单行放不下，原先被 overflow 裁切）
+    // 两行式：数值在上、单位在下（窄导航轨内单行放不下，原先被 overflow 裁切）
     dom.menuStorage.innerHTML = `<span class="storage-num">${used}</span><span class="storage-unit">MB</span>`;
   }
 
@@ -342,7 +352,5 @@ class Groups {
 
 export const groups = new Groups();
 
-// page-0 权威 total 到达即校正当前分组 tab 数字（与搜索栏 K/N 同源；见 onGridTotal）；
-// 加载中的其余分组数字随续页进度累计（见 onGridTotals）
+// page-0 权威 total 到达即校正当前分组 tab 数字（快照已含计数；写入间隙以 page-0 为准）
 store.on("grid-total", (payload) => groups.onGridTotal(payload));
-store.on("grid-totals", (payload) => groups.onGridTotals(payload));

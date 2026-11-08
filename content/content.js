@@ -6,6 +6,24 @@
   // ---------- config ----------
   const INJECT_URL = chrome.runtime.getURL("content/inject.js");
 
+  // 记录状态查询桥：inject 播放/悬停发起，content 转发 background 的主键直读；
+  // 结果按 awemeId 短 TTL 缓存（播放/悬停会反复触发同一条）
+  const RECORD_STATUS = {
+    TTL: 30000,
+    MAX: 200,
+    TRIM_TO: 150,
+    REQUEST_EVENT: "DY_RECORD_STATUS_REQUEST",
+    RESULT_EVENT: "DY_RECORD_STATUS_RESULT",
+    SAVED_EVENT: "DY_WORK_SAVED",
+  };
+
+  // Ctrl/Cmd+点击保存按钮的作者入库桥：inject → content → IMPORT_CANDIDATE
+  const CANDIDATE_IMPORT = {
+    TIMEOUT: 30000,
+    REQUEST_EVENT: "DY_IMPORT_CANDIDATE_REQUEST",
+    RESULT_EVENT: "DY_IMPORT_CANDIDATE_RESULT",
+  };
+
   const BRIDGE = {
     FETCH_WORK_DETAIL: {
       req: "DY_FETCH_WORK_DETAIL_REQUEST",
@@ -166,6 +184,11 @@
       this.#map.delete(key);
     }
 
+    // 只读命中（不更新 LRU）：状态查询在 fiber 缺 uid 时用捕获作品补作者标识
+    peek(key) {
+      return this.#map.get(key);
+    }
+
     #onCaptureWorks(e) {
       const works = e.detail;
       if (!Array.isArray(works) || works.length === 0) return;
@@ -186,6 +209,114 @@
     }
   }
   const captureCache = new CaptureCache();
+
+  // ---------- RecordStatus ----------
+  // 当前作品/作者状态：作品域按 awemeId、候选/关注域按 uid 主键直读。inject 的播放与悬停
+  // 都会重复触发同一 awemeId，故按 key 缓存短 TTL + in-flight 去重；回到可见时清空，
+  // 让用户从 options 改完数据切回抖音标签页后立即反映最新状态。
+  class RecordStatus {
+    #cache = new Map();
+    #inflight = new Map();
+
+    constructor() {
+      document.addEventListener(RECORD_STATUS.REQUEST_EVENT, (e) => this.#onRequest(e));
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) this.#cache.clear();
+      });
+    }
+
+    #onRequest(e) {
+      const { requestId, awemeId, uid } = e.detail || {};
+      if (!requestId || !awemeId) return;
+      // fiber 的 author 偶尔缺 uid：用抓包 LRU 中同一作品的 uid 兜底
+      const resolvedUid = uid || captureCache.peek(String(awemeId))?.uid || "";
+      this.get(awemeId, resolvedUid)
+        .then((status) => {
+          document.dispatchEvent(
+            new CustomEvent(RECORD_STATUS.RESULT_EVENT, { detail: { requestId, status } }),
+          );
+        })
+        .catch(() => {
+          document.dispatchEvent(
+            new CustomEvent(RECORD_STATUS.RESULT_EVENT, { detail: { requestId, status: null } }),
+          );
+        });
+    }
+
+    get(awemeId, uid) {
+      const key = String(awemeId);
+      const cached = this.#cache.get(key);
+      // 首次查询若 fiber 尚未带 uid，缓存里没有作者结果；后续拿到 uid 时绕过缓存补查
+      const cachedLacksAuthor = cached && uid && !cached.status?.author?.uid;
+      if (cached && !cachedLacksAuthor && Date.now() - cached.at < RECORD_STATUS.TTL) {
+        this.#cache.delete(key);
+        this.#cache.set(key, cached);
+        return Promise.resolve(cached.status);
+      }
+      const pending = this.#inflight.get(key);
+      if (pending) return pending.promise;
+
+      const token = {};
+      const request = new Promise((resolve) => {
+        let timer = null;
+        const deliver = (status) => {
+          clearTimeout(timer);
+          if (this.#inflight.get(key)?.token === token) this.#inflight.delete(key);
+          resolve(status);
+        };
+        // SW 冷启动/扩展上下文失效时 callback 可能永不触发：兜底释放 in-flight，
+        // 否则同一 awemeId 会永久命中一个永不 resolve 的 Promise
+        timer = setTimeout(() => deliver(null), 10000);
+        try {
+          chrome.runtime.sendMessage(
+            { type: "GET_RECORD_STATUS", awemeId: key, uid: String(uid || "") },
+            (response) => {
+              if (chrome.runtime.lastError || !response || response.error || response.ok === false) {
+                deliver(null);
+                return;
+              }
+              this.#remember(key, response);
+              deliver(response);
+            },
+          );
+        } catch (_e) {
+          deliver(null);
+        }
+      });
+      this.#inflight.set(key, { token, promise: request });
+      return request;
+    }
+
+    // 保存成功即时回写：无需等下一次状态查询，按钮立即显示「已存」；
+    // 作者状态若尚未查询过保持缺失，由后续悬停/播放补全
+    markSaved(awemeId) {
+      const key = String(awemeId);
+      const prev = this.#cache.get(key)?.status || { work: { exists: false }, author: {} };
+      this.#remember(key, { ...prev, work: { exists: true } });
+      document.dispatchEvent(
+        new CustomEvent(RECORD_STATUS.SAVED_EVENT, { detail: { awemeId: key } }),
+      );
+    }
+
+    // Ctrl/Cmd+点击保存按钮入库作者成功：缓存即时置 candidate=true，
+    // 避免随后的状态查询在 TTL 内把角标回退成「未收录」
+    markCandidate(awemeId) {
+      const key = String(awemeId);
+      const prev = this.#cache.get(key)?.status || { work: { exists: false }, author: {} };
+      this.#remember(key, { ...prev, author: { ...(prev.author || {}), candidate: true } });
+    }
+
+    #remember(key, status) {
+      this.#cache.delete(key);
+      this.#cache.set(key, { at: Date.now(), status });
+      if (this.#cache.size > RECORD_STATUS.MAX) {
+        let toDelete = this.#cache.size - RECORD_STATUS.TRIM_TO;
+        const iter = this.#cache.keys();
+        while (toDelete-- > 0) this.#cache.delete(iter.next().value);
+      }
+    }
+  }
+  const recordStatus = new RecordStatus();
 
   // ---------- ContentBridge ----------
   // 请求-响应桥（tools 移植）：background 消息 → inject 事件，结果回传。
@@ -283,11 +414,12 @@
         if (chrome.runtime.lastError) return;
         if (response?.ok) {
           captureCache.delete(fullWork.awemeId);
-          const title = (fullWork.desc || fullWork.awemeId).slice(0, 20);
+          recordStatus.markSaved(fullWork.awemeId);
+          const label = (fullWork.nickname ? `@${fullWork.nickname}` : fullWork.awemeId).slice(0, 20);
           const groupName = response.groupName || "未分组";
           // added>0 为新增；否则作品已在作品域，按落库 groupId 解析的分组名提示所在组
           toast.show(
-            response.added > 0 ? `已保存作品：${title}（入「${groupName}」）` : `作品已在作品域：${title}（分组「${groupName}」）`,
+            response.added > 0 ? `已保存作品：${label}（入「${groupName}」）` : `作品已在作品域：${label}（分组「${groupName}」）`,
             "success",
           );
         } else {
@@ -310,6 +442,92 @@
     }
   }
   const workSaver = new WorkSaver();
+
+  // ---------- CandidateSaver ----------
+  // Ctrl/Cmd+点击保存按钮：把当前作品作者收录进候选域。复用 background IMPORT_CANDIDATE
+  //（Tab/独立双模），按 secUid 去重，成功后同步 RecordStatus 缓存。
+  class CandidateSaver {
+    #inflight = new Set();
+
+    constructor() {
+      document.addEventListener(CANDIDATE_IMPORT.REQUEST_EVENT, (e) => this.#onRequest(e));
+    }
+
+    #onRequest(e) {
+      const { requestId, awemeId, secUid, nickname } = e.detail || {};
+      if (!requestId) return;
+      if (!secUid) {
+        toast.show("无法获取作者信息", "error");
+        this.#dispatch({ requestId, awemeId, ok: false, error: "NO_SEC_UID" });
+        return;
+      }
+      if (this.#inflight.has(secUid)) {
+        toast.show("正在添加该作者，请稍候…", "info");
+        this.#dispatch({ requestId, awemeId, ok: false, error: "BUSY" });
+        return;
+      }
+
+      this.#inflight.add(secUid);
+      toast.show(`正在添加作者到候选域${nickname ? "：" + nickname : "…"}`, "info");
+
+      let settled = false;
+      let timer = null;
+      const finish = (detail) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.#inflight.delete(secUid);
+        this.#dispatch(detail);
+      };
+      timer = setTimeout(() => {
+        toast.show(this.#errorText("TIMEOUT"), "error");
+        finish({ requestId, awemeId, ok: false, error: "TIMEOUT" });
+      }, CANDIDATE_IMPORT.TIMEOUT);
+
+      try {
+        chrome.runtime.sendMessage({ type: "IMPORT_CANDIDATE", secUid }, (response) => {
+          if (settled) return;
+          const lastError = chrome.runtime.lastError;
+          if (lastError || !response || response.ok !== true) {
+            const error = response?.error || lastError?.message || "IMPORT_FAILED";
+            toast.show(this.#errorText(error), "error");
+            finish({ requestId, awemeId, ok: false, error });
+            return;
+          }
+          const candidate = response.candidate || {};
+          const nick = candidate.nickname || nickname || "未知";
+          const groupName = response.groupName || "未分组";
+          toast.show(
+            response.added > 0
+              ? `已新增候选作者：${nick}（入「${groupName}」）`
+              : `作者已在候选域：${nick}（分组「${groupName}」）`,
+            "success",
+          );
+          if (awemeId) recordStatus.markCandidate(awemeId);
+          finish({ requestId, awemeId, ok: true, added: response.added, groupName });
+        });
+      } catch (_e) {
+        toast.show("扩展上下文已失效，请刷新页面", "error");
+        finish({ requestId, awemeId, ok: false, error: "CONTEXT_INVALIDATED" });
+      }
+    }
+
+    #errorText(msg) {
+      if (msg === "NO_SIGNATURE") {
+        return "未捕获到请求签名，请在抖音页面刷新或浏览作者主页后重试";
+      }
+      if (msg === "NO_DOUYIN_TAB") return "未找到抖音标签页";
+      if (msg === "PROFILE_FETCH_FAILED") return "作者信息获取失败，请稍后重试";
+      if (msg === "TIMEOUT") return "添加作者超时，请稍后重试";
+      if (String(msg).includes("2096")) return "该账号因隐私设置不可见";
+      return "候选域入库失败：" + msg;
+    }
+
+    #dispatch(detail) {
+      document.dispatchEvent(new CustomEvent(CANDIDATE_IMPORT.RESULT_EVENT, { detail }));
+    }
+  }
+  const candidateSaver = new CandidateSaver();
 
   // ---------- 启动 ----------
   function injectMainWorldScript() {

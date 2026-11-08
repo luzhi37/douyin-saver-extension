@@ -4,6 +4,7 @@ import { sync } from './sync.js';
 import { authorImport } from './author-import.js';
 import { dialog } from '../components/dialog.js';
 import { groups } from '../data/groups.js';
+import { appShell } from '../components/app-shell.js';
 
 // ---------- 点赞/收藏域同步（DomainScanSync） ----------
 // 与 Sync 的差异：扫描结果由 background 直接合并落库 + 丢失检测，本类只驱动进度弹窗与 UI 刷新
@@ -43,7 +44,7 @@ class DomainScanSync {
       if (!this.#running) return; // 弹窗已关闭（取消）
       if (!res || !res.ok) throw new Error(res?.error || "FETCH_FAILED");
 
-      await services.loadDomainData();
+      await appShell.loadDomainDataSafe();
       await groups.renderGroupTabs();
 
       const saved = res.saved || { added: 0, updated: 0 };

@@ -3,6 +3,24 @@
 import { CONFIG, DOMAIN_CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
+import { authorViews } from "./author-views.js";
+
+// 随机回顾抽样上限：单次响应保持可控（作品记录可能包含多图 URL）；本轮数量由用户
+// 自定义，业务层钳制到 1–500。excludeIds 只保留最近 N 个，避免消息无界增长
+const RANDOM_MAX_COUNT = 500;
+const RANDOM_MAX_EXCLUDE = 2000;
+
+// 部分 Fisher-Yates：只洗前 count 个，无偏且不复制整池
+function pickRandomKeys(keys, count) {
+  const n = Math.min(count, keys.length);
+  for (let i = 0; i < n; i++) {
+    const j = i + Math.floor(Math.random() * (keys.length - i));
+    const tmp = keys[i];
+    keys[i] = keys[j];
+    keys[j] = tmp;
+  }
+  return keys.slice(0, n);
+}
 
 // ---------- DomainHandlers ----------
 // 域数据操作的对外入口；save 按域分流（作品型三域 → mergeAndSave，作者域 → #saveAuthorRecords）
@@ -15,32 +33,56 @@ class DomainHandlers {
     this.#domain = domain;
   }
 
-  // page=0 = 渐进加载首页；cursor = keyset 续页（上页末条索引键，开区间边界）；
-  // 两者皆无 = 一次性全量（loadWorks 同步清单/重试路径，语义不变）。
+  // page=0 = 渐进加载首页；cursor = keyset 续页（上页末条索引键，开区间边界）。
+  // 作者域两域单发全量（无 page/cursor）；作品型三域必须带 page 或 cursor。
   // ascending=true = 按 savedAt 升序从最旧一端分页（「保存时间(升)」排序用：页序即视图序，
   // options 侧可逐页续填、无需完成态整渲），返回页内仍为索引方向（升序块）。
   // 分页每次只物化单页记录（首屏 PAGE.GRID_FIRST、续页 PAGE.GRID，复合索引
   // savedAt_id / groupId_savedAt_id），不再全量读取+排序——万级分组的首页响应从数百毫秒
   // 降到几十毫秒
-  async get(groupId, sendResponse, page, cursor, ascending) {
+  async get({ groupId, page, cursor, ascending, sort, direction }, sendResponse) {
     try {
-      if (page === 0 || cursor) {
-        // 分页仅作品型三域支持（依赖复合索引；作者域单发全量加载、store 无此索引）：
-        // 作者域带分页参数显式报错，防止调用方误用后静默拿到整域载荷
+      if (sort === "authorCount") {
         if (CONFIG.AUTHOR_RECORD_DOMAINS.includes(this.#domain)) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
-        sendResponse(await this.#readPaged(groupId, cursor || null, ascending === true));
+        const payload = await authorViews.readPage({ domain: this.#domain, groupId, page, cursor, direction });
+        sendResponse({
+          [this.#cfg.itemKey]: payload.items,
+          total: payload.total,
+          hasMore: payload.hasMore,
+          nextCursor: payload.nextCursor,
+          ...(payload.authorMeta ? { authorMeta: payload.authorMeta } : {}),
+        });
         return;
       }
-      // 分组筛选走索引查询，否则全量读取；两分支随后同一排序/返回
-      const store =
-        groupId && groupId !== "all"
-          ? await storage.getByIndex(this.#cfg.storeName, "groupId", groupId)
-          : await storage.getAll(this.#cfg.storeName);
-      const list = Object.values(store);
-      list.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-      sendResponse({ [this.#cfg.itemKey]: list });
+      if (sort && sort !== "saved") throw new Error("BAD_SORT");
+      const isAuthorDomain = CONFIG.AUTHOR_RECORD_DOMAINS.includes(this.#domain);
+      if (isAuthorDomain) {
+        // 作者域单发全量（无分页索引）：带分页参数显式报错，防止调用方误用后
+        // 静默拿到整域载荷
+        if (page === 0 || cursor) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
+        // 分组筛选走索引查询，否则全量读取；两条路径同一排序/返回。
+        // savedAt 平级按 awemeId 降序，与 keyset 索引 prev 遍历、头插 viewOrderBefore
+        // 以及作者视图的簇内末级 tie-break 保持同一口径
+        const store =
+          groupId && groupId !== "all"
+            ? await storage.getByIndex(this.#cfg.storeName, "groupId", groupId)
+            : await storage.getAll(this.#cfg.storeName);
+        const list = Object.values(store);
+        list.sort((a, b) => {
+          const d = (b.savedAt || 0) - (a.savedAt || 0);
+          if (d !== 0) return d;
+          const ai = String(a.awemeId ?? "");
+          const bi = String(b.awemeId ?? "");
+          return ai < bi ? 1 : ai > bi ? -1 : 0;
+        });
+        sendResponse({ [this.#cfg.itemKey]: list });
+        return;
+      }
+      // 作品型三域必须分页：首页 page:0、续页 cursor 二选一
+      if (!(page === 0 || cursor)) throw new Error("BAD_PARAMS");
+      sendResponse(await this.#readPaged(groupId, cursor || null, ascending === true));
     } catch (err) {
-      sendResponse({ error: err.message });
+      sendResponse({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     }
   }
 
@@ -162,6 +204,37 @@ class DomainHandlers {
   // 记录值，作品卡作者状态 chip 只需 uid 集、禁止为此拉全量记录（万级头像/计数载荷膨胀）
   async getAllKeys() {
     return storage.getAllKeys(this.#cfg.storeName);
+  }
+
+  // 随机回顾抽样：只取主键 + 最多 count 条完整记录，不物化整域；excludeIds 为本回顾会话
+  // 已出现过的记录，避免「换一批」重复。返回 poolSize/eligible/remaining 供 options 判断
+  // 是否已无更多可回顾数据
+  async pickRandom({ groupId, count, excludeIds }, sendResponse) {
+    try {
+      const limit = Math.max(1, Math.min(RANDOM_MAX_COUNT, Math.floor(Number(count) || 20)));
+      const exclude = new Set(
+        (Array.isArray(excludeIds) ? excludeIds : [])
+          .slice(-RANDOM_MAX_EXCLUDE)
+          .map((id) => String(domainStore.toStorageId(this.#domain, id))),
+      );
+      const byGroup = Boolean(groupId && groupId !== "all");
+      const keys = byGroup
+        ? await storage.getAllKeysByIndex(this.#cfg.storeName, "groupId", IDBKeyRange.only(groupId))
+        : await storage.getAllKeys(this.#cfg.storeName);
+      const eligibleKeys = keys.filter((key) => !exclude.has(String(key)));
+      const picks = pickRandomKeys(eligibleKeys, limit);
+      const records = await storage.getBatch(this.#cfg.storeName, picks);
+      const items = records.filter(Boolean);
+      sendResponse({
+        ok: true,
+        items,
+        poolSize: keys.length,
+        eligible: eligibleKeys.length,
+        remaining: Math.max(0, eligibleKeys.length - items.length),
+      });
+    } catch (err) {
+      sendResponse({ error: err.message || String(err) });
+    }
   }
 
   // 按 id 集合直取记录（IDB 主键 getBatch 单事务批量读）：bulk STORE_CHANGED 收口的补拉通道——

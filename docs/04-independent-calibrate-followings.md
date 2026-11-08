@@ -4,7 +4,7 @@
 
 ## 概述
 
-关注列表接口返回的粉丝/作品计数是**滞后快照**（与主页展示差异大），因此全仓约定：列表采集一律占位 0，权威计数只从 `GET /aweme/v1/web/user/profile/other/?sec_user_id=…` 的 `user.aweme_count / user.follower_count` 获取。同名接口的 `user.nickname / user.avatar_larger` 同样是**档案权威值**——列表接口下发的昵称/头像是列表快照，**改名只能靠校准收口**（同步链路不逐个拉 profile，故同步后昵称仍可能是旧名）；校准取到非空值即覆盖 `nickname`/`avatarLarger`，空值保留旧值（取数失败不破坏档案）。`lastUpdateAt`（最近更新日期，毫秒时间戳）同样只在校准阶段写入——来源为**该关注者作品列表第一页全部作品 `create_time` 的最大值**（`GET /aweme/v1/web/aweme/post/`，`max_cursor=0`，秒 → 毫秒换算），未校准占位 0。校准有两条入口：
+关注列表接口返回的粉丝/作品计数是**滞后快照**（与主页展示差异大），因此全仓约定：列表采集一律占位 0，权威计数只从 `GET /aweme/v1/web/user/profile/other/?sec_user_id=…` 的 `user.aweme_count / user.follower_count` 获取。同名接口的 `user.nickname / user.avatar_larger` 同样是**档案权威值**——列表接口下发的昵称/头像是列表快照，**改名只能靠校准收口**（同步链路不逐个拉 profile，故同步后昵称仍可能是旧名）；校准取到非空值即覆盖 `nickname`/`avatarLarger`，空值保留旧值（取数失败不破坏档案）。`lastUpdateAt`（最近更新日期，毫秒时间戳）由校准阶段写入（导入快照 >0 时也按快照写入，见 [10](./10-storage-write-and-import.md)）——来源为**该关注者作品列表第一页全部作品 `create_time` 的最大值**（`GET /aweme/v1/web/aweme/post/`，`max_cursor=0`，秒 → 毫秒换算），未校准占位 0。校准有两条入口：
 
 1. **批量校准**（`scanTasks.calibrateAll(domain)`）：options「工具」弹窗两个按钮手动发起，关注域消息 `CALIBRATE_FOLLOWINGS`、候选域消息 `CALIBRATE_CANDIDATES`；对**该域全部已存作者**逐个重取权威计数；进度以 `CALIBRATE_PROGRESS { domain, phase:"calibrate" }` 透传；收尾整批 `mergeAndSaveAuthors` 落库（0 值保护）。
 2. **单用户校准**（`scanTasks.calibrateOne(uid, secUid, domain)`）：options 打开作者侧边栏时按当前域发 `CALIBRATE_FOLLOWING` / `CALIBRATE_CANDIDATE { uid, secUid }`；background 取到计数后**直接落库**并返回，options 更新对应域 state 与可见卡片 DOM。
@@ -25,7 +25,7 @@ options AuthorImport.startCalibrate（三链路互斥守卫 → CANCEL_ACTIVE_TA
         all ← Object.values(storage.getAll(domain))   // getAll 返回 { uid: record } 映射
         all.length === 0 → { ok:false, error:"EMPTY" }
         guard ← utils.withCancelGuard()   // 进度层关闭联动的 CANCEL_ACTIVE_TASK 中断循环
-        → calibrateStats(list, fetchStats, isCancelled, requestId, "CALIBRATE_PROGRESS")
+        → calibrateStats(list, fetchStats, isCancelled, requestId, "CALIBRATE_PROGRESS", domain)
             for entry of list（&& !isCancelled()）:
               sec_uid ← String(entry.profileUrl).match(/\/user\/([^/?#]+)/)[1]
               try: stats = await fetchStats(sec_uid)
@@ -37,7 +37,7 @@ options AuthorImport.startCalibrate（三链路互斥守卫 → CANCEL_ACTIVE_TA
               try: t = await fetchLatestWorkTime(sec_uid)      // 作品第一页 max(create_time)
                    if (t) entry.lastUpdateAt = t               // 失败/全 0 静默跳过保留旧值
               catch: 静默跳过
-              sendMessage(CALIBRATE_PROGRESS { phase:"calibrate", collected:++processed,
+              sendMessage(CALIBRATE_PROGRESS { domain, phase:"calibrate", collected:++processed,
                                                 total:list.length, hasMore:false, requestId })
               条目间延迟 syncFollowings MIN~MAX ms
             返回 processed（取消时 < list.length）
@@ -64,7 +64,7 @@ fetchLatestWorkTime 注入（scanTasks 私有方法 #fetchLatestWorkTime，两�
 
 ```
 options Sidebar.openSidebar(following)
-  → #calibrateFollowing(following)：secUid = state.currentFollowingSecUid
+  → #calibrateFollowing(following)：secUid = state.currentAuthorSecUid
   → bgMsg({ type:"CALIBRATE_FOLLOWING", uid, secUid })
     → background scanTasks.calibrateOne(uid, secUid, sendResponse)
         ├─ 参数缺失 → { ok:false, error:"BAD_PARAMS" }
@@ -88,7 +88,7 @@ options Sidebar.openSidebar(following)
 
 ```js
 // background/tasks/scan-tasks.js —— 批量迭代器（纯内存改写，不落库；写回发生在调用方的落库路径上）
-async function scanTasks.calibrateStats(list, fetchStats, isCancelled, requestId, progressType)
+async function scanTasks.calibrateStats(list, fetchStats, isCancelled, requestId, progressType, domain)
 // list: Following[]（原地改写 awemeCount/followerCount/nickname/avatarLarger/lastUpdateAt）
 // fetchStats: (secUid) => Promise<{ awemeCount, followerCount, nickname, avatarLarger }>（空字符串 = 未取到，调用方保留旧值）
 // isCancelled: () => boolean
@@ -154,7 +154,7 @@ for (const entry of list) {
 // 常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
 followerCount: f.followerCount > 0 ? f.followerCount : old?.followerCount || 0,
 awemeCount:    f.awemeCount    > 0 ? f.awemeCount    : old?.awemeCount    || 0,
-lastUpdateAt:  f.lastUpdateAt  > 0 ? f.lastUpdateAt  : old?.lastUpdateAt  || 0,   // 常规同步不携带该字段，天然不覆盖
+lastUpdateAt:  f.lastUpdateAt  > 0 ? f.lastUpdateAt  : old?.lastUpdateAt  || 0,   // 常规同步携带 0，不覆盖已校准值
 // nickname/avatarLarger 无 0 值保护：合并按 ...f 展开直写——同步带入列表快照、校准带入 profile 权威值，
 // 空值由校准迭代器写入前置守卫拦下（记录字段恒有值）
 ```

@@ -28,6 +28,11 @@ manifest content_scripts（document_start, 匹配 *.douyin.com/*，排除 creato
 content.js 同时常驻监听：
   DY_CAPTURE_WORKS            → capturedWorksMap LRU（上限 200，裁到 150）
   DY_CAPTURE_BROWSER_FEATURES → chrome.runtime.sendMessage(CAPTURE_BROWSER_FEATURES)
+  DY_RECORD_STATUS_REQUEST    → RecordStatus.get（TTL 30s / in-flight 去重）→ GET_RECORD_STATUS
+                                → DY_RECORD_STATUS_RESULT（awemeId 级缓存，页面可见时清空）
+  DY_IMPORT_CANDIDATE_REQUEST → CandidateSaver → IMPORT_CANDIDATE { secUid }（双模，按 secUid 去重）
+                                → DY_IMPORT_CANDIDATE_RESULT（成功 toast + 蓝色「候」即时点亮）
+  DY_WORK_SAVED               ← 保存成功由 content 推给 inject，按钮立即变「已存」
   chrome.runtime.onMessage    → BRIDGE 表翻译为 requestResponse 事件对
 ```
 
@@ -80,10 +85,10 @@ background tabBridge.send({type, requestId, …})
         先 addEventListener(resultEvent) 再 dispatchEvent(requestEvent)   // 同步 handler 安全
         结果事件按 requestId 过滤；超时（BRIDGE timeout 字段）移除监听并回 {ok:false,error:"TIMEOUT"}
   → inject.js 对应 listener：
-      setActiveTask(() => controller.abort())     // 注册单槽位可取消任务
+      taskController.setActiveTask(() => controller.abort())   // 注册单槽位可取消任务
       执行业务 fetch（_dyInternal:true + AbortController 关联外部 signal）
       dispatch RESULT { requestId, ok, work/items/error }
-      finally setActiveTask(null)
+      finally taskController.setActiveTask(null)
   → content onResult → sendResponse → background
 ```
 
@@ -100,34 +105,34 @@ function resolveSelfSecUid() -> string// favorite/post/following/collection 缓�
 
 // inject.js —— 数据提取
 function normalizeWork(raw, source: "api"|"fiber") -> Work|null
-function transformAwemeItem(aw, { includeAuthorFollowed }) -> Work|null
+function transformAwemeItem(aw) -> Work|null
 function extractVideo(raw, source) -> { url, expireAt }   // 三级取链，fiber 分支特殊（见下）
 function extractCover(raw) -> string                      // 视频=封面档；图集=平台封面(video.cover)优先、回退首图（卡片取轻见 11）
 function extractImageVideos(raw) -> string[]              // 内容项实况小视频（与 extractImages 同过滤逐位对位；无视频空串）
 function extractWorkFromRaw(awemeData, { fromFiber }) -> Work|null
 async function extractWorksFromResponse(url, data, parsedUrl?) -> Work[]
-function getAwemeInfoFromButton(btn) -> awemeInfo|null     // React Fiber 两级搜索
+ButtonInjector.#getAwemeInfoFromButton(btn) -> awemeInfo|null   // React Fiber 两级搜索
 
-// inject.js —— 六个 API 请求函数（均 window.fetch + credentials:include + Referer + _dyInternal）
+// inject.js —— 六个 API 请求函数（均 window.fetch + credentials:include + _dyInternal；Referer 由页面上下文自动携带）
 async function fetchOneDetail(awemeId, externalController?)
 async function fetchFollowingPage(secUid, offset, count, externalSignal?)
 async function fetchProfileOther({ secUid?, uid? }, externalSignal?)
 async function fetchOneFavoritesPage(secUid, cursor, count, signal?)
 async function fetchOneCollectionPage(cursor, count, signal?)
 async function fetchAuthorWorks(secUid, startCursor, count)
-function cancelOne(awemeId, url, bodyFn, referrer, signal?) -> Promise   // XHR
-function cancelOneFavorites / cancelOneCollection (awemeId, signal?)
+// ReactionHandler：四个方向（cancelOneFavorites / cancelOneCollection / setOneFavorites / setOneCollection）
+function ReactionHandler.#postOne(awemeId, endpoint, active, signal?) -> Promise   // XHR
 
 // inject.js —— 任务槽与采集
-function setActiveTask(abortFn|null)              // 单槽位：注册前 abort 旧任务
+function taskController.setActiveTask(abortFn|null)   // 单槽位：注册前 abort 旧任务
 function collectBrowserFeatures() -> object       // navigator/screen/localStorage.securityKey 快照
-function collectSecurityStatus() -> object        // 密钥 + 六路捕获缓存摘要（含 webSign 标记） + hook 标志位
+function securityStatus.collect() -> object       // 密钥 + 六路捕获缓存摘要（含 webSign 标记） + hook 标志位
 function getSecurityKey() -> string               // localStorage["security-sdk/s_sdk_cert_key"].data 去 "pub." 前缀
 
 // content.js
 function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail) -> message handler
-function fetchDetailByAwemeId(awemeId, timeoutMs=5000) -> Promise<videoUrl>   // 保存按钮的视频兜底
-function saveWork(fullWork)                       // apiData LRU 合并 → SAVE_WORKS
+WorkSaver.#fetchDetailByAwemeId(awemeId, timeoutMs=5000) -> Promise<videoUrl>   // 保存按钮的视频兜底
+WorkSaver.saveWork(fullWork)                      // apiData LRU 合并 → SAVE_WORKS
 ```
 
 ### BRIDGE 消息 ↔ 事件对照表（content.js）
@@ -160,7 +165,7 @@ window.fetch = function (...args) {
     if (response.ok && parsedUrl) {
       captureFromUrl(url, parsedUrl);
       response.clone().json().then((data) => {
-        extractWorksFromResponse(url, data, parsedUrl).then(dispatchWorks).catch(() => {});
+        workExtractor.dispatchWorks(workExtractor.extractWorksFromResponse(url, data, parsedUrl));
       }).catch(() => {});                    // 分离 Promise 链，不阻塞响应交付
     } else if (response.ok && !isInternal && …) { captureFromUrl(url); }
     return response;
@@ -211,17 +216,36 @@ body 由 `CONFIG.CANCEL.*.body(id, active)` 生成：`active=false` 取消（`ty
 ### 按钮注入（React Fiber 提取）
 
 ```js
-function getReactFiber(el) { /* 找 __reactFiber$ 前缀键 */ }
-function searchAwemeInfoFromFiber(fiber) { /* 沿 return 向上搜 memoizedProps.awemeInfo */ }
-function getAwemeInfoFromButton(btn) {
-  const parentFiber = getReactFiber(btn.parentElement);        // 第一级：父元素 fiber 向上搜
+ButtonInjector.#getReactFiber(el) { /* 找 __reactFiber$ 前缀键 */ }
+ButtonInjector.#searchAwemeInfoFromFiber(fiber) { /* 沿 return 向上搜 memoizedProps.awemeInfo */ }
+ButtonInjector.#getAwemeInfoFromButton(btn) {
+  const parentFiber = this.#getReactFiber(btn.parentElement);  // 第一级：父元素 fiber 向上搜
   …
   const container = btn.closest(".basePlayerContainer");       // 第二级：播放器容器 fiber
 }
 // 注入去重：querySelectorAll(".basePlayerContainer xg-right-grid:not(:has(.dy-saver-btn))")
 // MutationObserver 无条件 100ms 防抖后重扫（:has 选择器幂等，已注入 grid 不再命中）
-// 点击 → extractWorkFromRaw(fiber源) → dispatch DY_BUTTON_CLICK → content.saveWork()
+// 普通点击 → extractWorkFromRaw(fiber源) → dispatch DY_BUTTON_CLICK → content.saveWork()
+// Ctrl/Cmd+点击 → 取 author.sec_uid → dispatch DY_IMPORT_CANDIDATE_REQUEST
+//                 → content CandidateSaver → IMPORT_CANDIDATE（作者入候选域）
 ```
+
+### 保存按钮状态角标（作品域 / 候选域）
+
+保存按钮注入后即通过 `DY_RECORD_STATUS_REQUEST` 查询当前作品的归属状态；触发源有三条、互相兜底：
+
+```
+① #injectButtons 注入完成 → 立即查一次（图集/暂停态也能出状态）
+② document 捕获 play 事件 → 视频切换/续播时按 fiber 重新取 awemeId 查询
+③ 按钮 mouseenter → 兜底补查（播放事件早于按钮注入等时序）
+```
+
+- 查询链路：`awemeId + uid` → content `RecordStatus` → background `GET_RECORD_STATUS`（works/candidates 两域主键直读，不物化整域；只返回存在性，不解析分组）。
+- 展示：按钮右上绿色 `✓` = 作品已在作品域；右下蓝色 `候` = 作者已在候选域；状态只走角标，不写入 tooltip，悬停显示作者昵称 + 弱化小字操作提示「点击->添加作品 Ctrl/Cmd+点击->添加作者」。
+- 双动作：普通点击入库作品；Ctrl/Cmd+点击把当前作品作者入库候选域（content `CandidateSaver` 复用 `IMPORT_CANDIDATE`，按 secUid 去重；成功 toast，蓝色「候」通过 `DY_IMPORT_CANDIDATE_RESULT` 即时点亮）。
+- tooltip 宽度 `max-content` + `min-width:180px` / `max-width:360px`（绝对定位默认按按钮宽度 shrink-to-fit，`pre-line` 下 CJK 最小内容宽度只有 1 个字）；昵称行超长按 `TOOLTIP_TITLE_MAX_LEN`(24) 字符截断加省略号。
+- 状态已加载的视频以 `statusFor` 钉在按钮上，SPA 复用同一按钮时以其变化清空旧角标；不改变按钮根节点，角标 `pointer-events:none`。
+- 保存成功由 content `recordStatus.markSaved()` 推 `DY_WORK_SAVED`，按钮无需等待下一次查询；content 缓存 TTL 30s，页面重新可见时清空，跨 options 修改可即时反映。查询失败静默降级，原有 `SAVE_WORKS` 合并仍是最终去重兜底。
 
 ### 浏览器特征采集（独立模式的指纹来源）
 
@@ -242,7 +266,7 @@ function collectBrowserFeatures() {
 
 ### 安全状态数据模型（GET_SECURITY_STATUS 输出契约）
 
-`collectSecurityStatus()` 同步执行立即返回（background 5s 超时）：
+`securityStatus.collect()` 同步执行立即返回（background 5s 超时）：
 
 ```js
 {
@@ -280,7 +304,7 @@ Tab 模式下 inject 回 `NO_SIGNATURE` 后，options 弹 `showNoSignatureDialog
 | 用户在 `/user/self` 页触发扫描 | secUid === "self" | `resolveSelfSecUid()` 从缓存签名解析真实 sec_uid；解析不出仍报 NO_SIGNATURE |
 | detail 返回空 body | 抛 `RATE_LIMITED` | 属致命错误码，终止整个同步批次（01 文档分类表） |
 | 预塞旧签名（误改 stripSdkKeys） | argus `web_id_sign_invalid` 403 | 保持"剥离全部 SDK 键再裸发"的形态不变 |
-| AbortError | fetch/XHR 被 abort | 统一转译为 `CANCELLED`（cancelOne）/由外层 catch 上抛（fetch 路径） |
+| AbortError | fetch/XHR 被 abort | 统一转译为 `CANCELLED`（ReactionHandler XHR）/由外层 catch 上抛（fetch 路径） |
 | Hook 未生效（页面 CSP 变更等） | `__dyManagerFetchHooked/__dyManagerXhrHooked` 为 false | 安全状态面板 hooks 字段可见；GET_SECURITY_STATUS 是唯一恒走 Tab 的诊断入口（01 文档路由表） |
 | React 升级致 Fiber 结构变化 | 按钮点击取不到 awemeInfo | toast「无法获取作品信息」；需重新适配选择器/Fiber 搜索（前端耦合风险） |
 | 双 Hook 重入 | — | `window.__dyManager*Hooked` 标志位防重复安装 |
@@ -294,18 +318,18 @@ Tab 模式下 inject 回 `NO_SIGNATURE` 后，options 弹 `showNoSignatureDialog
 | `CONFIG.TIMEOUT` | FETCH_PAGE:15000 / FETCH_DETAIL:8000 | inject 侧请求超时 |
 | `CONFIG.CANCEL.*` | digg/collect 端点定义（url + `body(id, active)`） | 点赞/收藏状态端点（active=false 取消、true 添加）；Referer 由页面上下文自动携带（JS 不可设），Tab 模式无需 DNR |
 | `CONFIG.SECURITY_KEY` | `security-sdk/s_sdk_cert_key` | ticket-guard 公钥的 localStorage 键 |
-| `CONFIG.BUTTON.*` | 选择器 / 防抖 100ms / `TEXT_SAVE:"保存"` | 按钮注入参数；hover tooltip 显示 `@昵称 · 描述前30字符`（截断长度 `TOOLTIP_DESC_MAX_LEN:30`，取不到作品信息时回落纯"保存"） |
+| `CONFIG.BUTTON.*` | 选择器 / 防抖 100ms / `TEXT_SAVE:"保存"` | 按钮注入参数；hover tooltip 为「标题（@昵称或“保存”）+ 固定弱化操作提示行」，昵称按 `TOOLTIP_TITLE_MAX_LEN:24` 截断 |
 | `PAGE_KEYS` / `SDK_INJECT_KEYS` | 两个 Set | stripPageKeys / stripSdkKeys 的剥离清单 |
 
 ## 相关文档
 
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
-| 01 | [01-project-architecture.md](./01-project-architecture.md) | 四层架构定位、sendToTab/requestResponse 协议、进度消息表 |
+| 01 | [01-project-architecture.md](./01-project-architecture.md) | 四层架构定位、tabBridge.send/requestResponse 协议、进度消息表 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | fetchOneDetail 的独立模式对照（formatWork ⇔ extractVideo 双实现同步约束） |
 | 03 | [03-independent-sync-followings.md](./03-independent-sync-followings.md) | fetchFollowingPage / 关注列表归一化的 Tab 分支细节 |
 | 04 | [04-independent-calibrate-followings.md](./04-independent-calibrate-followings.md) | fetchProfileOther 五源 fallback 的消费方 |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | fetchOneFavoritesPage/fetchOneCollectionPage 代签方案的独立模式对照 |
-| 06 | [06-independent-cancel-collection.md](./06-independent-cancel-collection.md) | cancelOne XHR 的独立模式对照与双模差异表 |
+| 06 | [06-independent-cancel-collection.md](./06-independent-cancel-collection.md) | ReactionHandler XHR 的独立模式对照与双模差异表 |
 | 07 | [07-independent-fetch-user-works.md](./07-independent-fetch-user-works.md) | fetchAuthorWorks 的独立模式对照 |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | Tab模式为何不依赖 rule 4–6（页面内发起天然合规） |

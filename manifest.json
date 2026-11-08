@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "抖音数据管理",
-  "version": "2.1.3",
-  "description": "统一管理抖音作品、关注、候选、点赞与收藏数据",
+  "version": "2.2.4",
+  "description": "统一管理抖音作品、关注、候选、点赞与收藏数据，并提供随机回顾",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxBN5mdy5zPbmLWKz52yHlX4Egv7AEqcd9goOeW7sK6lMCZN5i+bsyM/gHw7Sfrq1b5KcnO/lO3T5mHso661MCVgqhqI7y9QRMyYq6WMOwqbGKiREpIL51oGvCYY/y/U8F85V8X1QHCxa/92OYQCcO/d5V+9f8yzr5ZTQivHmYAlqQK962w80CTKirGb1q5im0Fr6XHyf72JdvfpCNwEsQgkVW6gBQEOR4oYVAjyBX6bxvfdafjOJ4IC0cRjwkqhewp5e6AuJ5lpMsFkGFjN7l5Rgm5Y7T6hiVNTVhnPtySM+Fn11sMyC39KgU12NaYF2D24gEysxrY4hEKz+C2zA5QIDAQAB",
   "permissions": [
     "storage",

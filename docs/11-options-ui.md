@@ -10,11 +10,11 @@
 
 ### VirtualGrid 渲染管线（双向虚拟化 + 分圈观察 + 活动窗口 + 尾部占位）
 
-自适应卡宽（2026-10 定案：拉伸填满，替代「固定卡宽 + auto-fill 取整」）：列数由`#applyLayout` 在容差带（作者域 [`CARD_SIZE_BAND_MIN`, `CARD_SIZE_BAND_MAX`] / 作品域 [`WORK_CARD_SIZE_BAND_MIN`, `WORK_CARD_SIZE_BAND_MAX`]×理想卡宽，按实例覆盖）内取「拉伸填满后最接近理想卡宽」的候选列数——w(c) = (W−(c−1)·gap)/c 随 c 单调递减、偏差V 形，线性扫全程即全局最优；新列数只会 ≥ 旧 floor 值（密度不回退），带内实际卡宽恒等于w(cols)、右缘余量恒为 0；无可行解（相邻列宽差跨过整个带宽，极窄内容区）时零空白优先——lo 列精确填满、向下破下限 ≤ 一个带宽（fillW ≥ 2·minW − maxW），卡片明显过小才钳到上限、余量由 justify-content: center 均分。结果以 inline style 写共享容器（`gridTemplateColumns` 定列 +`--dy-card-actual` 供 `.work-card` 宽高联动；两域理想卡宽经子类传入的 `cardSizeVar`从 CSS 变量读取，works 249 / followings 212），样式表 `repeat(auto-fill, …)` 仅作未落笔兜底。容器宽变化（右栏折叠/窗口缩放/侧边作品栏拖宽）分两条路：RO 观察的是 **#mainGrid**（稳定节点）而不是 #mainContainer——容器是本类唯一会写尺寸的对象（轨宽/上下占位/铺卡都改它的高度），在观察它的回调内写入会触发浏览器的「ResizeObserver loop completed with undelivered notifications」告警；回调内只读宽度、把落笔**推迟到下一帧 rAF**（窗口缩放容忍一帧延迟）。RO 回调入口 `#onContainerResize` 按活跃实例门控——五单例（works/favorites/collections/followings/candidates）共享同一容器、各自 RO 都会触发，`#observer`/`#chunkRaf` 仅活跃网格非空（render 建链、abortRender 断链），据此互斥落笔。侧栏折叠/展开/拖宽走`syncContainerWidth()` 同步路径（调用方 mutate 后直接调用）：读新宽 → 落轨宽 →锚点补偿一次完成，锚点卡由 `setResizeAnchor` 登记（未登记回退视口最上方卡）。改宽前的首测落在 mutate 后的洁净布局上（免费），落笔后的次测即绘制前必然发生的那次重排——总重排次数不增；原实现「测前→mutate→测后」会在改宽前先强制一次 O(已挂载卡) 重排（2 万卡折叠卡顿的主因之一）。改宽当帧 `#skipWindowOnce` 跳过窗口重挂（锚点已钉回）。随后 `#scheduleCatchUp` 的 rAF 统一补占位与视口带区：只读操作（扩容探测/带区追赶）在前、`padding-bottom` 写入收尾——帧内写后再读会多逼一次强制布局；改宽当帧经 `#skipExtendOnce` 跳过扩容探测（锚点保持⇒ 视口相对真实内容底不变）。尾部占位几何按「列数×卡宽」缓存（`#reserveKey`）：滚动帧零测量（原实现每帧扫首行至多 64 张 gBCR），改宽后重测一次即可。#applyLayout 在列数/卡宽均未变化时直接跳过落笔。#mainGrid 必须保持 `scrollbar-gutter: stable`：精确填满使卡宽成为容器宽的函数，竖向滚动条出现/消失会反向改容器宽、与布局互锁成振荡（半屏卡片闪烁 + RO loop报错的根因），恒定槽位使容器宽与滚动条解耦。#applyFill 带区估算与 works-grid scrollTo 兜底优先消费落笔值（`getGridLayout()`），与 CSS 实际轨宽一致。render() 内落笔时序在 `#resetRenderState`**之后**（后者清布局字段）。
+自适应卡宽（2026-10 定案：拉伸填满，替代「固定卡宽 + auto-fill 取整」）：列数由`#applyLayout` 在容差带（作者域 [`CARD_SIZE_BAND_MIN`, `CARD_SIZE_BAND_MAX`] / 作品域 [`WORK_CARD_SIZE_BAND_MIN`, `WORK_CARD_SIZE_BAND_MAX`]×理想卡宽，按实例覆盖）内取「拉伸填满后最接近理想卡宽」的候选列数——w(c) = (W−(c−1)·gap)/c 随 c 单调递减、偏差V 形，线性扫全程即全局最优；新列数只会 ≥ 旧 floor 值（密度不回退），带内实际卡宽恒等于w(cols)、右缘余量恒为 0；无可行解（相邻列宽差跨过整个带宽，极窄内容区）时零空白优先——lo 列精确填满、向下破下限 ≤ 一个带宽（fillW ≥ 2·minW − maxW），卡片明显过小才钳到上限、余量由 justify-content: center 均分。结果以 inline style 写共享容器（`gridTemplateColumns` 定列 +`--dy-card-actual` 供 `.work-card` 宽高联动；两域理想卡宽经子类传入的 `cardSizeVar`从 CSS 变量读取，works 249 / followings 212），样式表 `repeat(auto-fill, …)` 仅作未落笔兜底。容器宽变化（窗口缩放/侧边作品栏拖宽）分两条路：RO 观察的是 **#mainGrid**（稳定节点）而不是 #mainContainer——容器是本类唯一会写尺寸的对象（轨宽/上下占位/铺卡都改它的高度），在观察它的回调内写入会触发浏览器的「ResizeObserver loop completed with undelivered notifications」告警；回调内只读宽度、把落笔**推迟到下一帧 rAF**（窗口缩放容忍一帧延迟）。RO 回调入口 `#onContainerResize` 按活跃实例门控——七个网格实例（works/favorites/collections/followings/candidates/reviewWorks/reviewAuthors）共享同一容器、各自 RO 都会触发，`#observer`/`#chunkRaf` 仅活跃网格非空（render 建链、abortRender 断链），据此互斥落笔。侧边作品栏拖宽/开合走 `syncContainerWidth()` 同步路径（调用方 mutate 后直接调用）：读新宽 → 落轨宽 →锚点补偿一次完成，锚点卡由 `setResizeAnchor` 登记（未登记回退视口最上方卡）。改宽前的首测落在 mutate 后的洁净布局上（免费），落笔后的次测即绘制前必然发生的那次重排——总重排次数不增；原实现「测前→mutate→测后」会在改宽前先强制一次 O(已挂载卡) 重排（2 万卡改宽卡顿的主因之一）。改宽当帧 `#skipWindowOnce` 跳过窗口重挂（锚点已钉回）。随后 `#scheduleCatchUp` 的 rAF 统一补占位与视口带区：只读操作（扩容探测/带区追赶）在前、`padding-bottom` 写入收尾——帧内写后再读会多逼一次强制布局；改宽当帧经 `#skipExtendOnce` 跳过扩容探测（锚点保持⇒ 视口相对真实内容底不变）。尾部占位几何按「列数×卡宽」缓存（`#reserveKey`）：滚动帧零测量（原实现每帧扫首行至多 64 张 gBCR），改宽后重测一次即可。#applyLayout 在列数/卡宽均未变化时直接跳过落笔。#mainGrid 必须保持 `scrollbar-gutter: stable`：精确填满使卡宽成为容器宽的函数，竖向滚动条出现/消失会反向改容器宽、与布局互锁成振荡（半屏卡片闪烁 + RO loop报错的根因），恒定槽位使容器宽与滚动条解耦。#applyFill 带区估算与 works-grid scrollTo 兜底优先消费落笔值（`getGridLayout()`），与 CSS 实际轨宽一致。render() 内落笔时序在 `#resetRenderState`**之后**（后者清布局字段）。
 
-分组与域切换同序列清场（2026-09-27 用户定案：点击必须先清空，「旧网格冻结-定格」方案否决——定格被感知为卡顿）：分组走 `currentGroupId` 事件、域走 `switchDomain`，二者都在切换瞬间经`appShell.clearActiveGrid()` 同步 abortRender×5（五网格实例）+ **O(1) 换空壳**：`stale.replaceWith(fresh)` 令滚动高度瞬间塌缩、画面立即清空——任何「移除 1 万节点」的操作（replaceWith/innerHTML 皆然）都是 O(N) 整树脱离 + 布局对象销毁，阻塞在点击路径上就表现为滚动条迟迟不缩到目标尺寸；脱离渲染树的旧子树由 `#destroyDetached` 在空闲期分批销毁（requestIdleCallback，每轮 8ms 预算逐个移除直接子节点，不可用兜底 setTimeout 0），拆卸与 GC 摊到空闲帧、离开点击关键路径。容器级事件委托（click/pointerover/out/input）绑在 `#mainGrid`（稳定节点）上，换容器零重绑；网格经`attachContainer` 重指向。数据到达后由 render(items) 首屏同步铺骨架、余量拼装一次挂载并按槽回填——点击→首屏的空白收敛为「首页小页（`PAGE.GRID_FIRST`=600，恰为活动 DOM 上限 GRID_MOUNT_MAX，仅够铺满首屏窗口）+ 余页按 `PAGE.GRID` 续传」的一次读取往返；切域监听内首页请求**先发**，`GET_GROUPS` 立即出 tab，但**作者主键集（GET_AUTHOR_UID_SETS）与分组计数（GET_STATS）延后**（`services.whenFirstScreen`）：主键集在首屏渲染落笔后一个宏任务取（chip 到达后 `syncAuthorFlags()` 原地 patch）；分组计数再等**网格加载空闲（最多 5s；期间 tab 先显示 `state.gridTotals` 缓存，page-0 的当前分组 total 到达即经 `grid-total` 事件即时校正该 tab，与搜索栏 N 同源；其余分组数字随续页进度累计 `grid-totals`，与 K/N 已加载口径一致，加载完成后由 GET_STATS 校正为权威值）**——3 万级库上分组 count / getAllKeys 与 page-0 / 续页游标读并发会把首页往返从 ~150ms 拖到 ~1s、并拖住首段计数增长（2026-10-31 实测定案）。首帧只等 page-0 一条往返。滚动位置随 wipe clamp 归零。
+分组与域切换同序列清场（2026-09-27 用户定案：点击必须先清空，「旧网格冻结-定格」方案否决——定格被感知为卡顿）：分组走 `currentGroupId` 事件、域走 `switchDomain`，二者都在切换瞬间经`appShell.clearActiveGrid()` 同步 abortRender×7（七个网格实例）+ **O(1) 换空壳**：`stale.replaceWith(fresh)` 令滚动高度瞬间塌缩、画面立即清空——任何「移除 1 万节点」的操作（replaceWith/innerHTML 皆然）都是 O(N) 整树脱离 + 布局对象销毁，阻塞在点击路径上就表现为滚动条迟迟不缩到目标尺寸；脱离渲染树的旧子树由 `#destroyDetached` 在空闲期分批销毁（requestIdleCallback，每轮 8ms 预算逐个移除直接子节点，不可用兜底 setTimeout 0），拆卸与 GC 摊到空闲帧、离开点击关键路径。容器级事件委托（click/pointerover/out/input）绑在 `#mainGrid`（稳定节点）上，换容器零重绑；网格经`attachContainer` 重指向。数据到达后由 render(items) 首屏同步铺骨架、余量拼装一次挂载并按槽回填——点击→首屏的空白收敛为「首页小页（`PAGE.GRID_FIRST`=600，恰为活动 DOM 上限 GRID_MOUNT_MAX，仅够铺满首屏窗口）+ 余页按 `PAGE.GRID` 续传」的一次读取往返；切域监听内首页请求**先发**；旧域分组 tab 立即清空，`GET_DOMAIN_GROUPS` 只读对应 `*_groups` 小表，名称/顺序/计数同一响应到达后一次渲染（计数为 `*_groups.count`，由写入维护、升级 v11 回填，不扫数据表）；**作者主键集（GET_AUTHOR_UID_SETS）延后**（`services.whenFirstScreen`）：主键集在首屏渲染落笔后一个宏任务取（chip 到达后 `syncAuthorFlags()` 原地 patch）。首帧只等 page-0 一条往返。滚动位置随 wipe clamp 归零。
 
-数据侧与渲染侧衔接（`services.loadDomainData`，作品型三域分页渐进）：首页（`GET_WORKS page:0`，bg 端复合索引 keyset 游标直出、**首屏只物化 `PAGE.GRID_FIRST`(600) 条** + `total` 计数，余页按 `PAGE.GRID`(1000) 续传——较 2000 减半把单页反序列化长任务切碎）到达即`store.set` → render() 按 `total` **预铺至 `GRID_PREMOUNT_CAP` 上限**（未到达槽位为无键占位卡，超出上限的部分滚近底部时倍增扩容——滚动条物理上到不了未挂载区，远跳落进空白结构性不存在）；**续页循环在首屏渲染落笔（`state.gridSlots` 被 `renderCards` 消费）且让出一次空闲期后才启动（`services.whenFirstScreen`，首屏错峰；分组计数/作者主键集等装饰性请求共用同一 Promise 先行等待）**——避免续页长任务与并发 IDB 请求把首屏填充、封面探针挤到后面；余量以 `nextCursor`（末条索引键）keyset 续页 `appendWorkRecord`→ `work-record-appended` 事件 → 默认视图 `fillSlots(start)` 按键前缀自锚定回填（零 DOM 增删；落点 = 传入 start 与首个无键槽取小者，删除使 #slots 相对页序收缩时自愈）、`done` 时`pruneEmptyTail` 摘除尾部未回填占位卡（预铺超出的兜底残余，removeItems 已同步收缩 #totalSlots）；筛选激活时静默累积到加载完成再整渲（逆序/作者聚类破坏页序对齐；`renderCards` 消费额度时按 `isFilterActive` 跳过预铺）；关注/候选两域与 `loadWorks`（同步清单/重试）保持单发全量：
+数据侧与渲染侧衔接（`services.loadDomainData`，作品型三域分页渐进）：首页（`GET_WORKS page:0`，bg 端复合索引 keyset 游标直出、**首屏只物化 `PAGE.GRID_FIRST`(600) 条** + `total` 计数，余页按 `PAGE.GRID`(1000) 续传——较 2000 减半把单页反序列化长任务切碎）到达即`store.set` → render() 按 `total` **预铺至 `GRID_PREMOUNT_CAP` 上限**（未到达槽位为无键占位卡，超出上限的部分滚近底部时倍增扩容——滚动条物理上到不了未挂载区，远跳落进空白结构性不存在）；**续页循环在首屏渲染落笔（`state.gridSlots` 被 `renderCards` 消费）且让出一次空闲期后才启动（`services.whenFirstScreen`，首屏错峰；分组计数/作者主键集等装饰性请求共用同一 Promise 先行等待）**——避免续页长任务与并发 IDB 请求把首屏填充、封面探针挤到后面；余量以 `nextCursor`（末条索引键）keyset 续页 `appendWorkRecord`→ `work-record-appended` 事件 → 默认视图 `fillSlots(start)` 按键前缀自锚定回填（零 DOM 增删；落点 = 传入 start 与首个无键槽取小者，删除使 #slots 相对页序收缩时自愈）、`done` 时`pruneEmptyTail` 摘除尾部未回填占位卡（预铺超出的兜底残余，removeItems 已同步收缩 #totalSlots）；筛选激活时静默累积到加载完成再整渲（逆序/作者聚类破坏页序对齐；`renderCards` 消费额度时按 `isFilterActive` 跳过预铺）；关注/候选两域保持单发全量：
 
 ```
 render(items, emptyMsg, emptyHint, totalSlots, premountCap = GRID_PREMOUNT_CAP)
@@ -31,7 +31,7 @@ render(items, emptyMsg, emptyHint, totalSlots, premountCap = GRID_PREMOUNT_CAP)
       ——已加载但超出上限的条目只登记进快照/#itemMap，不挂 DOM；余量行高由**尾部占位**
       （#syncTailReserve：容器 padding-bottom 预留，纯 style 写入零追加）在渲染首帧把
       滚动条总长收敛为已知条目终值——卡片滚近按需铺入、占位等量收缩，净高恒定无滑块回退
-      （2026-10 定案；自动翻页全量挂 DOM 会让 2 万条目录入完成后每次折叠侧栏都全量重排）
+      （2026-10 定案；自动翻页全量挂 DOM 会让 2 万条目录入完成后每次改宽都全量重排）
     首段同步挂载前 RENDER_CHUNK_SIZE 个（真数据骨架优先，缺口为无键占位卡）；首段节点打
     data-fade（入场动画仅限定首屏，CSS `.work-card[data-fade]`——筛选切换/扩容的数百张卡
     不再同帧起 350ms 动画，滚入/回填直接呈现），挂载后交接分圈观察
@@ -266,15 +266,16 @@ updateCheckboxDOM(checkboxEl, isSelected) {
 }
 
 handleBatchSelectAll() {
-  const selector = config.AUTHOR_RECORD_DOMAINS.includes(state.domain) ? ".following-checkbox" : ".work-checkbox"; // 必须按域选择
+  const selector = utils.isAuthorRecordDomain() ? ".following-checkbox" : ".work-checkbox"; // 必须按域选择
   …
 }
 ```
 
 - **勾选框显隐由 `body.batch-mode` 纯 CSS 驱动（红线）**：基类 `.work-checkbox`/`.following-checkbox` 为 `display:none`，`body.batch-mode` 下才 `flex`。JS 侧（fillCard/clearCard/handleBatchToggle）**禁止逐元素写 inline display**——勾选框随卡片填充创建且滚出卸载圈降级（clearCard）时**即移除**，但万级域滚动后勾选框仍可达数千，逐个 style 写入会让进/出批量模式触发秒级样式重算+重排（2026-09 卡顿报告的根因）。退出批量只清 `.checked` 的勾选框（未勾选框本就无内容）。
 - **批量禁选文本走 mousedown preventDefault，禁止 CSS user-select（红线）**：`.batch-mode` 系 user-select 规则（逐卡 `.work-card` 或容器 `#mainGrid` 继承覆盖均可）会随 body class 翻转触发全网格级联重算——容器继承方案更糟（继承传播让全部 ~4 万后代节点全量重算，5000 卡高保真复现实测 ~800ms/次，禁用后 43ms），是「进入批量模式卡顿」的主因。改为 main.js 在批量模式下对 `#mainGrid` mousedown `preventDefault()`（O(1)、零样式成本；限定主键并排除 input/textarea，保住视频进度条拖拽）。
-- **批量模式下 Ctrl/Cmd 旁路仅保留作者维度（2026-10-31 定案，撤销 2026-10-24 的链接旁路）**：关注/候选域 Ctrl/Cmd+点击作者卡打开/更新右侧作品栏（`AuthorGrid.handleClick` 顶部守卫）；作品/点赞/收藏域 Ctrl/Cmd+点击作品作者名打开同一侧边作品栏（`WorksGrid.handleClick` 作者分支，见「侧边栏作者上下文入口」）。两处均**不切换勾选、不退出批量模式**；作品标题/作者外链不再有 Ctrl/Cmd 旁路（批量模式下与普通点击一致归勾选），勾选圆/媒体控件保持原有行为。**批量模式下标题/作者恒为 `cursor:default` + 无 hover 变色**（只保留卡片整体缩放悬浮；`body.ctrl-hold` 及修饰键视觉切换已随外链旁路一并移除）。该视觉规则不适用于作者域卡片。
-- **Shift 连选（2026-10-25 定案；显式减选模式已于 2026-10-28 移除；取序与锚点已于 2026-10-29 修正）**：Shift+点击 = 从上次点击锚点连选到目标；范围应用统一 `Batch.#applyRange` 按**网格已渲染顺序快照**（`VirtualGrid.renderedItems()`，与挂载卡 DOM 同序）批量选中 `state.selectedIds` 并遍历已挂载勾选框走 `Batch.updateCheckboxDOM`。取消选择走普通点击逐项切换（复选框/减选按钮与 X 快捷键均已移除）。Ctrl/Cmd 旁路仅保留作者维度、不受影响（`WorksGrid` 作者分支 / `AuthorGrid` 顶部守卫）。**区间取序禁止按 `getWorksView()`/`getAuthorRecordsView()` 现算下标**：排序/筛选后视图随 `dataVersion` 重建（作者作品数 rank 重排、渐进加载静默累积、局部替换），可能与尚未重渲的 DOM 顺序不一致——按视图下标圈选会把区间落到视口/挂载窗口之外，是「视觉选中两点间、实际移走的却是别的卡」（视图内左上与右下两张卡的区间被算成 1800+ 项）的根因；快照缺失（render 前/abort 后）才回退视图函数。**用户重定义结果集（排序/关键词/范围/类型/逆序/清除）且视图确已变化时，旧选区与 Shift 锚点一并作废**（批量模式保留，`SearchBar.refreshGridView` → `Batch.resetSelection()`）——锚点通常是视口外的旧卡且位置只在新顺序里现算，保留会让重排后的首次 Shift 点击跨到任意位置、圈出视口外的大段区间；分组切换与域切换同样选区+锚点一并清空。
+- **Ctrl/Cmd 旁路（2026-11 修订）**：关注/候选域作者卡 Ctrl/Cmd+点击（任意区域，含头像/统计区/勾选圆）统一在新标签打开作者主页，不再打开侧边作品栏、不切换勾选、不退出批量模式（`AuthorGrid.handleClick` 顶部守卫）。作品/点赞/收藏域卡片**作者名的 Ctrl/Cmd+点击在新标签打开作者主页**，普通点击作者名打开侧边作品栏（`WorksGrid.handleClick` 链接分支，见「侧边栏作者上下文入口」）。**批量模式选中命中区收窄（保留正常点击语义）**：作品卡仅 `.work-media` 内容区参与选中；信息条不参与选中，作者链接在批量模式下仍按普通点击语义工作——作者名打开侧边作品栏（日期/空白信息区不改变选中态）。作者卡仅 `.following-main`（头像+昵称行）参与选中（头像随该行参与选中，非批量模式仍保持点头像打开主页）；该行以外的卡片区域保持正常点击语义——打开侧边作品栏。Ctrl/Cmd+点击外链不切换勾选、不退出批量；勾选圆/媒体控件保持原有行为。光标：作品卡根为 default、`.work-media` 为 pointer，作者链接自身保持 pointer 与 hover 变色；作者卡整卡 pointer（身份行选中、其余区域开侧栏）。**作者卡分区视觉**：卡片内容内边距与作品卡信息条共用 `--dy-card-pad-x/top/bottom`（8/8/6），顶部留白挂 `.following-main`（点击卡片顶部留白也命中选中区）；身份行（选中命中区）保持 `--dy-surface`，统计/更新行由 `.following-details` 以 1px `--dy-border` 分隔线独立成次级区块——不使用亮色面板、文字维持次级色，视觉重心保持在身份行；批量模式两处点击区域仍可按分隔线辨认。hover 只提亮卡片底色。
+- **作者卡侧栏激活态**：与作品卡同款，仅替换整圈 `--dy-primary` 描边；禁止「`inset` 左色条 + 外部投影」组合——与 toast 的左色条+圆角+阴影视觉同构，易被误读为提示条（2026-11 修订）。
+- **Shift 连选（2026-10-25 定案；显式减选模式已于 2026-10-28 移除；取序与锚点已于 2026-10-29 修正）**：Shift+点击 = 从上次点击锚点连选到目标；范围应用统一 `Batch.#applyRange` 按**网格已渲染顺序快照**（`VirtualGrid.renderedItems()`，与挂载卡 DOM 同序）批量选中 `state.selectedIds` 并遍历已挂载勾选框走 `Batch.updateCheckboxDOM`。取消选择走普通点击逐项切换（复选框/减选按钮与 X 快捷键均已移除）。Ctrl/Cmd 外链旁路（`WorksGrid` 链接分支 / `AuthorGrid` 顶部守卫）不受影响。**区间取序禁止按 `getWorksView()`/`getAuthorRecordsView()` 现算下标**：排序/筛选后视图随 `dataVersion` 重建（作者作品数 rank 重排、渐进加载静默累积、局部替换），可能与尚未重渲的 DOM 顺序不一致——按视图下标圈选会把区间落到视口/挂载窗口之外，是「视觉选中两点间、实际移走的却是别的卡」（视图内左上与右下两张卡的区间被算成 1800+ 项）的根因；快照缺失（render 前/abort 后）才回退视图函数。**用户重定义结果集（排序/关键词/范围/类型/逆序/清除）且视图确已变化时，旧选区与 Shift 锚点一并作废**（批量模式保留，`SearchBar.refreshGridView` → `Batch.resetSelection()`）——锚点通常是视口外的旧卡且位置只在新顺序里现算，保留会让重排后的首次 Shift 点击跨到任意位置、圈出视口外的大段区间；分组切换与域切换同样选区+锚点一并清空。
 
 ### 悬停预览事件委托（禁用 pointerenter/leave）
 
@@ -298,7 +299,7 @@ enter/leave 不冒泡——挂在 grid 容器上的监听器只有 target 是容
 
 ### 离开扩展页面即暂停全部播放（visibilitychange）
 
-`main.js` init 绑定 `visibilitychange`（`document.hidden` 时触发，即切标签/最小化；窗口失焦不暂停），回调为 `worksGrid.stopAllMedia() + detail.pauseOnHidden()`：
+`main.js` init 绑定 `visibilitychange`（`document.hidden` 时触发，即切标签/最小化；窗口失焦不暂停），回调为 `worksGrid.stopAllMedia() + sidebar.stopAllMedia() + detail.pauseOnHidden()`：
 
 - 卡片悬浮/按钮预览：`WorksGrid.stopAllMedia()` 遍历容器内全部 `.work-video-player` 走 `#stopPreview`——pause、清 `hoverTimer/_retryTimer/_hoverTimeout`、摘 hovered 标记并还原封面。覆盖悬停起播与播放按钮直启两条路径。
 - 详情视频：`Detail.pauseOnHidden()` 先 `clearTimeout(video._retryTimer)`（防挂起重试在后台 `load()+play()` 静默续播）再 pause，播放按钮复位为 play 图标与「播放」文案。
@@ -409,9 +410,9 @@ probe.onerror = () => {
 
 `.group-slider` 常驻 `.group-tabs` 内，高亮职责整体移交滑块（`.group-tab.active` 自身背景必须透明，否则过渡期双重高亮）。**滑块动画的前提是元素跨切换存活**：`renderGroupTabs()` 全量重建仅在分组集合/计数变化时走（groups 事件、换域、init、导入、同步完成）；分组切换只走 `groups.syncActiveTabs()` 切 active 类 + 滑块带动画滑动。`updateGroupSlider(animated)` 中 `animated=false`（重建/resize）必须 no-anim 瞬移——resize 绝不允许滑块从旧位置横穿飞行；active 缺失（删除当前分组的重建瞬间）收拢为零宽、不残留旧高亮。
 
-**两段式重建（2026-10-20，消除「切域分组栏慢一拍」，红线）**：`renderGroupTabs()` 拆为——① 先 `await services.loadGroups()`（轻量 `GET_GROUPS`）只出**分组名 + 激活态**，tab 结构即刻就位并落滑块/遮罩；② 计数是装饰性补丁，**禁止把第二段 await 进第一段**——域切换 handler 里 `await groups.renderGroupTabs()` 紧随其后就是 `loadDomainDataSafe()`，一旦 await 计数会让网格白等一轮 `GET_STATS` 往返（这就是「切域空网格」的来源）。第二段 `#fillGroupCounts()` 不 await：先等 `services.whenFirstScreen(domain, groupId)`（首屏渲染落笔），再等网格加载空闲（最多 5s，避免与续页游标抢 IDB），期间 tab 沿用 `state.gridTotals` 缓存，最后按**当前域**补计数（`services.loadStats(state.domain)` → 即 `GET_STATS { domain }`，**只统计一个域**）。**禁止改回 `Promise.all([loadStats, loadGroups])` 一次算全域后再渲染**（会为一个域的少量按钮拖上五域整库计数）。两段各带 `#renderGen` 代际守卫 + 第二段 `tab.isConnected` 兜底（往返期间重建则旧帧作废）。当前分组 tab 的数字由 page-0 的 `grid-total` 事件即时校正（与搜索栏 N 同源），其余分组随续页经 `grid-totals` 进度累计，加载完成后由 GET_STATS 校正为权威值。存储指示器经 `#refreshStorageIndicator()`（`GET_STATS { bytesOnly:true }`，不做任何 count）**独立 fire-and-forget 刷新**，不再捆绑在 tab 重建路径上。
+**单次快照重建（2026-11 修订，替代两段式）**：`renderGroupTabs()` 只发 `GET_DOMAIN_GROUPS`——background 只读对应 `*_groups` 一张小表，返回 `{ groups, counts }` 后一次性渲染名称/顺序/数字，复杂度 O(分组数)。tab 内名称与计数拆为 `.group-tab-name` / `.group-tab-count` 两个 span（计数更弱、独立 tabular-nums）：高频计数刷新只改 count 文本并重定滑块，不重建节点。**计数为分组记录的 `count` 字段，由数据写入同事务维护**：`storage.putBatch/deleteBatch/clear` 在写数据的同时更新对应 `*_groups.count`（升级 v11 时一次性回填），读取端不扫数据表；因此名字与计数同一响应到达。**不保留快照、不显示进度计数**：每次域切换/分组刷新都重新取；域切换时 `AppShell.switchDomain` 与 `domain` 监听先 `groups.clearForDomainSwitch()` 清空旧域 tab，快照到达后一次落正确值。page-0 的 `grid-total` 只校正当前分组 tab（覆盖快照与 page-0 之间的写入）。禁止改回“先 `GET_GROUPS` 出名字、再异步 `GET_STATS`/扫描补计数/逐页进度累加”。`#renderGen` 作废在途旧帧；存储指示器仍经 `#refreshStorageIndicator()` 独立 fire-and-forget。**分组快照请求先于 page-0 发出**（`main.js` domain 监听先调 `groups.renderGroupTabs()`）。
 
-**计数缓存防白闪（2026-10-20 修复，2026-10-31 迁至 gridTotals）**：首段若只渲染名字，任何触发重建的入口（**打开分组弹窗**、分组增删改、导入/同步完成）都会让顶栏数字「先消失再出现」。因此首段直接读 `state.gridTotals` 的 `domain|groupId` 键（page-0 的 total 与 `#fillGroupCounts` 的 GET_STATS 结果都写入同一缓存，切域/切组的「0/Total」占位、搜索栏 K/N 同源），命中即渲染 `${name} (${count})`，未命中（首次进入该域/新分组）才退化为名字 + 第二段/续页回填。另：**打开分组弹窗不得重建顶栏**——`showGroupManage` 只调 `#renderDialogGroupList()`（弹窗内列表），顶栏分组栏没变、重建纯属无谓开销；增删改才经 `#refreshGroupList()`（= 顶栏重建 + 弹窗列表）或 `store.refreshGroups()`。
+**打开分组弹窗不得重建顶栏**——`showGroupManage` 只调 `#renderDialogGroupList()`（弹窗内列表），顶栏分组栏没变、重建纯属无谓开销；增删改才经 `#refreshGroupList()`（= 顶栏重建 + 弹窗列表）或 `store.refreshGroups()`。
 
 `.group-tabs` 必须声明 `scrollbar-width: none`（横滚条不得占布局高度）：全局 `*` 的 `scrollbar-color` 使新 Chromium 忽略 `::-webkit-scrollbar{display:none}`，窗口变窄 tab 溢出时横滚条回退为占位经典滚动条，把条内横向滚动区压矮 ~15px——分组按钮居中基准上移，与顶栏右侧按钮不再对齐（2026-10-16 修复）。隐藏滚动条不影响横向滚动本身（触控板/水平滚轮照常），溢出提示由 `tab-overflow` 遮罩承担。
 
@@ -443,17 +444,24 @@ probe.onerror = () => {
 - **几何**：`.detail-body` 全屏宽、`flex:1`（高度=视口−56px 播放条，零重叠）；`.media-view` 居中，宽度=`min(视口宽, 可视高×媒体宽高比)`（`--media-aspect` 由 `Detail.#setMediaAspect` 写入 overlay：视频 `loadedmetadata` 的 videoWidth/Height、图片探针成功后的 naturalWidth/Height，图集逐图跟随；切作品在 `#transitionToNext` 复位 9:16 缺省防上一件残留），竖版/横版/方形一律等比铺满可视高、零裁切（2026-09-29 修订：废弃横版/方形 39.3vw 封顶——`.media-view` 高度恒为满高列，封顶使横版在列内只剩一条居中横带，与「对齐抖音播放界面」相悖；超宽媒体由 `min(100%, …)` 截断）；视频/大图 `object-fit/background-size: contain` 完整显示（2026-09 定案，反转旧 cover 裁切——9:16 竖版在固定 3:4 胖容器里会被裁掉约 24% 画面），列内留白由 `#detailOverlay::before` 模糊背景透出填充（全亮度：无压暗/无渐晕，对齐抖音播放器——2026-10 修订，旧 0.4→0.8 渐暗叠加边缘渐晕后两缘过暗、左上关闭钮难辨，废弃）。
 - **⌃⌄ 切换器**（`#detailSwitcher`）：右缘垂直居中（`position:fixed` 必须用 `calc((100% - var(--detail-bar-height)) / 2)` 显式扣除底栏高度——与绝对定位于 `.detail-body` 内的左右箭头共用同一居中基准，否则比箭头中心线低半个底栏），只切上一个/下一个作品（接 `prevDetail/nextDetail`），不参与图集翻页——图集翻页归左右箭头（56px、锚定 10vw、悬浮/聚焦常显）、分段条 seek 与自动轮播。
 - **bar-controls 信息位**：视频=`#detailTime`（0:00/0:00），图集=`#detailOrder`（K/N），由 `#updateCounters` 分工写入；`#detailCounter`（作品序号）仍在最右端。
-- **`#detailTitle` 全文**：描述不再 JS 截断（`DETAIL_TITLE_MAX_LEN` 仅剩移除确认框使用），CSS 单行省略。
 - `.detail-bar-btn` 仍被卡片预览按钮复用（options.html `.video-play-btn/.video-mute-btn`），调整其尺寸参数时须回归卡片预览。
 
 ### SearchBar 搜索/筛选约定
 
-- **布局（2026-10-31 定案）**：搜索栏在 `#mainCol` 内横跨整行，网格与侧边作品栏同处其下的内容行（`#contentRow`）左右并排——侧栏不再与搜索栏平齐；最右侧菜单栏仍独占 appBody 全高。`#contentRow` 需 `flex:1; min-height:0`，否则网格的 overflow-y 在纵向 flex 列内失去确定高度。
-- **搜索栏收起即重置（红线）**：`closeSearchBar()` 必须先调 `clearSearchFilters()`，筛选不跨收起保留；**域切换只重置搜索态、搜索栏保持展开**（`resetSearchState(false)`：清筛选 + 收菜单、不隐藏栏位，重置不做重渲——网格随域切换即清场重载，2026-10-28 定案替代 2026-10-23「随域切换收起」）；筛选状态**不落 URL hash**——P1-8 的刷新恢复已移除：hash 会残留在标签页 URL 里被下一次加载「自动展开搜索栏」（即便本会话从未打开过），且只要在展开状态下刷新就自续循环；现全仓无 hash 读写方，main.js init 仅保留一次性残留清理。**无激活筛选时收起是纯 UI 重置（2026-10 定案）**：`clearSearchFilters` 以重置前的 `isFilterActive()` 为判据，状态==默认则完全不动网格与滚动——此间数据侧变化（分页/自动捕获/头插）都已有各自增量同步通道，DOM 即默认视图最新内容，重渲只会因视图缓存随 dataVersion 重建、数组身份失配而白闪一次（wipe + 活动 DOM 上限 600 重挂，视口封面清空再回填）。
-- **布局顺序（2026-10-14 定案）**：范围组 → 输入框 → ✕（清除搜索输入文本，即去掉关键词过滤；其余筛选（范围/排序/类型）就地保留，**不再恢复默认视图**——2026-10-20 修订）→ 🔍（搜索按钮，回车同效）→ 结果数 K/N → 作品类型下拉（全部/视频/图集，默认全部）→ 排序下拉（作品型三域：保存时间(降)（默认）/ 保存时间(升) / 作品数(降) / 作品数(升)，键与方向合并为单值下拉，选中即生效——2026-10-28 定案：原「点激活键翻转方向」分段器改为四选一下拉，内部 `sort`/`reverse` 状态、isFilterActive 计入与视图缓存键均不变；**作品数为两层排序：一级作品数量随方向升/降，二级发布时间（`createTime`）恒从新到旧、方向只翻转一级序**（`sortKey` 对 authorCount 并入 `reverse`、view 段跳过整体翻转，2026-10-21 定案；「发布时间」独立排序键同日移除）；关注域排序同为下拉、四项：作品数(降)（默认）/作品数(升)/最近更新(降)/最近更新(升)，同样选中即生效（2026-10-28 定案；粉丝数排序 2026-11-01 移除））。作品类型与两域排序均为自绘下拉（与范围段同构，`#bindSelectMenu` 单份交互），状态字段 `workType`（all/video/note）、`sort`/`followingsSort` 与 `reverse`；**类型项文案精简为「全部/视频/图集」（2026-10-28 定案）**——相邻排序下拉折叠值自带「保存时间(降)」等明确语义，两个折叠态并排不再有「全部」歧义，维度词要求解除；默认项须保持首位（默认=不筛选），只靠文案区分（2026-10-23 定案）；作者域（关注/候选）隐藏类型下拉，仅 范围→输入→✕→🔍→结果数→排序下拉（作品数/最近更新 × 降/升）。**收起按钮（✕）已移除**——搜索栏开关统一为 **S 键**（`toggleSearchBar`，2026-10-20 定案；原 Ctrl+K 已移除，Esc 不再关搜索栏）或侧边栏「搜索」按钮切换（`closeSearchBar` 语义不变，仍调 `clearSearchFilters` 全量重置）；**搜索栏默认展开、任何展开路径均不自动聚焦输入框**（2026-10-28 定案：`options.html` 初始不带 `hidden`，`openSearchBar` 也不调用 focus；仅用户点击输入框才获得焦点），**按 Esc 可退出输入聚焦（Esc 层级为「弹窗→详情→失焦」，无覆盖层时才失焦、不关层；批量模式不归 Esc），随后按 S 即收起**。**输入不即时响应（2026-10 修订）**：移除 input 即时搜索与 200ms 防抖，回车（IME 组合中让位）或点击 🔍 才实施，实施后 `searchInput.blur()` 令输入框失焦（光标不滞留文本区，2026-10-20 修订）；K/N 结果数随各刷新路径更新。
-- **范围段取值**：作品型三域 = 作者（默认）/ 标题 / ID；作者域（关注/候选）= 昵称（「作者」位文案）/ ID（「标题」位隐藏，残留 title 范围切域即回退「作者」）。**「综合」范围已移除**（2026-10-14 定案，默认选中「作者」；原 all 取值、`default` 匹配分支与对应占位符同步删除）。空关键词不受范围影响。
-- **范围匹配口径（作品型三域）**：作者 = 昵称**子串**（UID 不参与）；标题 = `desc` 子串；ID = 作者 `uid` **精确**（uid 约 19 位纯数字，子串匹配会让任意数字关键词大面积误命中）。**作品 `awemeId` 不参与任何关键词匹配**——2026-10-14 定案：行为与提示文案（「输入作者昵称」/「输入作者 UID」）严格对齐，原「ID」范围兼并的作品 ID 子串匹配已移除。关注域 = 昵称（「作者」位）/ uid 子串（「ID」位，该域无作品 ID 维度）；候选域同款。sec_uid（`MS4wLjAB…`，作者主页 URL 形态）不在检索字段内，暂不支持。
-- **取数方向与视图序对齐（2026-10-30 定案）**：「保存时间(升)」时 `loadDomainData` 传 `ascending`，后台改 next 方向从最旧一端分页（首页即全组最旧，余页在视图尾部单调追加），首屏不再出现完成态整渲；saved 排序键（含关键词/类型筛选）一律逐页续填（`fillSlots` 起点改用视图下标）；作品数排序的 rank 依赖全量数据、无法对齐，仍静默累积 + 完成整渲（见 docs/01 分页协议）。`isPageAligned(ascending)` 兼作加载中途切排序/逆序的方向失配兜底。**作品数排序保持「首屏先渲内容」**：完成态整渲经 `render()` 节点复用重排（同键同对象搬运原卡、保留封面/文案，只有首次进榜的条目走新骨架），不做骨架等待（2026-10-30 定案，替代当日短暂试行的占位首屏）。
+- **布局（2026-10-31 定案；2026-11 导航轨改造）**：搜索框常驻顶栏；分组行（原搜索栏 `#searchBar`）在 `#mainCol` 内横跨整行，网格与侧边作品栏同处其下的内容行（`#contentRow`）左右并排——侧栏不再与分组行平齐；最右侧 48px 导航轨独立于 appBody（body 两行网格的第 2 列，`grid-row: 1 / -1`），从顶栏上缘贯穿到页面底部；域切换与工具以 `.menu-divider` 分隔。`#contentRow` 需 `flex:1; min-height:0`，否则网格的 overflow-y 在纵向 flex 列内失去确定高度。
+- **搜索栏常驻（2026-11-08 定案，红线）**：搜索框移入顶栏、分组行常驻；`closeSearchBar` / `toggleSearchBar` / 顶栏搜索入口 / S 键开关全部移除，任何路径均不自动聚焦输入框（仅用户点击输入框才获得焦点）。**域切换只重置搜索态**（`resetSearchState(false)`：清筛选 + 收菜单，重置不做重渲——网格随域切换即清场重载，2026-10-28 定案）；筛选状态**不落 URL hash**——除 main.js init 的一次性残留清理外，全仓无 hash 读写方。
+- **布局顺序（2026-10-14 定案；2026-11-09 修订：搜索框位于顶栏，类型/排序下拉移出 `.sb-field` 与输入框并排；`.sb-field` 只收 输入框 + ✕ + 🔍 + 结果数 K，顶栏同排控件统一 34px 高）**：输入框 → ✕（清除搜索输入文本，即去掉关键词过滤；其余筛选（排序/类型）就地保留，**不再恢复默认视图**——2026-10-20 修订）→ 🔍（搜索按钮，回车同效）→ 结果数 K → 作品类型下拉（全部/视频/图集，默认全部）→ 排序下拉（作品型三域：保存时间(降)（默认）/ 保存时间(升) / 作品数(降) / 作品数(升)，键与方向合并为单值下拉，选中即生效——2026-10-28 定案：原「点激活键翻转方向」分段器改为四选一下拉，内部 `sort`/`reverse` 状态、isFilterActive 计入与视图缓存键均不变；**作品数为两层排序：一级作品数量随方向升/降，二级发布时间（`createTime`）恒从新到旧、方向只翻转一级序**（`sortKey` 对 authorCount 并入 `reverse`、view 段跳过整体翻转，2026-10-21 定案；「发布时间」独立排序键同日移除）；关注域排序同为下拉、四项：作品数(降)（默认）/作品数(升)/最近更新(降)/最近更新(升)，同样选中即生效（2026-10-28 定案；粉丝数排序 2026-11-01 移除））。作品类型与两域排序均为自绘下拉（`SelectMenu` 单份交互），状态字段 `workType`（all/video/note）、`sort`/`followingsSort` 与 `reverse`；**类型项文案精简为「全部/视频/图集」（2026-10-28 定案）**——相邻排序下拉折叠值自带「保存时间(降)」等明确语义，两个折叠态并排不再有「全部」歧义，维度词要求解除；默认项须保持首位（默认=不筛选），只靠文案区分（2026-10-23 定案）；作者域（关注/候选）隐藏类型下拉，仅 输入→✕→🔍→结果数→排序下拉（作品数/最近更新 × 降/升）。**搜索框常驻顶栏、分组行常驻下方（2026-11-08）**——折叠开关（S 键、顶栏搜索入口、`closeSearchBar` / `toggleSearchBar`）已移除；任何路径均不自动聚焦输入框（仅用户点击输入框才获得焦点），**按 Esc 可退出输入聚焦**（Esc 层级为「弹窗→详情→失焦」，无覆盖层时才失焦、不关层；批量模式不归 Esc）。**输入不即时响应（2026-10 修订）**：移除 input 即时搜索与 200ms 防抖，回车（IME 组合中让位）或点击 🔍 才实施，实施后 `searchInput.blur()` 令输入框失焦（光标不滞留文本区，2026-10-20 修订）；结果数 K 随各刷新路径更新（N 由分组按钮数字承担，2026-11-08 起不再展示）。
+- **下拉键盘与 ARIA（2026-11-09）**：搜索栏三个下拉与回顾来源下拉统一由 `SelectMenu` 承载；触发器 `role="combobox" tabindex="0"` + `aria-expanded/aria-controls`，菜单 `role="listbox"`、选项 `role="option" aria-selected`；键盘支持 `Enter/Space` 开合、`↑/↓/Home/End` 移动、`Enter` 选择、`Esc` 关闭（stopPropagation，保留 main.js 的弹层 Esc 单点收口）、`Tab` 关闭。隐藏选项不参与键盘导航；激活项为白字 + 600 字重（**不显示 ✓**，选中语义由 `aria-selected` 承担；原红字 4.02:1 不达 AA）。菜单 `width:100%` 跟随按钮实际宽度（按钮不被菜单撑宽）；选项超长时单行省略，避免菜单被长选项撑得比按钮宽。**全局焦点环仍按既定决策抑制，不因本次改动恢复。**
+- **关键词自动判定（2026-11-09 定案）**：范围下拉已移除，输入框按文本形态自动判定检索字段——**昵称子串始终参与匹配；纯数字关键词额外按作者 UID 匹配**（纯数字昵称不会被漏掉，UID 与昵称命中取并集）。所有域共用同一提示文案「输入昵称或 UID」。空关键词不触发任何过滤。
+- **关键词匹配口径**：作品型三域 = 昵称**子串**始终匹配；纯数字关键词额外 → 作者 `uid` **精确**（uid 约 19 位纯数字，子串匹配会让任意数字关键词大面积误命中）。关注/候选域 = 昵称子串始终匹配；纯数字额外 → uid 子串（该域无作品 ID 维度）。**作品 `awemeId` 不参与任何关键词匹配**——2026-10-14 定案：行为与提示文案严格对齐。sec_uid（`MS4wLjAB…`，作者主页 URL 形态）不在检索字段内，暂不支持。
+- **取数方向与视图序对齐（2026-11 修订）**：「保存时间(升)」时 `loadDomainData` 传 `ascending`，后台改 next 方向从最旧一端分页（首页即全组最旧，余页在视图尾部单调追加），首屏不再出现完成态整渲；saved 排序键（含关键词/类型筛选）一律逐页续填（`fillSlots` 起点改用视图下标）。**作品数排序改由 background 作者视图直出最终页序**（`sort:"authorCount"`）：page0 即最终视图前 600 条，续页 cursor `{ token, dir, ai, off }`，页序 = 作者视图序，`fillSlots` 逐页续填、`done` 只 `pruneEmptyTail`，不再「静默累积 + 完成整渲」。`isPageAligned(event)` 按事件 `mode/direction` + `state.authorViewOrder` trusted 判定；加载中途切排序/逆序/方向一律整域重载。**作品数排序首屏仍先渲内容**：page0 返回即渲染，不做骨架等待。
+
+### 壳层导航 / 批量条 / 空态（2026-11 实施）
+
+- **右侧导航轨**：宽度 48px（`--right-sidebar-width`，保持原栏宽），从顶到底占满全高（body 网格第 2 列跨两行）；域与工具均采用「18px 线性图标 + 10px 标签」纵向布局；域切换与工具菜单以 `.menu-divider` 分隔，活跃域由 `.ds-slider` 原本的中性白灰滑块承载（不引入红色强调）。原右栏「搜索」菜单项与顶栏搜索入口均已移除（搜索框常驻顶栏）。底部分组新增「状态」入口（`#btnStatus`：Cookie 配置 / 浏览器特征 / Tab 模式捕获状态，2026-11-08 自设置弹窗迁出）。宽度固定 48px、无折叠（折叠按钮 / `toggleRightSidebar` / `--right-sidebar-live-width` 已于 2026-11-08 移除）；域滑块仍由 `updateDomainSlider()` 按按钮实测高度定位。
+- **批量底部工具条**：顶栏批量动作按钮迁入 `#batchBar`（保留原 id 与事件绑定），由 `body.batch-mode` 纯 CSS 显隐；计数拆为 `#batchCount` 数字节点 + `#batchTotal` 分母（`Batch.syncSelectionUI` 写「已选 N / 视图长度」）；移动/下载/移除按钮保留 `title` 与 `aria-keyshortcuts`，**不在按钮内显示快捷键徽标**。工具条 fixed 定位，`left:50%` + `transform` 扣除右侧导航轨固定宽 / `--sidebar-live-width` / 6px 分割条得到主网格中心；`width:max-content` + 主区域 `max-width` 防窄窗 shrink-to-fit 提前折行；`Sidebar.setSidebarWidth` 实时更新 `--sidebar-live-width`。批量态 `#mainGrid` 增加 96px 底部安全区，防末行被浮层遮挡。
+- **空态（2026-11-09 精简）**：所有域共用同一空态结构（图标 + 文案 + 提示），作品域不再展示首次使用行动区与快捷键引导；筛选零命中与错误态保持各自文案。
+- **作者作品栏身份头**：`#sidebarAuthorHead` 为 `sidebarBody` 正常流子项 + `position: sticky`，展示昵称、关注/候选状态、统计与已加载数量；头像探针成功才提交背景图，失败保留昵称首字。头部数据仅复用 `openSidebar(author)` 入参与已加载作者记录，不向作品域写派生字段。
 
 ### SearchBar 视图阶段缓存与筛选切换性能（2026-09 定案）
 
@@ -461,38 +469,56 @@ probe.onerror = () => {
 
 - **三段视图流水线（`#viewCache`）**：`getWorksView`/`getAuthorRecordsView` 拆为`base`（关键词/类型过滤）→ `sorted`（排序）→ `view`（逆序）三段，各段以自身输入签名增量失效——切类型只重算 base 及其后，切排序从缓存 base 重排，切逆序只翻转一次拷贝。数据侧失效判据是 **`state.dataVersion`**（见下条），`baseSource` 引用相等作冗余校验。**视图函数返回共享缓存数组，调用方一律只读**（网格/Detail/Batch 现有调用均为只读遍历）；需要变更序（reverse 等）自行拷贝。逆序段必须拷贝后翻转，原地 reverse 会串段污染缓存。
 - **`state.dataVersion` 写入版本号（红线）**：视图缓存的唯一数据侧失效判据。store 的域数据变更方法（set/appendWorkRecord/removeWorkRecordSilent/removeAuthorRecordsSilent）自动自增；**绕过 store 封装的原地写入必须手动自增**——现存两处：`main.js` `tryHeadInsert`（头插 splice）、`applyStoreUpserts`（原地替换 `list[idx] = work`）。新增绕行写入点若漏增，视图缓存将读到脏数据（漏增不炸、错显，最难排查）。
-- **关键词归一化侧表（`lcFields` + WeakMap）**：每条记录的 desc/nickname/uid 小写形与作者簇键（authorCount 口径）惰性缓存一次。用 WeakMap 而非往记录挂字段：记录经EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容更新一律整对象替换，旧对象连同缓存一并失效。authorCount 全库 rank Map（counts 只依赖数据源、与筛选正交）缓存于 `#rankCache`，**失效判据 = `state.dataVersion`（+ source 引用冗余校验）**——作品域数组经 `appendWorkRecord`/`tryHeadInsert`/`applyStoreUpserts` 原地变更、引用不变，仅 dataVersion 自增；只看 source 引用会让早快照（首页/首屏）算出的 rank 永久滞留、后到作品漏统计（rank 缺失按 `?? 0` 排到最前、已有作者计数被低估下沉），表现为「作品数排序乱」（2026-10-20 修复）；排序走 decorate-sort-undecorate（比较键预计算成并行数组），禁止改回 comparator 内逐对字符串拼接 + Map 查找。
+- **关键词归一化侧表（`lcFields` + WeakMap）**：每条记录的 nickname/uid 小写形与作者簇键（authorCount 口径）惰性缓存一次。用 WeakMap 而非往记录挂字段：记录经EXPORT_DATA 原样序列化，挂字段会污染导出 JSON；options 侧内容更新一律整对象替换，旧对象连同缓存一并失效。authorCount 全库 rank Map（counts 只依赖数据源、与筛选正交）缓存于 `#rankCache`，**失效判据 = `state.dataVersion`（+ source 引用冗余校验）**——作品域数组经 `appendWorkRecord`/`tryHeadInsert`/`applyStoreUpserts` 原地变更、引用不变，仅 dataVersion 自增；只看 source 引用会让早快照（首页/首屏）算出的 rank 永久滞留、后到作品漏统计（rank 缺失按 `?? 0` 排到最前、已有作者计数被低估下沉），表现为「作品数排序乱」（2026-10-20 修复）；排序走 decorate-sort-undecorate（比较键预计算成并行数组），禁止改回 comparator 内逐对字符串拼接 + Map 查找。
 - **单次视图计算 + 恒等快速路径（`refreshGridView`）**：视图只算一次，同一数组贯穿渲染与计数（历史实现经 renderCards/syncCount 各算一遍）；结果数组与 `#lastRenderedView` 恒等时跳过重渲只刷计数（切了不改变结果集的筛选、重复点击同段成本归零）。`refreshGridView` 是renderCards/renderAuthorCards 的唯一调用方，`#lastRenderedView` 仅在其渲染分支写入——域/分组切换必经数据重载（dataVersion 自增 → 数组重建），不存在「DOM 已清场但数组恒等」的假跳过。**段数组不可变发布（不变量）**：base/sorted/view 一经产出不得再原地sort/reverse/写，恒等快路径的前提是「同引用必同内容」。2026-10-03 关注域切作品数/最近更新不重排即违反此不变量：sorted 段曾在 base 上原地 sort，reverse=false 时view/sorted/base 三者同引用，切排序被误判无变化而跳过重渲；修复为拷贝后排序（`[...base]`，O(n) 拷贝远低于排序本身）。作品域 authorCount 段本就产出新数组、saved 段返回的 base后续不再被改，均满足不变量。
-- **结果数 K/N 口径（加载期 N 用后台权威总量，2026-10-31 定案）**：N 在加载期取 `state.gridTotal`（作品型三域 = `GET_* page:0` 的 `total`；作者域 = 单发全量长度；按 domain+groupId 校验），K 随页增长而 N 恒定；切域/切组时 `state.gridPending=true`，K 恒 0（网格已清场、不读旧缓存视图）、N 取 `state.gridTotals` 缓存（page:0 与 GET_STATS 分组计数都写入，与分组 tab 同源）→ 有缓存即显示 `0/Total`、无缓存显示占位「…」；首页落库清 pending 并校正 total。既避免「旧缓存 4969/4969 → 600/600」的突变，也不留空白窗（有缓存时）。加载完成后 N 回落为 `state[domain].length`（此时与 total 相等，新增/删除即时反映）。
+- **结果数 K 口径（2026-11-08 修订）**：搜索框只显示 K（当前过滤视图条数），N（域/分组总量）由分组按钮数字承担、不再展示。切域/切组时 `state.gridPending=true`，K 恒 0（网格已清场、不读旧缓存视图）：有 `state.gridTotals` 同源缓存显示 `0`，无缓存显示占位「…」；首页落库清 pending 后 K 随各刷新路径更新。`state.gridTotal`（作品型三域 = `GET_* page:0` 的 `total`；作者域 = 单发全量长度）仅用于占位判定与分组 tab 校正。分组按钮数字由 `GET_DOMAIN_GROUPS` 原子快照一次渲染。
 - **筛选态降档首帧 + 尾部占位 + 滚近按需铺卡**：筛选态是封闭视图（无未来分页、无 fillSlots回填方），首帧同步预铺降档至 `GRID_PREMOUNT_CAP_FILTER`(600) 保持切换响应；余量行以容器padding-bottom **尾部占位**（`#syncTailReserve`）预留，滚动条总长渲染首帧即终值——否则滚动中内容持续变长会把滑块按比例打回（实测 600→1200 时滑块 0.95→0.49，2026-10 定案）。卡片滚近按需铺入（`#extendIfNeeded`：真实内容底 = 容器底 − 占位）并等量收缩占位、净高恒定；拖拽远跳进占位区按视口带区追赶（`#scheduleRush` 逐帧续铺，单步 ≤`GRID_EXTEND_JUMP_STEP`=4000 防长冻结）。**禁止改回「预挂/后台补铺余量卡」**——大 M 下每次容器追加都是全网格重排（实测 2 万卡单次约 130ms、4 万约 1s），曾致排序切换连帧卡顿。铺卡走 `#extendSlotsTo` 键控分支（锚 = 槽尾带键卡在快照中的下标，DOM 实况推导；快照未覆盖的槽位才落无键占位卡 + fillSlots 回填）。**封闭态铺卡/扩容禁止退回无键占位卡**——没有回填方，永久灰卡。
 - **筛选切换不保滚动位置（2026-09 定案，反转旧「筛选切换锚点」；2026-10 改显式归零）**：切筛选/排序/逆序即新结果集，从头浏览——撤销了 captureViewportAnchor/restoreViewportAnchor三段式（其恢复时机早于两段式铺设的拼装完成，深锚会被 clamp 到错误位置，且与「新结果集从头看」的预期语义相悖）。**尾部占位（#syncTailReserve）使「wipe clamp 天然回顶」失效**（重渲任务内总高即恢复终值、旧偏移合法存留，表现为「跟随锚点」停在深处），回顶改为显式：搜索态条件变化经 `refreshGridView(resetScroll=true)` 重渲后归零，域切换 `switchDomain`显式归零，分组切换 `groups.js` 既有显式归零；数据驱动整渲（同步完成/STORE_CHANGED 整刷）不归零——不打断用户阅读位置。锚点仅保留两处：详情退回网格（`restoreGridScroll(awemeId)` 按 id 定位、在已渲染快照中取下标，网格 DOM 不重建时直接实测）与侧边栏开合/拖宽（`Sidebar.#preserveAnchor` 登记锚点 →`VirtualGrid.#onContainerResize` 在 RO 回调内补偿，几何变化后同卡同位）。
 
+### 作者数排序 trusted 视图（方案 B，2026-11 定案）
+
+- background `AuthorViews` 用 `groupId_uid_sort` 复合索引 `openKeyCursor` 只扫键，在 SW 内存构建 `作者 → 有序 id`；不持久化 `author_views`，靠内存 revision + epoch 失效。
+- options `state.pagingMode` 由 SearchBar `syncPagingState()` 维护；`state.authorViewOrder = { domain, groupId, direction, items, counts, complete }`（items 为按作者视图序到达的已加载前缀，complete 表示全部作者页已到达）。
+- `getWorksView()` trusted 分支直接返回视图前缀（无筛选零拷贝），只做关键词/类型过滤，跳过 rank/排序/reverse；`#authorRank` 优先用 page0 `authorMeta` 的 counts。
+- 续页 `store.appendAuthorViewRecord`：先把页按 savedAt 排序再与 `state[domain]` 双指针归并（保持 savedAt 降序不变量），event 附 `mode:"authorCount"` / `direction`；`isPageAligned(event)` 对齐时走 `fillSlots`、`done` 只 `pruneEmptyTail` 并置 `complete`。
+- 重载矩阵：进入/离开 authorCount、切方向、加载中切排序、切组、STORE_CHANGED → 整域重载；删除/移动在 `isAuthorViewPatchable()`（trusted + complete + 非加载中）成立时走**本地稳定序收口**：`store.removeWorkRecordSilent(..., { preserveAuthorOrder:true })` 过滤视图前缀并递减作者计数 + `grid.removeItems`，不整域重载；「全部」分组内移动仅 `updateWorkGroupSilent` 改分组归属，网格零变化。视图不完整/加载中才回退整域重载。详情删除的重载传 `keepDetail`，覆盖层保留并在完成后按新视图顺延。`VIEW_EXPIRED` 清场后按同一模式重试一次，`AUTHOR_VIEW_INCOMPLETE` 降级 saved 分页 + 本地 rank。
+- 稳定序语义：本地摘卡后视图顺序暂不重排，下次显式切排序/分组/域（或整域重载）时由后台作者视图恢复严格序；此期间 `getWorksView` 仍以 `authorViewOrder.items` 为展示序，禁止调用 `refreshGridView` 整刷。
+- 红线：禁止绕过 `storage.putBatch/deleteBatch/clear` 写作品域（rev 不前进会让旧视图被误用）；禁止 `.catch(() => {})` 吞掉 `VIEW_EXPIRED`；不得把作者视图到达序直接 push 进 `state[domain]`。
+
+### 全局 Tooltip（2026-11）
+
+剩余 `title` 属性统一由 `Tooltip`（`options/components/tooltip.js`）接管显示：单例 `#dyTooltip` 使用抖音风格深色浮层与小箭头，按目标位置在上/下自动摆放并在视口内收敛。显示前临时移除目标 `title`，防止浏览器原生 tooltip 叠加；离开时恢复，若控件在悬浮期间被动态写入新 title 则以新值为准。滚动/缩放只收起浮层、保留 title 移除状态，避免原生提示补弹。`title` 仅用于纯图标控件、快捷键或确有隐藏语义的入口，可见文字/日期/状态 chip 不重复添加。
+
 ### CSS 协同约定（.hidden 成对声明）
 
-自带 display 值的组件类与通用 `.hidden` 同用时，**必须成对声明 `.X.hidden { display: none }`**。原因：通用 `.hidden` 定义在 options.css 前部（约 66 行），同特异性（0,1,0）下会被文件后部组件规则里的 `display: flex/…` 覆盖，`hidden` 类静默失效、占位层常显（曾导致作品卡中央 emoji 常显、关注卡头像旁多出一个空占位圆）。既有先例：`.work-type-badge.hidden`、`.following-avatar-fallback.hidden`。
+自带 display 值的组件类与通用 `.hidden` 同用时，**必须成对声明 `.X.hidden { display: none }`**。原因：通用 `.hidden` 定义在 options.css 前部（组件规则之前），同特异性（0,1,0）下会被文件后部组件规则里的 `display: flex/…` 覆盖，`hidden` 类静默失效、占位层常显（曾导致作品卡中央 emoji 常显、关注卡头像旁多出一个空占位圆）。既有先例：`.work-type-badge.hidden`、`.following-avatar-fallback.hidden`。
 
 ### 骨架模板同构要求（原地切换的配套约束）
 
 骨架模板必须与完整卡在根层同构（勾选框除外——勾选框随填充创建、降级即移除，模板本不含）：
 
 ```
-.work-card       > .work-media + .work-info(.work-title-text + .work-author-row(.work-author + .work-create-time))
+.work-card       > .work-media + .work-info(.work-author-row(.work-author + .work-create-time))
 .following-card  > .following-main(.following-avatar/.following-avatar-fallback
-                                          + .following-nickname) + .following-stats + .following-update
+                                          + .following-nickname)
+                 + .following-details(.following-stats + .following-update)
 ```
 
 媒体子树等可从完整模板取新节点移入；unloadObserver 因此持续观察同一根节点无需重挂，fill observer 在 `#demote` 时重新 observe。新增会替换卡片 DOM 的逻辑必须保持 dataset key 与两个 observer 的交接（`populateItem` 负责 observe 完整卡）；`updateCardsDOM` 已兼容骨架态。
 
+- **信息条字号层级（2026-11-09 修订：标题行已移除）**：作者 13px/600（主），发布日期 11px；`.work-info` 为 30px（8 顶 + 16 作者行高 + 6 底），`config.CARD_HEIGHT_OFFSET` 同步为 30。
+
 ### 侧边栏作品卡信息条（日期 / 点赞·收藏域状态按钮 / 「存入·入库」三态按钮）
 
-侧边作品栏（作者作品网格，跨五域共用）每张卡的信息条（2026-10 定案；2026-10-20 将原独立存在性徽标并入「存入」按钮——徽标与按钮本就在同一行重复表达 `inWorks`，合并为单一三态控件；关注者卡不再承担入库入口——其「存入作品域」按钮曾于本版短暂存在后移除；作者档案入库统一走关注域批量模式「入库」与菜单「工具」弹窗）：
+侧边作品栏（作者作品网格，跨各域共用）每张卡的信息条（2026-10 定案；2026-10-20 将原独立存在性徽标并入「存入」按钮——徽标与按钮本就在同一行重复表达 `inWorks`，合并为单一三态控件；关注者卡不再承担入库入口——其「存入作品域」按钮曾于本版短暂存在后移除；作者档案入库统一走关注域批量模式「入库」与菜单「工具」弹窗）：
 
-- **作者上下文入口（2026-10-31 定案）**：关注/候选域点击作者卡；作品/点赞/收藏域 **Ctrl/Cmd+点击作品的作者名**（普通点击仍打开作者主页，批量模式下同样不切换勾选）。侧栏内容恒为该作者的远端作品列表（与当前域无关），故切换作者即替换内容，切换域仍收起侧栏并清空作者上下文。**无作者上下文时点击分割条只提示入口、不展开空面板**；`openSidebar` 以 `#loadToken` 代际作废上一作者在途分页回包；`Sidebar.#calibrateFollowing` 仅关注/候选域执行（作品型三域无可回写作者记录）。`#activeGrid()`（`search.gridForDomain()`）保证展开/拖宽/锚点作用于当前域网格；五域默认展开 3 列（窗口放不下时按可用宽度自动回退 2/1 列），主网格保底宽按域取（作品型三域取作品卡带宽下限 `CARD_SIZE_FALLBACK × WORK_CARD_SIZE_BAND_MIN`）。
+- **作者上下文入口（2026-10-31 定案；2026-11-06 点击语义调整）**：关注/候选域点击作者卡；作品/点赞/收藏/回顾域 **点击作品的作者名**（作者名的 Ctrl/Cmd+点击则在新标签打开作者主页，批量模式下同样不切换勾选）。侧栏内容恒为该作者的远端作品列表（与当前域无关），故切换作者即替换内容，切换域仍收起侧栏并清空作者上下文。**分割条仅在侧栏展开时可见（折叠态整体隐藏，2026-11-08），点击收起、拖拽调宽；展开入口为点击作者卡或作品作者名**；`openSidebar` 以 `#loadToken` 代际作废上一作者在途分页回包；`Sidebar.#calibrateFollowing` 仅关注/候选域执行（作品型三域无可回写作者记录）。`#activeGrid()`（`search.gridForDomain()`）保证展开/拖宽/锚点作用于当前域网格；各域默认展开 3 列（窗口放不下时按可用宽度自动回退 2/1 列），主网格保底宽按域取（作品型三域取作品卡带宽下限 `CARD_SIZE_FALLBACK × WORK_CARD_SIZE_BAND_MIN`）。
+- **作者身份头（2026-11）**：`#sidebarAuthorHead` 位于 `#sidebarWorksGrid` 之前、`sidebarBody` 正常流内，`position: sticky` 吸顶；紧凑单行布局（28px 头像 + 8px 纵向内边距），昵称/状态与统计同一行、统计超长省略。头像 `#sidebarAuthorAvatar` 走探针先行（成功才写 background-image，失败保留昵称首字）；头像 URL 回退链为当前记录 `avatarLarger || avatar` → options 已加载的同 UID 另一作者域记录 → `GET_AUTHOR_BY_UID` 后台跨域补取（主键各取一条，补齐头像/统计后原地重渲头），昵称/关注或候选 chip/粉丝与作品计数/最近更新/已加载作品数由 `Sidebar.#applyAuthorHead` + `#syncAuthorHeadMeta` 维护。分页加载后只更新「已加载 N 个作品」；校准成功时合并统计字段但缺失字段不覆盖旧值。收起按钮复用 `toggleSidebar()`；昵称本身即 `profileUrl` 外链（新标签打开），不另设主页按钮，统计副文本不挂 `title` tooltip。
 - **结构**：`.sidebar-work-item > .sidebar-work-link(封面+类型角标) + .sidebar-work-info(日期 + ♥ 点赞 / ★ 收藏 按钮 + 存入按钮)`——信息条在**封面链接之外**，避免「存入」/♥/★ 点击触发外链跳转；卡改纵向 flex（封面区 flex:1 + 信息条固定高），`#createWorkItem` 用类选择器取节点（不再依赖 `children` 下标）。`SIDEBAR_CARD_SIZE`=210px（窄档），信息条仍为单行四元素（日期 + ♥/★ + 存入），字号保持 10-11px。
-- **发布日期**：`utils.formatPublishDate(work.createTime)`（与作品域网格 `.work-create-time` 同源同格式；`title` 示完整时间，空值显示 `-`）。
-- **点赞/收藏域状态按钮（♥ 点赞 / ★ 收藏，可点击切换）**：信息条内 `.sidebar-presence-like` / `.sidebar-presence-collect` 为 `<button type="button">`，图标后固定文案「点赞」/「收藏」，两态常显——存在加 `.on`（♥ 着色 `#ff4d6d`、★ 着色 `#ffb84d`），不存在为暗态（muted + opacity），`title/aria-label` 描述点击动作（点赞并加入点赞域 / 取消点赞并移出点赞域）。点击发 `SET_FAVORITES` / `SET_COLLECTION { awemeId, active, work? }`：**远端设置成功后**才把当前作品经 `mergeAndSave` 写入对应域（新增）或删除该域本地记录（取消），卡片原地翻转 `.on` 态；失败保持原态并 toast。点赞无独立模式分支（background 返回 `UNSUPPORTED_INDEPENDENT`），收藏双模均通；`Sidebar.#pendingReactions` 按 `${domain}:${awemeId}` 防重入（在途按钮 `.pending` + disabled）。图标来自 SVG 符号 `#icon-heart` / `#icon-star`（`options.html` 图标区）。
+- **发布日期**：`utils.formatPublishDate(work.createTime)`（与作品域网格 `.work-create-time` 同源同格式；空值显示 `-`；不挂精确时间 tooltip）。
+- **点赞/收藏域状态按钮（♥ 点赞 / ★ 收藏，可点击切换）**：信息条内 `.sidebar-presence-like` / `.sidebar-presence-collect` 为 `<button type="button">`，图标后固定文案「点赞」/「收藏」，两态常显——存在加 `.on`（♥ 着色 `#ff4d6d`、★ 着色 `#ffb84d`），不存在为暗态（muted + opacity），可见「点赞/收藏」文案已表达动作，额外语义只放 `aria-label`（点赞并加入点赞域 / 取消点赞并移出点赞域），不重复挂 `title`。点击发 `SET_FAVORITES` / `SET_COLLECTION { awemeId, active, work? }`：**远端设置成功后**才把当前作品经 `mergeAndSave` 写入对应域（新增）或删除该域本地记录（取消），卡片原地翻转 `.on` 态；失败保持原态并 toast。点赞无独立模式分支（background 返回 `UNSUPPORTED_INDEPENDENT`），收藏双模均通；`Sidebar.#pendingReactions` 按 `${domain}:${awemeId}` 防重入（在途按钮 `.pending` + disabled）。图标来自 SVG 符号 `#icon-heart` / `#icon-star`（`options.html` 图标区）。
 - **三域存在性判据（按 awemeId）**：`loadSidebarWorks` 拉到页数据后，对当前页 id 一次批量 `GET_WORKS_BY_IDS { domain, ids }`（`works`/`favorites`/`collections` **三域并行**，主键直取）→ 各域命中集即存在性；任一域失败该域降级为空集（保守按不存在展示）。放弃原 uid 集合方案（`GET_WORKS_UIDS`/works.uid 索引已裁撤——按作品维度判定是本区的真实语义）。
-- **「存入」按钮（三态，承载动作 + 状态）**：`#syncSaveState` 由 `inWorks`/`pending` 两个输入分流出——未入库「存入」（可点）/ 存入中「存入中…」（禁用）/ 已入库「已入库」（禁用 + `.in-works` 透明底灰字，读作状态标签），`title/aria-label` 随态切换（存入作品域 / 已在作品域）。动作走 `SAVE_WORKS { works:[work] }`（侧边栏记录与 works 域记录同源同构，`mergeWork` 自动补 `groupId/savedAt`）→ 成功 toast「已存入作品域（新增 X · 更新 Y）」+ 卡片原地更新（按钮转「已入库」禁用）。窄卡用短文案；动作为短操作，不走进度弹窗。**禁止再拆出一个独立存在性徽标**（重复表达同一状态）。
+- **「存入」按钮（三态，承载动作 + 状态）**：`#syncSaveState` 由 `inWorks`/`pending` 两个输入分流出——未入库「存入」（可点）/ 存入中「存入中…」（禁用）/ 已入库「已入库」（禁用 + `.in-works` 透明底灰字，读作状态标签），`aria-label` 随态切换（存入作品域 / 已在作品域），可见三态文案之外不重复挂 `title`。动作走 `SAVE_WORKS { works:[work] }`（侧边栏记录与 works 域记录同源同构，`mergeWork` 自动补 `groupId/savedAt`）→ 成功 toast「已存入作品域（新增 X · 更新 Y）」+ 卡片原地更新（按钮转「已入库」禁用）。窄卡用短文案；动作为短操作，不走进度弹窗。**禁止再拆出一个独立存在性徽标**（重复表达同一状态）。
 - **交互与防重入**：`dom.sidebarWorksGrid` 容器级 click 委托（一次绑定，卡片增删不重绑），命中 `.sidebar-work-save` 或 `.sidebar-presence` 即 `stopPropagation + preventDefault`；`Sidebar.#pendingSaves` / `#pendingReactions` 集防双击重入（按钮原地禁用态）。刷新时机：重开作者（`#resetSidebarGrid` 重建）自然重查；STORE_CHANGED 不为此加订阅（下次分页/重开刷新）。
 - **加载圈生命周期与列表终点提示**（2026-10 修复）：加载圈只在请求在途期存在——收起动作收敛在 `loadSidebarWorks` 的 `finally`（成功/失败/取消统一），禁止再放回成功分支之内（原实现失败分支漏收，页尾触底后加载圈永挂，无法辨别是否已取完）。失败态兜底文案填入 loader 后，**下一轮加载开始前必须还原纯 spinner**（否则重试/续页期间无加载态、错误文案滞留到成功之后）。列表终点：游标 null（无更多页）且有成列内容时显示 `#sidebarEndNotice`「已全部加载」（`#resetSidebarGrid` 与每次加载开始先复位，收尾重判）；空结果/失败不显示。
 
@@ -511,8 +537,8 @@ probe.onerror = () => {
 - **数据（uid 主键集，禁止拉全量记录）**：作者域主键即 `uid`（IDB keyPath），`GET_AUTHOR_UID_SETS` 经 `storage.getAllKeys` 并行返回两域 uid 数组（不反序列化记录）→ options `services.loadAuthorUidSets()` 建 `state.followedUids`/`state.candidateUids`（关注集同时供候选域重叠清理复用）。失败保持旧集合并返回 false，调用方按「不显示 chip」降级，不阻塞网格加载。
 - **刷新时机**：init 首屏渲染前、切域进入作品型三域前（`store.on("domain")` 内 await）、停留在作品域时收到关注/候选域 `STORE_CHANGED`（`flushStoreChanged` 的 bulk 分支：先重取主键集，再 `syncAuthorFlags()` 原地 patch）。作者域删除/移动不发广播（导入/重置由 `ImportExport` 主动同步主键集），切域刷新即兜底。
 - **渲染**：chip 随 `fillCard` 懒创建（同 `.work-checkbox`，骨架模板不含、`clearCard` 移除），不在骨架卡上常驻；`#applyAuthorFlags` 写 `card.dataset.uid` 并按 `Set.has(uid)` toggle `.hidden`；主键集刷新后 `WorksGrid.syncAuthorFlags()` 只遍历挂载卡 toggle、**禁止整刷**（零封面重探/零滚动跳位）。
-- **语义**：按域内存在性判定（跨分组，「稍后删除」组也算命中）；关注/候选同时命中显示两个 chip；作品无 `uid` 不显示；chip 为普通 span、`pointer-events:none` 不可点击。**禁止用 `authorFollowed`（平台关注快照）或 Work 派生字段代替**。
-- **视觉**：10px 字号 / 14px 行高嵌在 16px 作者行内，不改变 `.work-info` 44px 高度数学；关注绿、候选紫，仅命中时显示。
+- **语义**：按域内存在性判定（跨分组，「稍后删除」组也算命中）；关注/候选同时命中显示两个 chip；作品无 `uid` 不显示；chip 为普通 span、`pointer-events:none` 不可点击。**`authorFollowed`（平台关注快照）已从 Work 记录移除；禁止在 Work 上重建该派生字段**。
+- **视觉**：10px 字号 / 14px 行高嵌在 16px 作者行内，不改变 `.work-info` 30px 高度数学；关注绿、候选紫，仅命中时显示。
 
 ### STORE_CHANGED 增量收口管线（options 侧合并处理）
 
@@ -522,12 +548,22 @@ probe.onerror = () => {
 - **flush 时统一走局部应用管线，逐条分流**：
 - state 内已存在 → 原地替换 + `updateCardsDOM` 批量更新（入口一次建 id→下标 Map 替代逐条 findIndex 的 O(N×M)；网格侧一次 `querySelectorAll` 建 id→卡映射，逐卡注入调用方持有的合并记录，免逐条 state.find + querySelector）；
 - 新增落在当前视图内 → **头插收口** `tryHeadInsert`：state 按视图序二分落点 + 网格 `insertItems` 原地挂载（含视口锚定补偿），零整刷。落点计算与落库分离——全部在原始 list 上二分（sorted 与 list 同为视图序，落点单调不减），runs 按「同原始落点」分组后**逆序** splice / insertItems（O(条数×N) 搬移收敛为 O(runs×N)；网格侧 #slots 尚无前序 run 的插入，原始落点即对位下标，逆序插入不改变已插区段相对位置）；bulk 载荷先经 `GET_WORKS_BY_IDS`（`DomainHandlers.getByIds` 主键直取）补拉合并后记录再走同管线；
-- 新增落在当前视图外 → 仅 `refreshGroups`（分组计数重算）；
-- 守卫分流：在途分页加载 `services.isGridLoading()` / 快滚冻结 `grid.isScrollFrozen()` / 筛选 / 批量 / 详情 / 口径意外 / **规模超限** → 整域重载兜底，正确性优先，不得绕过守卫强行走增量；预铺待消费 `state.gridSlots` → `"deferred"`（借道待渲渲染：state 已就位、排队中的整渲接管），不触发重载。
+- 新增落在当前视图外 → 仅 `refreshGroups`（分组计数重算）；分组 tab 渲染按「集合/顺序/名称」diff，结构不变时只 patch 变化 tab 的文本（保横向滚动、hover/focus 与滑块），不重建顶栏节点；
+- 守卫分流：在途分页加载 `services.isGridLoading()` / 快滚冻结 `grid.isScrollFrozen()` / 筛选 / 批量 / 详情 / 口径意外 / **规模超限** → 整域重载兜底，正确性优先，不得绕过守卫强行走增量；守卫**仅对触及当前视图的变化生效**——一批变化全部落在当前视图外（如浏览分组 Z 时新作品落未分组）时，筛选/批量/详情/作者数排序均不构成整刷理由，只 patch 分组计数；预铺待消费 `state.gridSlots` → `"deferred"`（借道待渲渲染：state 已就位、排队中的整渲接管），不触发重载。
 - **增量路径的规模守卫（2026-09 定案）**：bulk 补拉 id 数超过 `GRID_PREMOUNT_CAP`(1500) 在 `applyBulkChanged` 入口直接整刷兜底——`insertItems` 为每条挂一张骨架卡，超预铺容量即突破活 DOM 规模封顶；补拉响应是全记录过消息通道（千条 ≈ MB 级 structured clone），入口拦截省一次巨型往返。`tryHeadInsert` 不重复设防：其输入经调用方有界（点载荷 ≤ `UPSERTS_MAX`=8、bulk 路径 ≤ 上述上限），超大新增的兜底统一发生在补拉入口。
 - **落点比较器必须与 `savedAt_id`/`groupId_savedAt_id` 索引的 prev 遍历同序**（savedAt 降序、平级 id 降序）——错序会在平级记录间插错位（下次整刷自愈但不该发生）。
 - **域不匹配（跨域回声，如批量入库的 works 广播绕回点赞/收藏域）接收时直接丢弃**，连分组重算都省；flush 时刻须再校验域一致（接收后用户可能已切域，过期载荷不能信）。
 - **红线**：新增落当前视图禁止改回「视图内新增 → `loadDomainData` 整刷」（wipe→灰骨架→封面重探即用户感知的「页面闪烁」）；bulk 广播载荷只带 id 集，禁止改回广播全量记录（万级消息膨胀）。
+
+### 回顾域（真实域：随机卡片网格 + 引用持久化，2026-11 定案）
+
+- **真实域**：右侧域切换新增「回顾」页签，`state.domain` 可取 `review`；`review` 表只存批次引用 `{ reviewId, sourceDomain, sourceId, kind, groupId, addedAt }`，展示时由 `review-handlers` 回源域 hydration，不复制完整作品/作者记录；来源记录删除后对应引用失效并被清理。
+- **配置与批次**：回顾分组行右端内联显示**来源域下拉 + 本轮数量输入**（不再有配置浮层/弹窗）；「随机回顾」创建/替换批次：有当前批次时优先排除本批记录，排除后无新数据则允许整批重抽；「追加」在同来源域下补充抽样并固定落**「未分组」**，跨来源域只弹 toast、不改动已有批次（回顾域任意时刻保持单一来源域）；配置持久化在 `chrome.storage.local.randomReviewConfig`，批次引用在 IDB `review` 表。
+- **抽样**：`GET_RANDOM_RECORDS` 由 background 按主键（全域名 `getAllKeys` / 组内 `getAllKeysByIndex`）部分 Fisher-Yates 抽样，再 `getBatch` 取记录；只返回最多 500 条，不物化整域；`excludeIds` 供「随机回顾」优先排除当前批次记录。
+- **渲染**：`GET_REVIEW` 按整批回源 hydration 后返回 `reviewItems / sourceDomain / kind / total`；`state.reviewKind` 为 `works`/`authors`，`SearchBar.#isWorkRecordDomain` 与 `gridForDomain("review")` 动态选择作品/作者视图；作品批次复用 `WorksGrid`/`Detail`，作者批次复用 `AuthorGrid`/右侧作品栏。
+- **域能力**：回顾域保留搜索/筛选、**分组顶栏与分组管理**、**批量模式**（批量删除/移动/下载；删除与移动只改回顾引用）；不含导入/导出/重置入口；详情移除只改 `review` 引用，来源域数据不变。批量模式与回顾配置控件同时显示，不互相隐藏。
+- **抽样入口**：`GET_REVIEW` / `SAVE_REVIEW_BATCH { sourceDomain, sourceIds, groupId, append? }` / `DELETE_REVIEW { sourceDomain, sourceIds }` / `MOVE_REVIEW { sourceDomain, sourceIds, targetGroupId }`；`append` 缺省清空旧引用并写入新批次（落当前分组或默认分组），`append:true` 按 `sourceId` 去重后追加到指定分组（受 500 条上限约束，`SOURCE_DOMAIN_MISMATCH` 表示已有其它来源域批次）。
+- **红线**：禁止把回顾记录复制进 `review` 表（只存引用）；批量删除/移动禁止直接调用来源域的 `DELETE_*`/`MOVE_*`；回顾域不参与导入/导出；`review` 引用表不得替代源域记录。
 
 ## 异常场景及处理
 
@@ -541,7 +577,7 @@ probe.onerror = () => {
 | 筛选态首帧同步全量预铺（预铺数 = 结果数） | 每次筛选切换付出 O(结果数) 的骨架克隆 + 整容器布局（十万级 = 秒级卡顿） | 首帧恒为 `GRID_PREMOUNT_CAP_FILTER`，余量行走尾部占位预留（#syncTailReserve 纯 style 写入） |
 | 封闭视图不做尾部占位、只靠滚近扩容 | 滚动到远处时内容持续变长，滚动条滑块被按比例打回（实测 600→1200 时 0.95→0.49，反复出现） | `#syncTailReserve` 首帧预留总长；铺卡/占位等量收缩、净高恒定（2026-10 定案） |
 | 封闭视图余量用「预挂/后台补铺真实卡」实现总长预留 | 大 M 下每次容器追加都是全网格重排（实测 2 万卡单次约 130ms、4 万约 1s），曾致排序切换连帧卡顿 | 占位必须是纯 style（padding-bottom），卡片一律滚近按需铺入 |
-| 自动翻页把全部条目挂进 DOM（append 无上限） | 活动 DOM = 全库条目；改一次卡宽就是全量重排（实测 2 万卡约 900ms），侧栏折叠/窗口缩放整页卡顿 | `#mountAppend` 到 `GRID_MOUNT_MAX` 即止：超出只登记进 `#viewItems`/`#itemMap`，滚近由键控扩容铺真卡（2026-10 定案） |
+| 自动翻页把全部条目挂进 DOM（append 无上限） | 活动 DOM = 全库条目；改一次卡宽就是全量重排（实测 2 万卡约 900ms），窗口缩放/作品栏拖宽整页卡顿 | `#mountAppend` 到 `GRID_MOUNT_MAX` 即止：超出只登记进 `#viewItems`/`#itemMap`，滚近由键控扩容铺真卡（2026-10 定案） |
 | 活动窗口重挂时整窗从快照重克隆骨架 | 视口内已填充卡瞬间回退灰骨架、再经 0.3s 封面淡入恢复（滚动期「网格闪一下」）；窗口铺到已加载末尾后每滚一行 target 就 +1，逐行整窗重建 | 新旧窗口重叠区按 itemKey 复用原卡节点（完整卡保留封面/文案，仅新边行克隆骨架）；`windowEndRow ≥ totalRows` 时下滚不再重挂（2026-10 修复） |
 | 视图计算在渲染与计数间各跑一遍（改回 `syncCount()` 内重算、renderCards 内重取） | 大库下重复整段过滤+排序（每遍 30–100ms 起） | `refreshGridView` 单次计算贯穿渲染与计数；`syncCount` 接受注入 count |
 | 哨兵卡被 `removeItems` 删除 | 分圈观察断链，后续骨架永不 observe | 删除后立刻续接哨兵 |
@@ -561,12 +597,12 @@ probe.onerror = () => {
 | 媒体重试自行计数 | 与熔断窗口叠加放大请求量 | 一律接 `Detail.markMediaFail/mediaRetryBlocked` |
 | 在途探针回调不校验代际 | 旧 URL 提交到已换人槽位（错图） | 先验 fillGen/coverGen/gen/imgProbeToken 再提交 |
 | hover 预览改用 pointerenter/leave | 功能静默失效 | 只用冒泡的 pointerover/out 委托 |
-| 旧网格不 abort 直接保画面（"不清场保无闪烁"及其「冻结-定格」变体） | 在途工作不中止 + 同容器重建聚帧，体感卡顿；定格变体被用户定案否决（旧画面定格感知为卡顿，必须先清空） | 切换瞬间 `clearActiveGrid()`（abortRender×5 + wipe）先清空，数据到达后 render() 重建 |
-| 只改 options 或 content 任意一侧的 toast 样式 | 两侧视觉漂移（options `.toast` 与 content.js `Toast` 内联样式是两处同款实现） | 两侧同步：13px 字号 / `7px 16px` 内边距 / 6px 圆角 / `top:20px` / info`#60a5fa`·success`#4ade80`·error`#f5222d` 左色条 / info·success 2s、error 4.5s / `max-width:80vw` 允许换行；文案不带 emoji |
+| 旧网格不 abort 直接保画面（"不清场保无闪烁"及其「冻结-定格」变体） | 在途工作不中止 + 同容器重建聚帧，体感卡顿；定格变体被用户定案否决（旧画面定格感知为卡顿，必须先清空） | 切换瞬间 `clearActiveGrid()`（abortRender×7 + wipe）先清空，数据到达后 render() 重建 |
+| options 侧 Toast 改为右下堆叠后，content 注入侧仍保持顶部单条 | 两侧视觉漂移（options `.toast` 与 content.js `Toast` 是两处实现） | **有意分层（2026-11-09）**：options 侧右下角堆叠 + 图标 + 关闭（最多 3 条，info·success 2s、error 4.5s，右侧让开 48px 导航轨与展开的侧栏）；content 侧继续顶部单条非交互（避免遮挡抖音页面底部操作），仅保留颜色语义与时长。不要为了「看起来一样」把注入侧改成可交互浮层。文案不带 emoji |
 
 ## 配置项说明
 
-options 侧 `config`（59 键，含 icons 图标表）的权威键表与默认值统一维护在 [01](./01-project-architecture.md)「配置项说明 · options/core.js 顶层 config」，本册不再重复分表；各分册只收录与其机制直接相关的键（如 `GRID_PREMOUNT_CAP`/`FAST_SCROLL_THRESHOLD` 见上文渲染管线）。
+options 侧 `config`（64 键，含 icons 图标表）的权威键表与默认值统一维护在 [01](./01-project-architecture.md)「配置项说明 · options/core.js 顶层 config」，本册不再重复分表；各分册只收录与其机制直接相关的键（如 `GRID_PREMOUNT_CAP`/`FAST_SCROLL_THRESHOLD` 见上文渲染管线）。
 
 ## 响应式状态管理（store.on 事件表）
 
@@ -574,15 +610,14 @@ options 侧 `config`（59 键，含 icons 图标表）的权威键表与默认�
 
 | 事件               | 处理                                                                                                     |
 |--------------------|----------------------------------------------------------------------------------------------------------|
-| `'domain'`         | 刷新入库按钮可用态（`syncSaveToWorksBtn`/`syncSaveToCandidatesBtn`）；**首页数据请求先发**；`GET_GROUPS` 立即出 tab；作者主键集经 `services.whenFirstScreen` 在首屏后一个宏任务取（chip 到达后 `syncAuthorFlags()` 原地 patch）；分组计数（GET_STATS）再等网格加载空闲（最多 5s，避免与续页游标抢 IDB，期间 tab 用缓存计数） |
+| `'domain'`         | 刷新入库按钮可用态（`syncSaveToWorksBtn`/`syncSaveToCandidatesBtn`）；**首页数据请求先发**；`groups.clearForDomainSwitch()` 立即清空旧域 tab，`GET_DOMAIN_GROUPS` 只读对应 `*_groups` 小表一次渲染新域分组名/顺序/计数（与 page0 并行）；作者主键集经 `services.whenFirstScreen` 在首屏后一个宏任务取（chip 到达后 `syncAuthorFlags()` 原地 patch） |
 | `'works'` / `'favorites'` / `'collections'` | `search.refreshGridView()`（仅 domain 命中该域时）                                                       |
 | `'work-record-appended'` | 渐进分页回填（作品型三域，loadDomainData 逐页发）：页序与视图序对齐时 `fillSlots`（视图下标）+ `syncCount`，`done` 时 `pruneEmptyTail` 摘尾；不对齐（作品数排序/加载中途切排序）时静默累积、加载完成整渲；domain/groupId 双校验防旧页混入（细节见本册「STORE_CHANGED 增量收口管线」） |
 | `'followings'` / `'candidates'` | domain 命中时 `search.refreshGridView()`                                                                  |
 | `'groups'`         | `groups.renderGroupTabs()`                                                                               |
-| `'grid-total'`     | `loadDomainData` 首页权威 total 到达后广播：`groups.onGridTotal` 立即校正当前分组 tab 数字（与搜索栏 K/N 的 N 同源；GET_STATS 在大域上被延后到加载空闲，tab 不再落后于搜索栏） |
-| `'grid-totals'`    | `services._tallyGroupCounts` 于 page-0 与每续页广播：加载中「全部」视图按已加载条数累计各分组计数，`groups.onGridTotals` 更新非当前分组 tab（与 K/N 已加载口径一致；加载完成后 GET_STATS 校正为权威值） |
-| `'currentGroupId'` | `appShell.clearActiveGrid()` + `groups.syncActiveTabs()` + 加载域数据（tab 集合未变，不重建 tab）         |
-| `'batchMode'`      | toggle body `.batch-mode` class + `Batch.syncSelectionUI`（批量栏显隐由 CSS `body.batch-mode` 驱动，无独立 #batchBar）        |
+| `'grid-total'`     | `loadDomainData` 首页权威 total 到达后广播：`groups.onGridTotal` 校正当前分组 tab 数字（快照通常已含计数；快照与 page-0 之间若发生写入，以 page-0 为准） |
+| `'currentGroupId'` | `appShell.clearActiveGrid()` + `groups.syncActiveTabs()` + 加载域数据（tab 集合未变，不重建 tab；分组计数沿用当前域快照）         |
+| `'batchMode'`      | toggle body `.batch-mode` class + `Batch.syncSelectionUI`（独立 `#batchBar` 显隐与主网格底部安全区均由 CSS `body.batch-mode` 驱动）        |
 
 ## 相关文档
 

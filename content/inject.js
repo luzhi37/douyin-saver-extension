@@ -60,7 +60,7 @@
     CANCEL_CONTENT_TYPE: "application/x-www-form-urlencoded; charset=UTF-8",
     FORM_CONTENT_TYPE: "application/x-www-form-urlencoded",
     AWEME_TYPE_NOTE: 68,
-    TOOLTIP_DESC_MAX_LEN: 30,
+    TOOLTIP_TITLE_MAX_LEN: 24,
     BUTTON: {
       CONTAINER: ".basePlayerContainer",
       GRID: ".basePlayerContainer xg-right-grid",
@@ -92,10 +92,18 @@
       SET_ONE_COLLECTION_RESULT: "DY_SET_ONE_COLLECTION_RESULT",
       SET_ONE_FAVORITES_REQUEST: "DY_SET_ONE_FAVORITES_REQUEST",
       SET_ONE_FAVORITES_RESULT: "DY_SET_ONE_FAVORITES_RESULT",
+      RECORD_STATUS_REQUEST: "DY_RECORD_STATUS_REQUEST",
+      RECORD_STATUS_RESULT: "DY_RECORD_STATUS_RESULT",
+      WORK_SAVED: "DY_WORK_SAVED",
+      IMPORT_CANDIDATE_REQUEST: "DY_IMPORT_CANDIDATE_REQUEST",
+      IMPORT_CANDIDATE_RESULT: "DY_IMPORT_CANDIDATE_RESULT",
       BUTTON_CLICK: "DY_BUTTON_CLICK",
       CAPTURE_BROWSER_FEATURES: "DY_CAPTURE_BROWSER_FEATURES",
     },
   };
+
+  // 保存按钮 tooltip 操作提示（Mac 用 Cmd，其余用 Ctrl）
+  const SAVE_HINT = `点击->添加作品 ${/Mac/i.test(navigator.platform || "") ? "Cmd" : "Ctrl"}+点击->添加作者`;
 
   const PAGE_KEYS = new Set(["offset", "count"]);
   const SDK_INJECT_KEYS = new Set([
@@ -331,10 +339,7 @@
           const playAddr = item.play_addr || {};
           picked.push({
             url: item.playApi,
-            width: playAddr.width || item.width || 0,
             height: playAddr.height || item.height || 0,
-            fps: item.FPS || 0,
-            dataSize: playAddr.data_size || 0,
           });
         }
         picked.sort((a, b) => (b.height || 0) - (a.height || 0));
@@ -405,42 +410,34 @@
       return { url: this.#normalizeProtocol(url), expireAt };
     }
 
-    #extractCover(raw) {
+    #extractCover(raw, firstImage = "") {
       const video = raw.video || {};
       const platform = this.#normalizeProtocol(video.cover?.url_list?.[0] || video.coverUrlList?.[0] || "");
       const isNote = (raw.awemeType || raw.aweme_type) === CONFIG.AWEME_TYPE_NOTE;
       // 图集优先平台封面（video.cover 封面档，通常远轻于首图原图档），无封面回退首图；
       // 展示侧仍由 options utils.pickCardCover 按变体档位取轻（3000 档 vs 1440 档）
-      if (isNote) return platform || this.#extractImages(raw)[0] || "";
+      if (isNote) return platform || firstImage;
       return platform;
     }
 
-    #extractImages(raw) {
+    // 内容项配对（静帧+实况视频）：单遍映射保证 images/imageVideos 逐位对位——
+    // 图集每条可为纯静帧或实况（静帧+小视频），无静帧的项两者同步丢弃（视频无处可挂）
+    #extractImagePairs(raw) {
       const imgList = raw.images;
       if (!Array.isArray(imgList)) return [];
-      const images = [];
+      const pairs = [];
       for (const img of imgList) {
         const urlList = img.urlList || img.url_list || [];
         const imgUrl = urlList[0] || "";
-        if (imgUrl) images.push(this.#normalizeProtocol(imgUrl));
-      }
-      return images;
-    }
-
-    // 内容项实况视频（图集每条可为纯静帧或实况=静帧+小视频）：与 #extractImages 同条件
-    // 过滤保逐位对位（无静帧的项两者同步丢弃），无视频项为空串——详情侧按索引读、缺位安全
-    #extractImageVideos(raw) {
-      const imgList = raw.images;
-      if (!Array.isArray(imgList)) return [];
-      const videos = [];
-      for (const img of imgList) {
-        const urlList = img.urlList || img.url_list || [];
-        if (!(urlList[0] || "")) continue; // 与 #extractImages 同条件跳过，保对位
+        if (!imgUrl) continue;
         const v = img.video?.play_addr || img.video?.playAddr || {};
         const videoUrl = v.url_list?.[0] || v.urlList?.[0] || "";
-        videos.push(this.#normalizeProtocol(videoUrl));
+        pairs.push({
+          url: this.#normalizeProtocol(imgUrl),
+          video: this.#normalizeProtocol(videoUrl),
+        });
       }
-      return videos;
+      return pairs;
     }
 
     #extractMusic(raw) {
@@ -452,13 +449,6 @@
       return raw.authorInfo || raw.author || {};
     }
 
-    #extractAuthorFollowed(raw) {
-      const author = this.#extractAuthor(raw);
-      if (!("follow_status" in author) && !("followStatus" in author)) return null;
-      const followRaw = author.follow_status ?? author.followStatus;
-      return followRaw === 1 || followRaw === 2;
-    }
-
     normalizeWork(raw, source) {
       if (!raw) return null;
       const awemeId = String(raw.aweme_id || raw.awemeId || "");
@@ -467,19 +457,19 @@
       const author = this.#extractAuthor(raw);
       const isNote = (raw.awemeType || raw.aweme_type) === CONFIG.AWEME_TYPE_NOTE;
       const vid = this.#extractVideo(raw, source);
+      const imagePairs = this.#extractImagePairs(raw);
 
       return {
         awemeId,
         type: isNote ? "note" : "video",
-        desc: raw.desc || "",
         nickname: String(author.nickname || author.nickName || ""),
         uid: String(author.uid || ""),
         authorHomeUrl: this.#buildAuthorHomeUrl(author),
-        cover: this.#extractCover(raw),
+        cover: this.#extractCover(raw, imagePairs[0]?.url || ""),
         video: vid.url,
         videoExpireAt: vid.expireAt || 0,
-        images: this.#extractImages(raw),
-        imageVideos: this.#extractImageVideos(raw),
+        images: imagePairs.map((p) => p.url),
+        imageVideos: imagePairs.map((p) => p.video),
         music: this.#extractMusic(raw),
         createTime: raw.create_time || raw.createTime || this.#awemeIdCreateTime(awemeId) || 0,
       };
@@ -524,13 +514,8 @@
       return list.map((item) => this.extractWorkFromRaw(item, { fromFiber: false })).filter(Boolean);
     }
 
-    transformAwemeItem(aw, { includeAuthorFollowed = false } = {}) {
-      const work = this.normalizeWork(aw, "api");
-      if (!work) return null;
-      if (includeAuthorFollowed) {
-        work.authorFollowed = this.#extractAuthorFollowed(aw);
-      }
-      return work;
+    transformAwemeItem(aw) {
+      return this.normalizeWork(aw, "api");
     }
 
     shouldCapture(url) {
@@ -798,9 +783,7 @@
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
       assertApiOk(data);
-      const items = (data.aweme_list || []).map((aw) =>
-        workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
-      );
+      const items = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
       const hasMore = hasMoreFlag(data);
       const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
@@ -835,9 +818,7 @@
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       const data = await resp.json();
       assertApiOk(data);
-      const items = (data.aweme_list || []).map((aw) =>
-        workExtractor.transformAwemeItem(aw, { includeAuthorFollowed: true }),
-      );
+      const items = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
       const hasMore = hasMoreFlag(data);
       const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
@@ -1025,6 +1006,21 @@
   class ButtonInjector {
     #observerTimer = null;
 
+    constructor() {
+      // 扩展重载后注入脚本可能在同一文档执行第二次：play 监听与已存推送只绑一次
+      if (window.__dyManagerRecordStatusBound) return;
+      window.__dyManagerRecordStatusBound = true;
+      document.addEventListener("play", (e) => this.#onVideoPlay(e), true);
+      document.addEventListener(CONFIG.EVENTS.WORK_SAVED, (e) => this.#onWorkSaved(e));
+      // 从 options 改完数据切回抖音页：content 侧缓存已清空，挂载中的按钮同步补查
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) return;
+        for (const btn of document.querySelectorAll("." + CONFIG.BUTTON.CLASS_SAVE)) {
+          if (btn.dataset.statusFor) this.#refreshStatus(btn, true);
+        }
+      });
+    }
+
     #getReactFiber(el) {
       for (const key in el) {
         if (key.startsWith("__reactFiber$")) return el[key];
@@ -1062,6 +1058,162 @@
       return null;
     }
 
+    // ===== 记录状态（作品域 / 候选域角标） =====
+    #getFullWork(btn) {
+      const awemeInfo = this.#getAwemeInfoFromButton(btn);
+      if (!awemeInfo) return null;
+      try {
+        return workExtractor.extractWorkFromRaw(awemeInfo, { fromFiber: true });
+      } catch (_e) {
+        return null;
+      }
+    }
+
+    #renderTips(btn) {
+      const tips = btn.querySelector(".xg-tips");
+      if (!tips) return;
+      // 状态只走角标；tooltip 标题单独更新，操作提示是弱化的固定子行
+      const title = tips.querySelector(".dy-saver-tip-title");
+      if (!title) return;
+      title.textContent =
+        btn.dataset.hovering === "1" && btn.dataset.baseTips
+          ? btn.dataset.baseTips
+          : CONFIG.BUTTON.TEXT_SAVE;
+    }
+
+    // 从按钮所在 fiber 重新取当前作品并刷新 tooltip；forceRequest=true 时发起状态请求
+    //（content 侧按 TTL 决定即时回包或回源）。同一按钮被 SPA 复用时按 awemeId 变化清空
+    // 旧状态，避免旧角标挂到新视频。
+    #refreshStatus(btn, forceRequest) {
+      const fullWork = this.#getFullWork(btn);
+      if (!fullWork || !fullWork.awemeId) {
+        delete btn.dataset.baseTips;
+        this.#renderTips(btn);
+        return;
+      }
+      const nickname = fullWork.nickname || "未知";
+      const title = `@${nickname}`;
+      btn.dataset.baseTips =
+        title.length > CONFIG.TOOLTIP_TITLE_MAX_LEN
+          ? title.slice(0, CONFIG.TOOLTIP_TITLE_MAX_LEN) + "…"
+          : title;
+
+      if (btn.dataset.statusFor !== fullWork.awemeId) {
+        btn.dataset.statusFor = fullWork.awemeId;
+        btn.dataset.statusState = "";
+        btn.classList.remove("is-work-saved", "is-author-candidate");
+      }
+
+      // done 状态也要放行：content 侧有 TTL 缓存，未过期时即时回包，过期则顺带补查；
+      // 只拦 pending，避免同一条视频重复挂监听
+      if (forceRequest && btn.dataset.statusState !== "pending") {
+        this.#requestStatus(btn, fullWork);
+      }
+      this.#renderTips(btn);
+    }
+
+    #requestStatus(btn, fullWork) {
+      btn.dataset.statusState = "pending";
+      const requestId = "status_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+      let timer = null;
+      const onResult = (e) => {
+        const d = e.detail || {};
+        if (d.requestId !== requestId) return;
+        document.removeEventListener(CONFIG.EVENTS.RECORD_STATUS_RESULT, onResult);
+        clearTimeout(timer);
+        if (btn.dataset.statusFor !== fullWork.awemeId) return; // 视频已切换，结果过期
+        if (!d.status) {
+          btn.dataset.statusState = "";
+          return;
+        }
+        btn.dataset.statusState = "done";
+        this.#applyStatus(btn, d.status);
+      };
+      document.addEventListener(CONFIG.EVENTS.RECORD_STATUS_RESULT, onResult);
+      timer = setTimeout(() => {
+        document.removeEventListener(CONFIG.EVENTS.RECORD_STATUS_RESULT, onResult);
+        if (btn.dataset.statusState === "pending") btn.dataset.statusState = "";
+      }, 5000);
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.RECORD_STATUS_REQUEST, {
+          detail: { requestId, awemeId: fullWork.awemeId, uid: fullWork.uid || "" },
+        }),
+      );
+    }
+
+    #applyStatus(btn, status) {
+      const work = status.work || {};
+      const author = status.author || {};
+      btn.classList.toggle("is-work-saved", !!work.exists);
+      btn.classList.toggle("is-author-candidate", !!author.candidate);
+    }
+
+    #onVideoPlay(e) {
+      const video = e.target;
+      if (!video || video.tagName !== "VIDEO") return;
+      const container = video.closest(CONFIG.BUTTON.CONTAINER);
+      if (!container) return;
+      const btn = container.querySelector("." + CONFIG.BUTTON.CLASS_SAVE);
+      if (!btn) return;
+      // 切换视频/续播都会触发；#refreshStatus 内部按 awemeId 与 pending 状态去重
+      this.#refreshStatus(btn, true);
+    }
+
+    #onWorkSaved(e) {
+      const { awemeId } = e.detail || {};
+      if (!awemeId) return;
+      for (const btn of document.querySelectorAll("." + CONFIG.BUTTON.CLASS_SAVE)) {
+        if (btn.dataset.statusFor !== awemeId) continue;
+        btn.classList.add("is-work-saved");
+      }
+    }
+
+    // ===== 作者入候选（Ctrl/Cmd + 点击保存按钮） =====
+    #getAuthorSecUid(btn, fullWork) {
+      const awemeInfo = this.#getAwemeInfoFromButton(btn);
+      const author = awemeInfo?.authorInfo || awemeInfo?.author || {};
+      const direct = String(author.secUid || author.sec_uid || "");
+      if (direct) return direct;
+      // fiber 偶发缺 sec_uid 时从已生成的作者主页链接兜底
+      try {
+        const parts = new URL(fullWork?.authorHomeUrl || "").pathname.split("/").filter(Boolean);
+        return parts[0] === "user" ? parts[1] || "" : "";
+      } catch (_e) {
+        return "";
+      }
+    }
+
+    #requestCandidateImport(btn, fullWork) {
+      if (btn.dataset.candidateBusy === "1") return;
+      const secUid = this.#getAuthorSecUid(btn, fullWork);
+      const awemeId = fullWork?.awemeId || "";
+      const nickname = fullWork?.nickname || "";
+      const requestId = "candidate_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+      btn.dataset.candidateBusy = "1";
+      let timer = null;
+      const onResult = (e) => {
+        const d = e.detail || {};
+        if (d.requestId !== requestId) return;
+        document.removeEventListener(CONFIG.EVENTS.IMPORT_CANDIDATE_RESULT, onResult);
+        clearTimeout(timer);
+        btn.dataset.candidateBusy = "";
+        if (d.ok && awemeId && btn.dataset.statusFor === awemeId) {
+          btn.classList.add("is-author-candidate");
+        }
+      };
+      document.addEventListener(CONFIG.EVENTS.IMPORT_CANDIDATE_RESULT, onResult);
+      // 后台入库含 profile + 最近作品两段请求，给足超时；超时只解除按钮锁，content 侧仍会 toast
+      timer = setTimeout(() => {
+        document.removeEventListener(CONFIG.EVENTS.IMPORT_CANDIDATE_RESULT, onResult);
+        btn.dataset.candidateBusy = "";
+      }, 35000);
+      document.dispatchEvent(
+        new CustomEvent(CONFIG.EVENTS.IMPORT_CANDIDATE_REQUEST, {
+          detail: { requestId, awemeId, secUid, nickname },
+        }),
+      );
+    }
+
     #createButton(className, svgContent, tooltipText) {
       const btn = document.createElement("xg-icon");
       btn.className = className;
@@ -1082,16 +1234,70 @@
         .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} {
           cursor: pointer;
           position: relative;
+          overflow: visible;
         }
         .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .semi-icon {
           display: flex;
           justify-content: center;
           align-items: center;
         }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .dy-saver-badge {
+          position: absolute;
+          display: none;
+          pointer-events: none;
+          min-width: 14px;
+          height: 14px;
+          padding: 0 3px;
+          border-radius: 7px;
+          color: #fff;
+          font-size: 9px;
+          line-height: 14px;
+          font-weight: 600;
+          text-align: center;
+          z-index: 1;
+        }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .dy-saver-badge--work {
+          top: -3px;
+          right: -6px;
+          background: #16a34a;
+        }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .dy-saver-badge--author {
+          bottom: -3px;
+          right: -6px;
+          background: #2563eb;
+        }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE}.is-work-saved .dy-saver-badge--work {
+          display: block;
+        }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE}.is-author-candidate .dy-saver-badge--author {
+          display: block;
+        }
         .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .xg-tips {
           left: auto;
           right: 0;
           transform: none;
+          /* 绝对定位默认按按钮宽度 shrink-to-fit（约 32px）；pre-line 允许 CJK 任意
+             断行后最小内容宽度只有 1 个字，必须用 max-content 撑开再交给 max-width 折行 */
+          width: max-content;
+          min-width: 180px;
+          max-width: 360px;
+          white-space: pre-line;
+          word-break: break-word;
+          line-height: 1.5;
+          text-align: left;
+        }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .dy-saver-tip-title {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .basePlayerContainer .${CONFIG.BUTTON.CLASS_SAVE} .dy-saver-tip-hint {
+          margin-top: 2px;
+          font-size: 11px;
+          line-height: 1.4;
+          font-weight: 400;
+          opacity: 0.55;
+          white-space: nowrap;
         }
       `;
       (document.head || document.documentElement).appendChild(style);
@@ -1106,26 +1312,35 @@
         </svg>`,
         CONFIG.BUTTON.TEXT_SAVE,
       );
+      // tooltip 拆成标题 + 弱化操作提示两行，提示行不参与 hover 时的标题更新
+      const tips = btn.querySelector(".xg-tips");
+      if (tips) {
+        tips.textContent = "";
+        const title = document.createElement("div");
+        title.className = "dy-saver-tip-title";
+        title.textContent = CONFIG.BUTTON.TEXT_SAVE;
+        const hint = document.createElement("div");
+        hint.className = "dy-saver-tip-hint";
+        hint.textContent = SAVE_HINT;
+        tips.append(title, hint);
+      }
+      const workBadge = document.createElement("span");
+      workBadge.className = "dy-saver-badge dy-saver-badge--work";
+      workBadge.textContent = "✓";
+      const authorBadge = document.createElement("span");
+      authorBadge.className = "dy-saver-badge dy-saver-badge--author";
+      authorBadge.textContent = "候";
+      btn.append(workBadge, authorBadge);
+
       btn.addEventListener("mouseenter", () => {
-        const tips = btn.querySelector(".xg-tips");
-        if (!tips) return;
-        const awemeInfo = this.#getAwemeInfoFromButton(btn);
-        if (!awemeInfo) {
-          tips.textContent = CONFIG.BUTTON.TEXT_SAVE;
-          return;
-        }
-        const fullWork = workExtractor.extractWorkFromRaw(awemeInfo, { fromFiber: true });
-        if (!fullWork || !fullWork.awemeId) {
-          tips.textContent = CONFIG.BUTTON.TEXT_SAVE;
-          return;
-        }
-        const nickname = fullWork.nickname || "未知";
-        const desc = (fullWork.desc || "").slice(0, CONFIG.TOOLTIP_DESC_MAX_LEN);
-        tips.textContent = `@${nickname}${desc ? " · " + desc : ""}`;
+        btn.dataset.hovering = "1";
+        this.#refreshStatus(btn, true);
       });
       btn.addEventListener("mouseleave", () => {
-        const tips = btn.querySelector(".xg-tips");
-        if (tips) tips.textContent = CONFIG.BUTTON.TEXT_SAVE;
+        btn.dataset.hovering = "0";
+        // 不能直接改 .xg-tips.textContent：会连同标题/提示两个子节点一起清掉，
+        // 导致下一次悬停只剩纯文本「保存」
+        this.#renderTips(btn);
       });
       return btn;
     }
@@ -1135,9 +1350,24 @@
       event.stopPropagation();
       event.stopImmediatePropagation();
 
+      const modifier = event.ctrlKey || event.metaKey;
       const awemeInfo = this.#getAwemeInfoFromButton(btn);
-      if (!awemeInfo) return;
-      const fullWork = workExtractor.extractWorkFromRaw(awemeInfo, { fromFiber: true });
+      if (!awemeInfo) {
+        // fiber 取不到 awemeInfo 时普通点击维持原静默返回；Ctrl/Cmd 仍尝试按作者信息入库
+        if (modifier) this.#requestCandidateImport(btn, null);
+        return;
+      }
+      let fullWork = null;
+      try {
+        fullWork = workExtractor.extractWorkFromRaw(awemeInfo, { fromFiber: true });
+      } catch (_e) {
+        fullWork = null;
+      }
+      if (fullWork?.awemeId) btn.dataset.statusFor = fullWork.awemeId;
+      if (modifier) {
+        this.#requestCandidateImport(btn, fullWork);
+        return;
+      }
       document.dispatchEvent(new CustomEvent(CONFIG.EVENTS.BUTTON_CLICK, { detail: { fullWork } }));
     }
 
@@ -1147,6 +1377,9 @@
         const saveBtn = this.#createSaveButton();
         saveBtn.addEventListener("click", (e) => this.#onSaveButtonClick(saveBtn, e));
         grid.prepend(saveBtn);
+        // 注入即查一次（不依赖播放状态）：视频切换由 play 事件补查，悬停再兜底；
+        // 同一 awemeId 在 content 侧有 TTL 缓存，重复容器不会重复回源
+        this.#refreshStatus(saveBtn, true);
       }
     }
 
