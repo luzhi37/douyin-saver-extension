@@ -1164,7 +1164,7 @@ export class VirtualGrid {
   }
 
   // 容器宽度变化入口（RO 回调）：右栏折叠/窗口缩放/作者侧边栏拖宽。按活跃实例门控
-  // ——四单例共享同一 #mainContainer、各自 RO 都会触发，#observer/#chunkRaf 仅活跃
+  // ——各网格单例共享同一 #mainContainer、各自 RO 都会触发，#observer/#chunkRaf 仅活跃
   // 网格非空（render 建链、abortRender 断链），据此互斥落笔。列数变化会重排全部行：
   // 尾部占位与视口带区估算同步失效，rAF 后（新轨宽生效）统一补齐
   #onContainerResize() {

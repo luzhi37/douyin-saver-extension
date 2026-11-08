@@ -8,7 +8,7 @@ options「扫描收藏」→ `domainScanSync.syncDomain("collections")` 打开�
 
 - while 循环翻页：环境参数走 query（`credentials.buildBaseParams()`），业务分页参数 `count/cursor` 走 urlencoded body——空 body 的 POST 固定被 Argus 以 `Signature Not Found` 拒绝；
 - 每页经 `independentClient.request(..., { method:"POST", ... })` 发出，叠加 Argus webSign 三件套头（request 内默认开启）；
-- 条目经 `formatWork` 归一化（带 `authorFollowed`），进度 `COLLECTION_PROGRESS` 含未关注计数；
+- 条目经 `formatWork` 归一化；进度 `COLLECTION_PROGRESS` 仅含已收集数/是否有更多/总数；
 - 循环收尾由 background `scanTasks.persistScan` 按 `persist` 域**直接落库**（stamps 一遍式写 + 丢失检测，见 [10](./10-storage-write-and-import.md)），响应 `{ ok, requestId, works, timedOut, saved, lostUids }` 返回 options；弹窗展示「新增/更新/已取消」汇总，丢失条目（扫描期间已取消收藏）经垃圾桶按钮移入「稍后删除」分组。
 
 > 边界说明：**点赞扫描（FETCH_FAVORITES）无独立分支**——favorite GET 端点受 Turing 风控验证，独立模式不可用（待补充：如需支持须另行逆向 Turing 方案）。点赞扫描仅 Tab 模式，链路见 [09](./09-inject-tab-mode.md)。
@@ -226,7 +226,7 @@ count=20&cursor=0
 | `savedCookie` 缺失 | 抛 `NO_COOKIE` | 设置面板刷新 Cookie |
 | msToken 只有兜底假值 | listcollection 403 | 设置面板「刷新」强制走 mssdk 兑换 |
 | a_bogus 被拒 `web_id_sign_invalid` | independentClient.request 自动刷新 webid 重试一次 | 内建 `_webIdRetried` 防死循环 |
-| 用户取消 | `CANCEL_ACTIVE_TASK` → cancelled | 返回已收集部分，`timedOut:true`；options 显示「已超时退出，仅获取部分数据」 |
+| 用户取消 | `CANCEL_ACTIVE_TASK` → cancelled | 返回已收集部分，`timedOut:true`；options 显示「已中途取消，仅保留部分数据」 |
 | 盐轮换（复发） | 此前能用的版本突然固定 `Signature Not Found` 且线格式无误 | 见下方处置指南 |
 
 ### 复发处置指南：盐轮换了怎么办（约几分钟）

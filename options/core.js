@@ -1,6 +1,9 @@
 // ---------- 共享基础设施（core） ----------
 // 由原 options/options.js 顶层 7 个全局对象拆出：config / dom / state / store / utils / runtimeConfig / services。
-// 本模块无外部依赖，是模块图中第一个被完全求值的模块；所有类模块经 ES import 引用本模块导出物。
+// 仅依赖 shared/ 下的纯函数/常量模块，是模块图中第一个被完全求值的模块；所有类模块经 ES import 引用本模块导出物。
+
+import { sortSavedAtDesc, mergeSavedAtDesc, authorKeyOf } from "../shared/author-sort.js";
+import { RUNTIME_DEFAULTS } from "../shared/runtime-defaults.js";
 
 // ---------- config ----------
 export const config = {
@@ -42,10 +45,11 @@ export const config = {
   SIDEBAR_IMG_PER_FRAME: 6,
   SIDEBAR_DRAG_THRESHOLD: 4,
 
-  // 卡片（CARD_HEIGHT_OFFSET = 封面矩形外的信息块高度，8+18+2+16 = 44）
+  // 卡片（CARD_HEIGHT_OFFSET = 封面矩形外的信息块高度：8 顶 + 16 作者行 + 6 底 = 30；
+  // 必须与 options.css 的 --dy-card-info-height 一致）
   CARD_SIZE_FALLBACK: 261,
   CARD_GAP: 11,
-  CARD_HEIGHT_OFFSET: 44,
+  CARD_HEIGHT_OFFSET: 30,
   // 自适应卡宽容差带（占理想卡宽比例，上下限对称 ±6%）：VirtualGrid #applyLayout
   // 带内卡宽钳在 [MIN, MAX]×ideal——上限防「为填满而把卡片拉得过胖」，下限防
   // 「卡片过小不可读」；无可行解（相邻列宽差跨过整个带宽）时向下破下限 ≤ 一个
@@ -59,7 +63,6 @@ export const config = {
   WORK_CARD_SIZE_BAND_MAX: 1.1,
 
   // 详情页
-  DETAIL_TITLE_MAX_LEN: 40,
   TOAST_DURATION: 2000,
   TOAST_ERROR_DURATION: 4500,
   DOWNLOAD_MAX_RETRY: 1,
@@ -113,6 +116,15 @@ export const config = {
   STORAGE_MAX_BYTES: 10 * 1024 * 1024,
   TRASH_GROUP_NAME: "稍后删除",
 
+  // 随机回顾（真实回顾域）：本轮数量可自定义（1–500），批次引用最多 500 条
+  RANDOM_REVIEW_DEFAULT_COUNT: 20,
+  RANDOM_REVIEW_MAX_COUNT: 500,
+  RANDOM_REVIEW_MAX_EXCLUDE: 2000,
+
+  // 作品数排序后台权威分页（方案 B）：关闭后 options 不再发送 sort=authorCount，
+  // 立即回到 saved 分页 + 完成态本地整渲（回滚开关，无需降级数据库）
+  AUTHOR_COUNT_PAGING: true,
+
   // URL
   URL_BASE: "https://www.douyin.com",
   URL_USER_SELF: "https://www.douyin.com/user/self",
@@ -124,12 +136,15 @@ export const config = {
   //（followings 原生关注镜像 / candidates 扩展自建候选池）同构 7 字段记录
   WORK_RECORD_DOMAINS: ["works", "favorites", "collections"],
   AUTHOR_RECORD_DOMAINS: ["followings", "candidates"],
+  REVIEW_DOMAIN: "review",
+  SOURCE_DOMAINS: ["works", "favorites", "collections", "followings", "candidates"],
   DOMAINS_META: {
     works: { label: "作品", itemKey: "works", idKey: "awemeId", isAuthorRecord: false },
     followings: { label: "关注", itemKey: "followings", idKey: "uid", isAuthorRecord: true },
     favorites: { label: "点赞", itemKey: "favorites", idKey: "awemeId", isAuthorRecord: false },
     collections: { label: "收藏", itemKey: "collections", idKey: "awemeId", isAuthorRecord: false },
     candidates: { label: "候选", itemKey: "candidates", idKey: "uid", isAuthorRecord: true },
+    review: { label: "回顾", itemKey: "reviewItems", idKey: "sourceId", isAuthorRecord: false, canImportExport: false },
   },
 
   // 正则
@@ -150,6 +165,7 @@ export const dom = {
   batchMove: document.querySelector("#btnBatchMove"),
   batchDelete: document.querySelector("#btnBatchDelete"),
   batchSelectAll: document.querySelector("#btnBatchSelectAll"),
+  btnBatchDone: document.querySelector("#btnBatchDone"),
   detailOverlay: document.querySelector("#detailOverlay"),
   detailClose: document.querySelector("#detailClose"),
   detailVideoContainer: document.querySelector("#detailVideoContainer"),
@@ -169,8 +185,7 @@ export const dom = {
   detailPlayBtn: document.querySelector("#detailPlayBtn"),
   detailTime: document.querySelector("#detailTime"),
   detailAuthor: document.querySelector("#detailAuthor"),
-  detailTitle: document.querySelector("#detailTitle"),
-  detailTitleText: document.querySelector("#detailTitleText"),
+  detailVisit: document.querySelector("#detailVisit"),
   detailCreateTime: document.querySelector("#detailCreateTime"),
   detailMuteBtn: document.querySelector("#detailMuteBtn"),
   detailRemoveBtn: document.querySelector("#detailRemoveBtn"),
@@ -188,7 +203,9 @@ export const dom = {
   dialogFooter: document.querySelector("#dialogFooter"),
   dialogClose: document.querySelector("#dialogClose"),
   fileInput: document.querySelector("#fileInput"),
+  dyTooltip: document.querySelector("#dyTooltip"),
   btnDataTools: document.querySelector("#btnDataTools"),
+  btnStatus: document.querySelector("#btnStatus"),
   btnSync: document.querySelector("#btnSync"),
   btnBatch: document.querySelector("#btnBatch"),
   btnGroupManage: document.querySelector("#btnGroupManage"),
@@ -199,10 +216,15 @@ export const dom = {
   btnSettings: document.querySelector("#btnSettings"),
   menuStorage: document.querySelector("#menuStorage"),
   rightSidebar: document.querySelector("#rightSidebar"),
-  btnSidebarToggle: document.querySelector("#btnSidebarToggle"),
   sidebar: document.querySelector("#sidebar"),
   sidebarBody: document.querySelector("#sidebarBody"),
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
+  sidebarAuthorHead: document.querySelector("#sidebarAuthorHead"),
+  sidebarAuthorAvatar: document.querySelector("#sidebarAuthorAvatar"),
+  sidebarAuthorName: document.querySelector("#sidebarAuthorName"),
+  sidebarAuthorStatus: document.querySelector("#sidebarAuthorStatus"),
+  sidebarAuthorSub: document.querySelector("#sidebarAuthorSub"),
+  sidebarAuthorClose: document.querySelector("#sidebarAuthorClose"),
   sidebarLoader: document.querySelector("#sidebarLoader"),
   sidebarEndNotice: document.querySelector("#sidebarEndNotice"),
   sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
@@ -211,12 +233,9 @@ export const dom = {
   batchSaveToCandidates: document.querySelector("#btnBatchSaveToCandidates"),
   batchDownload: document.querySelector("#btnBatchDownload"),
   batchCount: document.querySelector("#batchCount"),
-  searchBar: document.querySelector("#searchBar"),
+  batchTotal: document.querySelector("#batchTotal"),
   searchInput: document.querySelector("#searchInput"),
   sbCount: document.querySelector("#sbCount"),
-  sbScope: document.querySelector("#sbScope"),
-  sbScopeAuthor: document.querySelector("#sbScopeAuthor"),
-  sbScopeTitle: document.querySelector("#sbScopeTitle"),
   sbWorkFilters: document.querySelector("#sbWorkFilters"),
   sbSort: document.querySelector("#sbSort"),
   sbType: document.querySelector("#sbType"),
@@ -224,7 +243,15 @@ export const dom = {
   sbFollowSort: document.querySelector("#sbFollowSort"),
   btnClearInBar: document.querySelector("#btnClearInBar"),
   btnSearchGo: document.querySelector("#btnSearchGo"),
-  btnSearchMenu: document.querySelector("#btnSearch"),
+  // 回顾页签 / 回顾顶栏配置
+  btnReviewTab: document.querySelector('.ds-btn[data-domain="review"]'),
+  reviewBar: document.querySelector("#reviewBar"),
+  reviewSourceScope: document.querySelector("#reviewSourceScope"),
+  reviewCountInput: document.querySelector("#reviewCountInput"),
+  btnReviewRandom: document.querySelector("#btnReviewRandom"),
+  btnReviewAppend: document.querySelector("#btnReviewAppend"),
+  // 全局 Toast 容器（右下角堆叠；Dialog.showToast 按条创建）
+  toastStack: document.querySelector("#toastStack"),
 };
 
 // ---------- state ----------
@@ -256,23 +283,31 @@ export const state = {
   // 读取后即清），按 total 一次铺满全量骨架，余页经 fillSlots 以键前缀自锚定回填
   gridSlots: null,
   // 当前域+分组的后台权威总量（作品型三域 = GET_* page:0 的 total；作者域 = 单发全量
-  // 长度）：搜索栏 K/N 的 N 在加载期取它，K 随页增长而 N 恒定。切域/切组瞬间由
-  // gridTotals 缓存（与分组 tab 同源）先给出 0/Total，首页到达后校正；无缓存显示「…」。
-  // 加载完成后 N 回落为已加载条数（此时与 total 相等）
+  // 长度）：用于加载期占位与分组 tab 数字校正；搜索栏只显示 K，不再展示该总量。
+  // 切域/切组瞬间由 gridTotals 缓存先给出占位，首页到达后校正；无缓存显示「…」
   gridTotal: null,
-  // 「domain|groupId」→ 权威总量缓存：page:0 响应与 GET_STATS 分组计数写入——切域/切组
-  // 的「0/Total」占位与分组 tab 数字同源，不会出现两个位置各说各的
+  // 「domain|groupId」→ page-0 权威 total 缓存：切域/切组的占位与当前分组 tab 校正共用。
+  // 分组栏数字不走这里——由 GET_DOMAIN_GROUPS 的原子快照一次渲染
   gridTotals: {},
-  // 首屏数据未到达（切域/切组后网格已清场）：K 恒 0、N 取缓存/权威总量；首页落库即清
+  // 首屏数据未到达（切域/切组后网格已清场）：K 恒 0；首页落库即清
   gridPending: false,
-  // 进度式分组计数运行态（一次「全部」视图加载内累计各分组已到达条数）：
-  // { domain, counts: { [groupId]: 已加载条数 } }；新载入清零（见 services._tallyGroupCounts）
-  gridGroupTally: null,
   // 域数据写入版本号：SearchBar 视图阶段缓存（#viewCache）的失效判据。store 的数据
   // 变更方法自动自增；绕过 store 封装的原地写入（main.js tryHeadInsert/applyStoreUpserts）
   // 必须手动自增，否则缓存读到脏视图
   //（红线见 docs/11「视图阶段缓存」）
   dataVersion: 0,
+  // 回顾域是真实域：state.review 为回源 hydration 后的当前批次，reviewSourceDomain/kind
+  // 记录批次来源与卡片类型（works/authors），用于动态选择搜索视图与网格实例
+  review: [],
+  reviewSourceDomain: null,
+  reviewKind: "works",
+  // 作品型三域的分页模式（由 SearchBar.syncPagingState 写入）：saved 走现有 keyset
+  // 分页；authorCount 走 background 作者视图游标。ascending 仅 saved 升序使用
+  pagingMode: { sort: "saved", direction: "desc", ascending: false },
+  // authorCount 的 trusted 视图：items 为按作者视图序到达的已加载前缀；counts 为全组
+  // 作者计数（page0 authorMeta），用于本地 fallback rank；complete 标记所有作者视图页
+  // 已加载完（只有此时才允许本地摘卡而不整域重载）。写入/切域/切组即失效
+  authorViewOrder: null,
 };
 
 // ---------- store ----------
@@ -297,8 +332,17 @@ export const store = {
     state[key] = val;
     if (old !== val) {
       // 域数据替换计入数据版本（domain/currentGroupId/batchMode 等非数据键不计）
-      if (config.AUTHOR_RECORD_DOMAINS.includes(key) || config.WORK_RECORD_DOMAINS.includes(key)) {
+      if (
+        config.AUTHOR_RECORD_DOMAINS.includes(key) ||
+        config.WORK_RECORD_DOMAINS.includes(key) ||
+        key === config.REVIEW_DOMAIN
+      ) {
         state.dataVersion++;
+      }
+      // 作者视图按 (domain, groupId, direction) 绑定当前数据：域数据整体替换即失效；
+      // authorCount page0 会在 store.set 之后同步重建（rAF 渲染前）
+      if (config.WORK_RECORD_DOMAINS.includes(key) || key === config.REVIEW_DOMAIN) {
+        state.authorViewOrder = null;
       }
       this.notify(key, val, old);
     }
@@ -309,10 +353,76 @@ export const store = {
     this.notify("groups");
   },
 
-  // 作品型三域通用的静默移除（按当前域数据源过滤）
-  removeWorkRecordSilent(domain, idSet) {
+  // 作品型三域通用的静默移除（按当前域数据源过滤）。
+  // preserveAuthorOrder=true：authorCount 完整视图下的本地摘卡——保留已渲染顺序，只从
+  // 视图前缀里剔除记录并递减作者计数，不触发整域重载；顺序在下次显式切排序/分组/域时
+  // 由后台作者视图重新校准。视图不完整/加载中仍走 preserve=false（随后整域重载兜底）。
+  removeWorkRecordSilent(domain, idSet, { preserveAuthorOrder = false, adjustAllTotal = true } = {}) {
+    if (!idSet || idSet.size === 0) return 0;
+    const removed = [];
+    for (const w of state[domain]) {
+      if (idSet.has(w.awemeId)) removed.push(w);
+    }
+    if (removed.length === 0) return 0;
     state[domain] = state[domain].filter((w) => !idSet.has(w.awemeId));
+    const order = state.authorViewOrder;
+    const orderMatches =
+      order && order.domain === domain && order.groupId === state.currentGroupId;
+    if (preserveAuthorOrder && orderMatches) {
+      order.items = order.items.filter((w) => !idSet.has(w.awemeId));
+      for (const w of removed) {
+        const key = authorKeyOf(w);
+        const count = order.counts?.get(key);
+        if (count == null) continue;
+        if (count <= 1) order.counts.delete(key);
+        else order.counts.set(key, count - 1);
+      }
+    } else {
+      state.authorViewOrder = null;
+    }
     state.dataVersion++;
+    // 当前分组总数缓存局部递减（切组占位数字用；page0 到达后仍以后台 total 校正）。
+    // 删除会影响「全部」总数；移出当前分组不影响「全部」，由调用方关闭 adjustAllTotal
+    const keys = [`${domain}|${state.currentGroupId}`];
+    if (adjustAllTotal && state.currentGroupId !== "all") keys.push(`${domain}|all`);
+    for (const key of keys) {
+      if (typeof state.gridTotals[key] === "number") {
+        state.gridTotals[key] = Math.max(0, state.gridTotals[key] - removed.length);
+      }
+    }
+    const cur = state.gridTotal;
+    if (cur && cur.domain === domain && cur.groupId === state.currentGroupId) {
+      cur.total = Math.max(0, cur.total - removed.length);
+    }
+    return removed.length;
+  },
+
+  // 「全部」分组内移动：只改分组归属，不改变当前视图集合与作者计数，因此不摘卡、
+  // 不整域重载。记录对象同时被 state[domain] 与 authorViewOrder.items 持有（同引用），
+  // 一次原地写入即可两处一致
+  updateWorkGroupSilent(domain, idSet, targetGroupId) {
+    let changed = false;
+    let moved = 0;
+    const sourceGroups = new Map();
+    for (const w of state[domain]) {
+      if (!idSet.has(w.awemeId) || w.groupId === targetGroupId) continue;
+      if (w.groupId) sourceGroups.set(w.groupId, (sourceGroups.get(w.groupId) || 0) + 1);
+      w.groupId = targetGroupId;
+      changed = true;
+      moved++;
+    }
+    if (!changed) return;
+    state.dataVersion++;
+    // 分组缓存是「切组首帧占位」用的近似值；源/目标组的数字先按本地变更挪动，
+    // 后台 count 快照（refreshGroups）随后校正
+    const targetKey = `${domain}|${targetGroupId}`;
+    if (typeof state.gridTotals[targetKey] === "number") state.gridTotals[targetKey] += moved;
+    for (const [groupId, count] of sourceGroups) {
+      const key = `${domain}|${groupId}`;
+      if (typeof state.gridTotals[key] === "number") {
+        state.gridTotals[key] = Math.max(0, state.gridTotals[key] - count);
+      }
+    }
   },
 
   // 分页渐进加载追加（作品型三域）：push 进域数组后发专属事件，与 set 的全量替换
@@ -325,7 +435,7 @@ export const store = {
     const start = state[domain].length;
     state[domain].push(...items);
     state.dataVersion++;
-    this.notify("work-record-appended", { domain, groupId, items, start, done, ascending: false });
+    this.notify("work-record-appended", { domain, groupId, items, start, done, mode: "saved", ascending: false });
   },
 
   // 升序取数（从最旧一端分页）的对称操作：items 为到达序（savedAt 升序块，即视图序）。
@@ -335,7 +445,29 @@ export const store = {
     const start = state[domain].length;
     state[domain].unshift(...items.slice().reverse());
     state.dataVersion++;
-    this.notify("work-record-appended", { domain, groupId, items, start, done, ascending: true });
+    this.notify("work-record-appended", { domain, groupId, items, start, done, mode: "saved", ascending: true });
+  },
+
+  // 作者数分页续页：页条目按 authorCount 视图序到达，但 state[domain] 必须始终保持
+  // savedAt 降序不变量——先对页做 savedAt 排序，再与域数组双指针归并（不直接 push 到达序）
+  appendAuthorViewRecord(domain, groupId, items, done, direction) {
+    const start = state[domain].length;
+    state[domain] = mergeSavedAtDesc(state[domain], items);
+    const order = state.authorViewOrder;
+    if (order && order.domain === domain && order.groupId === groupId && order.direction === direction) {
+      order.items.push(...items);
+      if (done) order.complete = true;
+    }
+    state.dataVersion++;
+    this.notify("work-record-appended", {
+      domain,
+      groupId,
+      items,
+      start,
+      done,
+      mode: "authorCount",
+      direction,
+    });
   },
 
   // 作者档案型域通用的静默移除（按当前域数据源过滤）
@@ -344,10 +476,30 @@ export const store = {
     state.dataVersion++;
   },
 
+  // 回顾域引用移除（idKey 由 reviewKind 决定：作品 awemeId / 作者 uid）
+  removeReviewItemsSilent(idSet, idKey) {
+    state.review = state.review.filter((item) => !idSet.has(String(item[idKey])));
+    state.dataVersion++;
+    this.notify("review-meta");
+  },
+
 };
 
 // ---------- utils ----------
 export const utils = {
+  // 域类型判定：回顾域按 state.reviewKind 动态归入作品型或作者型
+  isWorkRecordDomain(domain = state.domain) {
+    return (
+      config.WORK_RECORD_DOMAINS.includes(domain) ||
+      (domain === config.REVIEW_DOMAIN && state.reviewKind === "works")
+    );
+  },
+  isAuthorRecordDomain(domain = state.domain) {
+    return (
+      config.AUTHOR_RECORD_DOMAINS.includes(domain) ||
+      (domain === config.REVIEW_DOMAIN && state.reviewKind === "authors")
+    );
+  },
   pickHttpsUrl(url) {
     if (!url) return "";
     return url.startsWith("//") ? "https:" + url : url;
@@ -431,29 +583,7 @@ export const utils = {
 // ---------- runtimeConfig ----------
 export const runtimeConfig = {
   KEY: "runtimeConfig",
-  DEFAULTS: {
-    timeoutRequest: 30000,
-    timeoutSecurityStatus: 5000,
-    syncWorksDelayMin: 500,
-    syncWorksDelayMax: 1000,
-    syncFollowingsDelayMin: 500,
-    syncFollowingsDelayMax: 1000,
-    syncFavoritesDelayMin: 500,
-    syncFavoritesDelayMax: 1000,
-    syncCollectionDelayMin: 500,
-    syncCollectionDelayMax: 1000,
-    cancelFavoritesDelayMin: 500,
-    cancelFavoritesDelayMax: 1000,
-    cancelCollectionDelayMin: 500,
-    cancelCollectionDelayMax: 1000,
-    importWorksDelayMin: 500,
-    importWorksDelayMax: 1000,
-    syncBatchSize: 40,
-    syncBatchPauseMin: 10000,
-    syncBatchPauseMax: 20000,
-    syncKeepaliveInterval: 2000,
-    syncRetryMax: 2,
-  },
+  DEFAULTS: { ...RUNTIME_DEFAULTS },
   _cache: null,
   async load() {
     if (this._cache) return this._cache;
@@ -531,28 +661,31 @@ export const services = {
     return "";
   },
 
-  // domain 必传 → 只回该域的分组计数（切域/切组渲染分组 tab，避免为少量按钮拖上全部五域计数）；
-  // 返回值按 DOMAINS_META 补齐五域形状，消费方按 stats[domain] 读取
-  async loadStats(domain) {
-    const res = await this.bgMsg({ type: "GET_STATS", domain });
-    const s = res.stats || {};
-    const stats = {};
-    for (const key of Object.keys(config.DOMAINS_META)) {
-      stats[key] = s[key] || { total: 0, groupCounts: {} };
-    }
-    return stats;
-  },
-
   // 仅取存储占用字节（bytesOnly 不做任何 count）：存储指示器独立刷新用，与分组 tab 重建解耦
   async loadStorageBytes() {
     const res = await this.bgMsg({ type: "GET_STATS", bytesOnly: true });
     return (res.stats && res.stats.bytes) || 0;
   },
 
-  async loadWorks(groupId) {
-    // IDB 主键读取天然无重复
-    const res = await this.bgMsg({ type: "GET_WORKS", groupId });
-    return (res.works || []).filter((w) => w && w.awemeId);
+  // 回顾域真实数据：background 按引用回源 hydration 后返回完整记录
+  async loadReviewItems(groupId) {
+    const res = await this.bgMsg({ type: "GET_REVIEW", groupId });
+    if (res.error) throw new Error(res.error);
+    state.reviewSourceDomain = res.sourceDomain || null;
+    state.reviewKind = res.kind || "works";
+    return { items: res.reviewItems || [], total: res.total || 0 };
+  },
+
+  async saveReviewBatch({ sourceDomain, sourceIds, groupId, append = false }) {
+    return this.bgMsg({ type: "SAVE_REVIEW_BATCH", sourceDomain, sourceIds, groupId, append });
+  },
+
+  async deleteReviewItems(sourceDomain, sourceIds) {
+    return this.bgMsg({ type: "DELETE_REVIEW", sourceDomain, sourceIds });
+  },
+
+  async moveReviewItems(sourceDomain, sourceIds, targetGroupId) {
+    return this.bgMsg({ type: "MOVE_REVIEW", sourceDomain, sourceIds, targetGroupId });
   },
 
   async loadAuthorRecords(domain, groupId) {
@@ -569,6 +702,14 @@ export const services = {
     return true;
   },
 
+  // 按 uid 直取作者档案（关注/候选各一条，主键读取）：侧栏作者头在作品型三域
+  // 只有作者摘要时补头像/统计，不物化作者域全量。失败返回 null 保持摘要降级
+  async loadAuthorByUid(uid) {
+    const res = await this.bgMsg({ type: "GET_AUTHOR_BY_UID", uid: String(uid) }).catch(() => null);
+    if (!res || res.error) return null;
+    return { followings: res.followings || null, candidates: res.candidates || null };
+  },
+
   // 作者域成员资格主键集（作品卡作者状态 chip）：作者域主键即 uid，background 用
   // getAllKeys 直取、不物化记录；两域并行一次取回。失败保持旧集合并返回 false
   //（调用方按「不显示 chip」降级，不阻塞网格加载）
@@ -583,6 +724,33 @@ export const services = {
   async loadGroups(domain) {
     const res = await this.bgMsg({ type: "GET_GROUPS", domain: domain || state.domain });
     return res.groups || [];
+  },
+
+  // 域切换/分组刷新用：一个 readonly 事务内同时返回分组表与各分组计数（原子快照）。
+  // 不落缓存——每次调用都取最新值；分组栏由返回值一次渲染
+  async loadDomainGroups(domain = state.domain) {
+    const res = await this.bgMsg({ type: "GET_DOMAIN_GROUPS", domain });
+    if (res.error) throw new Error(res.error);
+    return { groups: res.groups || [], counts: res.counts || {}, total: res.total || 0 };
+  },
+
+  // 随机回顾抽样（background 主键抽样 + 批量取记录）：不等待网格分页加载，不物化整域。
+  // P1 固定整个域（groupId=all）；返回 items/poolSize/eligible/remaining
+  async pickRandomRecords({
+    domain,
+    groupId = "all",
+    count = config.RANDOM_REVIEW_DEFAULT_COUNT,
+    excludeIds = [],
+  } = {}) {
+    const res = await this.bgMsg({
+      type: "GET_RANDOM_RECORDS",
+      domain,
+      groupId,
+      count,
+      excludeIds: excludeIds.slice(-config.RANDOM_REVIEW_MAX_EXCLUDE),
+    });
+    if (res.error) throw new Error(res.error);
+    return res;
   },
 
   isGridLoading() {
@@ -639,26 +807,6 @@ export const services = {
     requestAnimationFrame(step);
   },
 
-  // 进度式分组计数：一次「全部」视图加载内，按已到达页累计各分组条数（与 K/N 的
-  // 「已加载」口径一致），page-0 与每页到达时广播 grid-totals——分组 tab 的非当前分组
-  // 数字不必等延后的 GET_STATS（大域要等加载空闲），随续页出现并增长；gridTotals 缓存
-  // 同步为已加载计数，加载完成后由 GET_STATS 校正为权威值。分组视图（groupId≠all）
-  // 只加载本组记录，不参与累计（本组数字由 page-0 的 total 直接给出）
-  _tallyGroupCounts(domain, groupId, items) {
-    if (groupId !== "all" || !items || !items.length) return;
-    const prev = state.gridGroupTally;
-    const tally = prev && prev.domain === domain ? prev : { domain, counts: {} };
-    state.gridGroupTally = tally;
-    const touched = new Set();
-    for (const w of items) {
-      const gid = w.groupId || "uncategorized";
-      tally.counts[gid] = (tally.counts[gid] || 0) + 1;
-      touched.add(gid);
-    }
-    for (const gid of touched) state.gridTotals[`${domain}|${gid}`] = tally.counts[gid];
-    store.notify("grid-totals", { domain, counts: tally.counts });
-  },
-
   // 独立模式开关（chrome.storage.local 的 independentMode 布尔；此前 batch/domain-scan-sync 各自内联读取）
   async isIndependentMode() {
     const { independentMode } = await chrome.storage.local.get("independentMode");
@@ -667,13 +815,17 @@ export const services = {
 
   // 网格数据加载：作品型三域分页渐进（首页 store.set 即渲染，余量逐页 appendWorkRecord，
   // 消费方决定追加渲染或静默累积）；作者档案型两域记录小，维持单发全量。
-  // 翻页协议：page=0 取首页，后续以 bg 回传的 nextCursor（末条索引键）keyset 续传——
-  // bg 端索引游标直出、无全量读取，首页延迟在几十毫秒量级。
+  // 翻页协议：page=0 取首页，后续以 bg 回传的 nextCursor 续传——saved 排序是 keyset
+  // 索引键，authorCount 是 background 作者视图 token；options 只按当前 pagingMode 透传。
   // _gridLoadSeq 为全局加载代际：任何新加载（切组/切域/STORE_CHANGED）作废在途旧循环；
   // 循环体内再校验当前域/分组，双保险防止旧页混入新视图。
   // ascending=true（「保存时间(升)」排序）：bg 从最旧一端按 next 方向分页，页内为升序块
-  // （即视图序），首页落库前反转回域数组的 savedAt 降序；余页前插（prependWorkRecord）
-  async loadDomainData(ascending = false) {
+  // （即视图序），首页落库前反转回域数组的 savedAt 降序；余页前插（prependWorkRecord）。
+  // authorCount：页序即作者视图序，首页落库前按 savedAt 排序守 state[domain] 不变量，
+  // 续页走 appendAuthorViewRecord（归并 + 维护 trusted 视图）
+  async loadDomainData(paging = state.pagingMode) {
+    const mode = paging || state.pagingMode;
+    const { sort = "saved", direction = "desc", ascending = false } = mode;
     const groupId = state.currentGroupId;
     const domain = state.domain;
     this._gridLoadCount++;
@@ -687,22 +839,40 @@ export const services = {
         state.gridTotal = { domain, groupId, total };
         state.gridPending = false;
         store.notify("grid-total", { domain, groupId, total });
-        // 全量已到：一次累计出各分组精确计数（分组 tab 不必等 GET_STATS）
-        state.gridGroupTally = null;
-        this._tallyGroupCounts(domain, groupId, data);
         store.set(domain, data);
+        return;
+      }
+      // 回顾域：引用已由 background 回源 hydration，单发全量（批次上限 500）
+      if (domain === config.REVIEW_DOMAIN) {
+        const data = await this.loadReviewItems(groupId);
+        if (state.currentGroupId !== groupId || state.domain !== domain) return;
+        const total = data.total;
+        state.gridTotals[`${domain}|${groupId}`] = total;
+        state.gridTotal = { domain, groupId, total };
+        state.gridPending = false;
+        store.notify("grid-total", { domain, groupId, total });
+        store.set(domain, data.items);
         return;
       }
       const meta = config.DOMAINS_META[domain];
       const seq = ++this._gridLoadSeq;
-      // 新载入：进度式分组计数从头累计（见 _tallyGroupCounts）
-      state.gridGroupTally = null;
       const stale = () => seq !== this._gridLoadSeq || state.currentGroupId !== groupId || state.domain !== domain;
       const t0 = performance.now();
       // 首屏就绪 Promise：入口即注册，供分组计数/作者主键集等装饰性请求先等首屏（错峰）
       const firstScreen = this._armFirstScreen(domain, groupId);
-      let res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, page: 0, ascending });
-      if (res.error) throw new Error(res.error);
+      let res = await this.bgMsg({
+        type: "GET_" + domain.toUpperCase(),
+        groupId,
+        page: 0,
+        sort,
+        direction,
+        ascending,
+      });
+      if (res.error) {
+        const err = new Error(res.error);
+        err.code = res.code;
+        throw err;
+      }
       if (stale()) return;
       // 预铺额度：首页响应携带 total，render 按它一次铺满全量骨架（未到达页为占位卡）
       const total = res.total || 0;
@@ -713,23 +883,49 @@ export const services = {
       // 立即校正当前分组 tab 数字（与搜索栏 0/Total 同源），不必等延后的 GET_STATS
       store.notify("grid-total", { domain, groupId, total });
       const first = (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
-      // 进度式分组计数：首页条目先计入（其余分组数字随续页逐页补齐，不必等 GET_STATS）
-      this._tallyGroupCounts(domain, groupId, first);
-      // 域数组不变量 = savedAt 降序：升序块须反转落库（视图侧再由 view 段整体翻转回来）
-      store.set(domain, ascending ? [...first].reverse() : first);
+      // 域数组不变量 = savedAt 降序：saved 升序块反转；authorCount 页序是作者视图序，
+      // 必须按 savedAt 重排后再落库（trusted 视图的展示序另存 authorViewOrder.items）
+      const domainItems =
+        sort === "authorCount"
+          ? sortSavedAtDesc(first)
+          : ascending
+            ? [...first].reverse()
+            : first;
+      store.set(domain, domainItems);
+      if (sort === "authorCount") {
+        state.authorViewOrder = {
+          domain,
+          groupId,
+          direction,
+          items: first.slice(),
+          counts: new Map(res.authorMeta || []),
+          complete: !res.hasMore,
+        };
+      }
       // 首屏错峰：等首页渲染落笔 + 首屏填充跑一轮后再启动余页串行拉取（见 _fireFirstScreenOnRender）
       this._fireFirstScreenOnRender(firstScreen);
       if (res.hasMore) await firstScreen.promise;
       if (stale()) return;
       let pages = 1;
       while (res.hasMore) {
-        res = await this.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId, cursor: res.nextCursor, ascending });
+        res = await this.bgMsg({
+          type: "GET_" + domain.toUpperCase(),
+          groupId,
+          cursor: res.nextCursor,
+          sort,
+          direction,
+          ascending,
+        });
         if (res.error) {
-          // 游标续页失败（SW 被强制重启等）：网格停在已加载部分，badge 数字为准，
-          // 下次加载自愈；不自动重启避免循环。筛选态下逐页为静默累积、done 不会再来，
-          // 必须补一次重渲——否则网格停在首页渲染时的旧顺序，而视图已随 dataVersion
-          // 按全量数据重算（作者聚类 rank 随页变化），视口里的卡片顺序与视图下标脱钩
-          // （Shift 区间按视图圈选会落到 DOM 顺序之外的根因，见 docs/11「Shift 连选」）
+          const err = new Error(res.error);
+          err.code = res.code;
+          if (sort === "authorCount") {
+            // authorCount 的错误必须上抛：VIEW_EXPIRED / AUTHOR_VIEW_INCOMPLETE 由
+            // appShell 重试/降级；吞掉会让网格停在部分页且顺序口径失配
+            throw err;
+          }
+          // saved 游标续页失败（SW 被强制重启等）：网格停在已加载部分，下次加载自愈；
+          // 筛选态下逐页为静默累积、done 不会再来，必须补一次重渲
           console.warn("[DDM] grid load stopped:", res.error);
           store.notify(domain);
           break;
@@ -737,12 +933,14 @@ export const services = {
         if (stale()) return;
         pages++;
         const pageItems = (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
-        if (ascending) store.prependWorkRecord(domain, groupId, pageItems, !res.hasMore);
+        if (sort === "authorCount") store.appendAuthorViewRecord(domain, groupId, pageItems, !res.hasMore, direction);
+        else if (ascending) store.prependWorkRecord(domain, groupId, pageItems, !res.hasMore);
         else store.appendWorkRecord(domain, groupId, pageItems, !res.hasMore);
-        this._tallyGroupCounts(domain, groupId, pageItems);
       }
       console.debug(
-        `[DDM] grid load ${domain}/${groupId}: ${pages} page(s) in ${Math.round(performance.now() - t0)}ms`,
+        `[DDM] grid load ${domain}/${groupId} (${sort}): ${pages} page(s) in ${Math.round(
+          performance.now() - t0,
+        )}ms`,
       );
     } finally {
       this._gridLoadCount--;
@@ -755,11 +953,6 @@ export const services = {
 
   async moveAuthorRecords(domain, uids, targetGroupId) {
     return this.bgMsg({ type: "MOVE_" + domain.toUpperCase(), uids, targetGroupId });
-  },
-
-  // 原生关注域兼容包装（调用方沿用旧名；底层走作者域通用消息）
-  async moveFollowings(uids, targetGroupId) {
-    return this.moveAuthorRecords("followings", uids, targetGroupId);
   },
 
   // 找/建「稍后删除」分组并把条目移入（五域通用；

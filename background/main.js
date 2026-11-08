@@ -5,11 +5,25 @@ import { credentials } from "./identity/credentials.js";
 import { independentClient } from "./identity/independent-client.js";
 import { tabBridge } from "./identity/tab-bridge.js";
 import { worksHandlers, followingsHandlers, favoritesHandlers, collectionsHandlers, candidatesHandlers } from "./data/domain-handlers.js";
+import { reviewHandlers } from "./data/review-handlers.js";
 import { groups } from "./data/groups.js";
 import { dataTools } from "./data/data-tools.js";
 import { scanTasks } from "./tasks/scan-tasks.js";
 import { independentTasks } from "./tasks/independent-tasks.js";
 import { storage } from "./data/storage.js";
+
+// 作品型三域共用同一 handler 接口：按消息类型分派，避免 GET/DELETE/MOVE 三组 case 重复
+const WORK_RECORD_HANDLERS = {
+  GET_WORKS: worksHandlers,
+  GET_FAVORITES: favoritesHandlers,
+  GET_COLLECTIONS: collectionsHandlers,
+  DELETE_WORKS: worksHandlers,
+  DELETE_FAVORITES: favoritesHandlers,
+  DELETE_COLLECTIONS: collectionsHandlers,
+  MOVE_WORKS: worksHandlers,
+  MOVE_FAVORITES: favoritesHandlers,
+  MOVE_COLLECTIONS: collectionsHandlers,
+};
 
 // ---------- App ----------
 // 初始化 + 消息路由（吸收原 route 内全部分支）
@@ -35,7 +49,7 @@ class App {
       await independentClient.loadMode();
       await runtimeConfig.reload();
 
-      // 五域分组播种：缺组时写入默认组（五域同构，键集中在 DOMAIN_CONFIG；新增域自动纳入）
+      // 各域分组播种：缺组时写入默认组（各域同构，键集中在 DOMAIN_CONFIG；新增域自动纳入）
       for (const cfg of Object.values(DOMAIN_CONFIG)) {
         const groups = await storage.getGroups(cfg.groupsName);
         if (!groups.length) await storage.putGroups(cfg.groupsName, CONFIG.DEFAULT_GROUPS);
@@ -98,43 +112,37 @@ class App {
       // 作品域
       case "SAVE_WORKS":
         return utils.asyncHandler(() => worksHandlers.save(message.works, sendResponse), sendResponse);
+      // 作品型三域共用同一 handler 接口：按消息类型分派，避免 GET/DELETE/MOVE 三组 case 重复
       case "GET_WORKS":
+      case "GET_FAVORITES":
+      case "GET_COLLECTIONS":
         return utils.asyncHandler(
-          () => worksHandlers.get(message.groupId, sendResponse, message.page, message.cursor, message.ascending),
+          () =>
+            WORK_RECORD_HANDLERS[message.type].get(
+              {
+                groupId: message.groupId,
+                page: message.page,
+                cursor: message.cursor,
+                ascending: message.ascending,
+                sort: message.sort,
+                direction: message.direction,
+              },
+              sendResponse,
+            ),
           sendResponse,
         );
       case "DELETE_WORKS":
-        return utils.asyncHandler(() => worksHandlers.delete(message.awemeIds, sendResponse), sendResponse);
-      case "MOVE_WORKS":
-        return utils.asyncHandler(
-          () => worksHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
-          sendResponse,
-        );
-      // 点赞域
-      case "GET_FAVORITES":
-        return utils.asyncHandler(
-          () => favoritesHandlers.get(message.groupId, sendResponse, message.page, message.cursor, message.ascending),
-          sendResponse,
-        );
       case "DELETE_FAVORITES":
-        return utils.asyncHandler(() => favoritesHandlers.delete(message.awemeIds, sendResponse), sendResponse);
-      case "MOVE_FAVORITES":
-        return utils.asyncHandler(
-          () => favoritesHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
-          sendResponse,
-        );
-
-      // 收藏域
-      case "GET_COLLECTIONS":
-        return utils.asyncHandler(
-          () => collectionsHandlers.get(message.groupId, sendResponse, message.page, message.cursor, message.ascending),
-          sendResponse,
-        );
       case "DELETE_COLLECTIONS":
-        return utils.asyncHandler(() => collectionsHandlers.delete(message.awemeIds, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => WORK_RECORD_HANDLERS[message.type].delete(message.awemeIds, sendResponse),
+          sendResponse,
+        );
+      case "MOVE_WORKS":
+      case "MOVE_FAVORITES":
       case "MOVE_COLLECTIONS":
         return utils.asyncHandler(
-          () => collectionsHandlers.move(message.awemeIds, message.targetGroupId, sendResponse),
+          () => WORK_RECORD_HANDLERS[message.type].move(message.awemeIds, message.targetGroupId, sendResponse),
           sendResponse,
         );
       // 作品型三域通用按 id 补拉（bulk STORE_CHANGED 收口的配套通道）：域由消息指定，
@@ -152,12 +160,69 @@ class App {
         }
         return utils.asyncHandler(() => handlers.getByIds(message.ids, sendResponse), sendResponse);
       }
+      // 随机回顾抽样（五域通用）：只按主键抽样 + 主键批量取记录，不物化整域；
+      // options 侧「回顾」页签用返回的 items 直接渲染随机卡片网格
+      case "GET_RANDOM_RECORDS": {
+        const handlers = {
+          [CONFIG.STORAGE_KEYS.WORKS]: worksHandlers,
+          [CONFIG.STORAGE_KEYS.FAVORITES]: favoritesHandlers,
+          [CONFIG.STORAGE_KEYS.COLLECTIONS]: collectionsHandlers,
+          [CONFIG.STORAGE_KEYS.FOLLOWINGS]: followingsHandlers,
+          [CONFIG.STORAGE_KEYS.CANDIDATES]: candidatesHandlers,
+        }[message.domain];
+        if (!handlers) {
+          sendResponse({ error: "BAD_DOMAIN" });
+          return true;
+        }
+        return utils.asyncHandler(
+          () =>
+            handlers.pickRandom(
+              { groupId: message.groupId, count: message.count, excludeIds: message.excludeIds },
+              sendResponse,
+            ),
+          sendResponse,
+        );
+      }
+      // 回顾域（真实域，只持久化批次引用）：
+      case "GET_REVIEW":
+        return utils.asyncHandler(() => reviewHandlers.get(message.groupId, sendResponse), sendResponse);
+      case "SAVE_REVIEW_BATCH":
+        return utils.asyncHandler(
+          () =>
+            reviewHandlers.saveBatch(
+              message.sourceDomain,
+              message.sourceIds,
+              message.groupId,
+              message.append === true,
+              sendResponse,
+            ),
+          sendResponse,
+        );
+      case "DELETE_REVIEW":
+        return utils.asyncHandler(
+          () => reviewHandlers.deleteBySource(message.sourceDomain, message.sourceIds, sendResponse),
+          sendResponse,
+        );
+      case "MOVE_REVIEW":
+        return utils.asyncHandler(
+          () =>
+            reviewHandlers.moveBySource(
+              message.sourceDomain,
+              message.sourceIds,
+              message.targetGroupId,
+              sendResponse,
+            ),
+          sendResponse,
+        );
 
       // 关注域
       case "SAVE_FOLLOWINGS":
         return utils.asyncHandler(() => followingsHandlers.save(message.followings, sendResponse), sendResponse);
       case "GET_FOLLOWINGS":
-        return utils.asyncHandler(() => followingsHandlers.get(message.groupId, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => followingsHandlers.get({ groupId: message.groupId }, sendResponse),
+          sendResponse,
+        );
       case "DELETE_FOLLOWINGS":
         return utils.asyncHandler(() => followingsHandlers.delete(message.uids, sendResponse), sendResponse);
       case "MOVE_FOLLOWINGS":
@@ -170,7 +235,10 @@ class App {
       case "SAVE_CANDIDATES":
         return utils.asyncHandler(() => candidatesHandlers.save(message.candidates, sendResponse), sendResponse);
       case "GET_CANDIDATES":
-        return utils.asyncHandler(() => candidatesHandlers.get(message.groupId, sendResponse), sendResponse);
+        return utils.asyncHandler(
+          () => candidatesHandlers.get({ groupId: message.groupId }, sendResponse),
+          sendResponse,
+        );
       case "DELETE_CANDIDATES":
         return utils.asyncHandler(() => candidatesHandlers.delete(message.uids, sendResponse), sendResponse);
       case "MOVE_CANDIDATES":
@@ -188,10 +256,41 @@ class App {
           ]);
           sendResponse({ ok: true, followings, candidates });
         }, sendResponse);
+      // 按 uid 直取关注/候选两域作者档案（侧栏作者头跨域补头像/统计）：
+      // 主键单条读取，不物化作者域全量
+      case "GET_AUTHOR_BY_UID":
+        return utils.asyncHandler(async () => {
+          const uid = String(message.uid || "");
+          if (!uid) return sendResponse({ error: "BAD_PARAMS" });
+          const [following, candidate] = await Promise.all([
+            storage.get(CONFIG.STORAGE_KEYS.FOLLOWINGS, uid),
+            storage.get(CONFIG.STORAGE_KEYS.CANDIDATES, uid),
+          ]);
+          sendResponse({ ok: true, followings: following || null, candidates: candidate || null });
+        }, sendResponse);
+      // 单条记录状态（抖音标签页保存按钮角标）：作品域按 awemeId、候选域按 uid 主键直读，
+      // 不物化整域；只返回存在性，不解析分组
+      case "GET_RECORD_STATUS":
+        return utils.asyncHandler(async () => {
+          const awemeId = String(message.awemeId || "");
+          const uid = String(message.uid || "");
+          if (!awemeId && !uid) return sendResponse({ ok: false, error: "BAD_PARAMS" });
+          const [work, candidate] = await Promise.all([
+            awemeId ? storage.get(CONFIG.STORAGE_KEYS.WORKS, awemeId) : null,
+            uid ? storage.get(CONFIG.STORAGE_KEYS.CANDIDATES, uid) : null,
+          ]);
+          sendResponse({
+            ok: true,
+            work: { exists: !!work },
+            author: { uid, candidate: !!candidate },
+          });
+        }, sendResponse);
 
       // 分组管理 (域感知)
       case "GET_GROUPS":
         return utils.asyncHandler(() => groups.get(message.domain, sendResponse), sendResponse);
+      case "GET_DOMAIN_GROUPS":
+        return utils.asyncHandler(() => groups.getWithStats(message.domain, sendResponse), sendResponse);
       case "ADD_GROUP":
         return utils.asyncHandler(() => groups.add(message.domain, message.name, sendResponse), sendResponse);
       case "RENAME_GROUP":

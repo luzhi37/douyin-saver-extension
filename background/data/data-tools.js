@@ -151,7 +151,7 @@ class DataTools {
     try {
       const cfg = DOMAIN_CONFIG[domain];
       await storage.clear(cfg.storeName);
-      await storage.putGroups(cfg.groupsName, cfg.defaultGroups);
+      await storage.putGroups(cfg.groupsName, cfg.defaultGroups, { resetCounts: true });
       sendResponse({ ok: true });
     } catch (err) {
       sendResponse({ error: err.message });

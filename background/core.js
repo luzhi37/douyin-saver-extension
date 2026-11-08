@@ -1,6 +1,7 @@
-// background/core.js — 共享基础：全局配置 + 四域映射 + 纯函数 + 格式化 + 运行时配置
+// background/core.js — 共享基础：全局配置 + 六域映射 + 纯函数 + 格式化 + 运行时配置
 
 import { MSSDK_STR_DATA } from "./identity/crypto.js";
+import { RUNTIME_DEFAULTS } from "../shared/runtime-defaults.js";
 // identity/independent-client.js 单向依赖本文件的 CONFIG；本模块不反向引用，避免无意义的循环依赖。
 
 // ---------- config ----------
@@ -16,11 +17,15 @@ const CONFIG = {
     COLLECTIONS_GROUPS: "collections_groups",
     CANDIDATES: "candidates",
     CANDIDATES_GROUPS: "candidates_groups",
+    REVIEW: "review",
+    REVIEW_GROUPS: "review_groups",
   },
   // 作者档案型域：复用同一 7 字段记录结构与合并语义；followings=账号原生关注镜像，
   // candidates=扩展自建候选作者池（数据来源不同、生命周期独立）
   AUTHOR_RECORD_DOMAINS: ["followings", "candidates"],
-  // 五个域的默认分组结构一致（全部 → 未分组），共用同一份定义；消费处通过 .map 拷贝，避免原地改写污染共享引用
+  // 作品型三域（存储结构与 mergeWork 语义一致；作者数分页索引也只建在这三个域）
+  WORK_RECORD_DOMAINS: ["works", "favorites", "collections"],
+  // 各域的默认分组结构一致（全部 → 未分组），共用同一份定义；消费处通过 .map 拷贝，避免原地改写污染共享引用
   DEFAULT_GROUPS: [
     { id: "all", name: "全部", fixed: true },
     { id: "uncategorized", name: "未分组", fixed: true },
@@ -148,27 +153,6 @@ const CONFIG = {
       },
     },
     {
-      // 取消点赞 POST：与 rule 5 同理，提升到 priority 2 覆盖 rule 3，补回 Sec-Fetch-* + Accept-Language（同源请求不带 Origin）；
-      // 并使精确 Referer（showTab=like）真正生效。
-      id: 6,
-      priority: 2,
-      condition: {
-        urlFilter: "||douyin.com/aweme/v1/web/commit/item/digg/",
-        resourceTypes: ["xmlhttprequest"],
-        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-      },
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
-          { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
-          { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
-          { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
-          { header: "Referer", operation: "set", value: "https://www.douyin.com/user/self?showTab=like" },
-        ],
-      },
-    },
-    {
       // mssdk 兑换 msToken：SW 发起时 Origin 是 chrome-extension://...；且 fetch 的 headers
       // 里设 Referer 属 forbidden header，会被浏览器静默忽略。服务端校验这两头 → 拒签
       // （表现为 mintMsToken 拿不到 Set-Cookie，静默走随机兜底）。DNR 层直接改写为抖音
@@ -191,26 +175,26 @@ const CONFIG = {
   ],
   URL_BASE: "https://www.douyin.com",
   TIMEOUT: {
-    REQUEST: 30000,
-    SECURITY_STATUS: 5000,
+    REQUEST: RUNTIME_DEFAULTS.timeoutRequest,
+    SECURITY_STATUS: RUNTIME_DEFAULTS.timeoutSecurityStatus,
   },
   DELAY: {
-    syncWorks: { MIN: 500, MAX: 1000 },
-    syncFollowings: { MIN: 500, MAX: 1000 },
-    syncFavorites: { MIN: 500, MAX: 1000 },
-    syncCollection: { MIN: 500, MAX: 1000 },
-    cancelFavorites: { MIN: 500, MAX: 1000 },
-    cancelCollection: { MIN: 500, MAX: 1000 },
+    syncWorks: { MIN: RUNTIME_DEFAULTS.syncWorksDelayMin, MAX: RUNTIME_DEFAULTS.syncWorksDelayMax },
+    syncFollowings: { MIN: RUNTIME_DEFAULTS.syncFollowingsDelayMin, MAX: RUNTIME_DEFAULTS.syncFollowingsDelayMax },
+    syncFavorites: { MIN: RUNTIME_DEFAULTS.syncFavoritesDelayMin, MAX: RUNTIME_DEFAULTS.syncFavoritesDelayMax },
+    syncCollection: { MIN: RUNTIME_DEFAULTS.syncCollectionDelayMin, MAX: RUNTIME_DEFAULTS.syncCollectionDelayMax },
+    cancelFavorites: { MIN: RUNTIME_DEFAULTS.cancelFavoritesDelayMin, MAX: RUNTIME_DEFAULTS.cancelFavoritesDelayMax },
+    cancelCollection: { MIN: RUNTIME_DEFAULTS.cancelCollectionDelayMin, MAX: RUNTIME_DEFAULTS.cancelCollectionDelayMax },
     // 作者作品入库翻页延迟（author-works-import 共用循环壳；曾错用 syncFavorites 键，
     // 域词对齐后延迟键一律按业务链路命名，不跨链路借用）
-    importWorks: { MIN: 500, MAX: 1000 },
+    importWorks: { MIN: RUNTIME_DEFAULTS.importWorksDelayMin, MAX: RUNTIME_DEFAULTS.importWorksDelayMax },
   },
   SYNC: {
-    BATCH_SIZE: 40,
-    BATCH_PAUSE_MIN: 10000,
-    BATCH_PAUSE_MAX: 20000,
-    KEEPALIVE_INTERVAL: 2000,
-    RETRY_MAX: 2,
+    BATCH_SIZE: RUNTIME_DEFAULTS.syncBatchSize,
+    BATCH_PAUSE_MIN: RUNTIME_DEFAULTS.syncBatchPauseMin,
+    BATCH_PAUSE_MAX: RUNTIME_DEFAULTS.syncBatchPauseMax,
+    KEEPALIVE_INTERVAL: RUNTIME_DEFAULTS.syncKeepaliveInterval,
+    RETRY_MAX: RUNTIME_DEFAULTS.syncRetryMax,
   },
   GROUPS: {
     ID_PREFIX: "custom_",
@@ -232,6 +216,9 @@ const CONFIG = {
     // 降到 600 条；keyset 游标 / hasMore / 首页 total 语义不变
     GRID_FIRST: 600,
   },
+  // 作者数排序视图：SW 内存 LRU 上限（每份视图含该分组全部 id，100k ≈ 5–10MB）与
+  // 单次请求的最大物化条数（作者域分页由 DomainHandlers 统一钳制）
+  AUTHOR_VIEW_CACHE_MAX: 3,
   // 导入分块落库块大小：单事务 10 万级 put 会长时间独占 SW 的 IndexedDB——按块
   // mergeAndSave + IMPORT_PROGRESS 逐块回报（followings 域不分块，记录小单遍即可）
   IMPORT_CHUNK: 2000,
@@ -323,37 +310,25 @@ const DOMAIN_CONFIG = {
     idField: "uid",
     idToString: true,
   },
+  // 回顾域是真实域（独立分组/搜索/批量），但只持久化“批次引用”：
+  // review 表存 { reviewId, sourceDomain, sourceId, kind, groupId, addedAt }，
+  // 展示时由 review-handlers 回源域 hydration；不复制完整作品/作者记录。
+  [CONFIG.STORAGE_KEYS.REVIEW]: {
+    storeName: CONFIG.STORAGE_KEYS.REVIEW,
+    groupsName: CONFIG.STORAGE_KEYS.REVIEW_GROUPS,
+    defaultGroups: CONFIG.DEFAULT_GROUPS,
+    itemKey: CONFIG.STORAGE_KEYS.REVIEW + "Items",
+    idField: "reviewId",
+  },
 };
 
 // ---------- runtimeConfig ----------
 // 对标 options/core.js 的同名对象：从 chrome.storage.local 读取运行时配置并叠加进 CONFIG。
 const runtimeConfig = {
   KEY: "runtimeConfig",
-  // 默认运行配置：直接由 CONFIG 的 TIMEOUT/DELAY/SYNC 派生（单一事实来源），全为可调数值参数。
+  // 默认运行配置：与 options/core.js 共用 shared/runtime-defaults.js（单一事实来源）。
   // 仅在首次安装时写入 chrome.storage.local 作为种子；后续 RELOAD_CONFIG 覆盖写入可变 CONFIG。
-  DEFAULTS: {
-    timeoutRequest: CONFIG.TIMEOUT.REQUEST,
-    timeoutSecurityStatus: CONFIG.TIMEOUT.SECURITY_STATUS,
-    syncWorksDelayMin: CONFIG.DELAY.syncWorks.MIN,
-    syncWorksDelayMax: CONFIG.DELAY.syncWorks.MAX,
-    syncFollowingsDelayMin: CONFIG.DELAY.syncFollowings.MIN,
-    syncFollowingsDelayMax: CONFIG.DELAY.syncFollowings.MAX,
-    syncFavoritesDelayMin: CONFIG.DELAY.syncFavorites.MIN,
-    syncFavoritesDelayMax: CONFIG.DELAY.syncFavorites.MAX,
-    syncCollectionDelayMin: CONFIG.DELAY.syncCollection.MIN,
-    syncCollectionDelayMax: CONFIG.DELAY.syncCollection.MAX,
-    cancelFavoritesDelayMin: CONFIG.DELAY.cancelFavorites.MIN,
-    cancelFavoritesDelayMax: CONFIG.DELAY.cancelFavorites.MAX,
-    cancelCollectionDelayMin: CONFIG.DELAY.cancelCollection.MIN,
-    cancelCollectionDelayMax: CONFIG.DELAY.cancelCollection.MAX,
-    importWorksDelayMin: CONFIG.DELAY.importWorks.MIN,
-    importWorksDelayMax: CONFIG.DELAY.importWorks.MAX,
-    syncBatchSize: CONFIG.SYNC.BATCH_SIZE,
-    syncBatchPauseMin: CONFIG.SYNC.BATCH_PAUSE_MIN,
-    syncBatchPauseMax: CONFIG.SYNC.BATCH_PAUSE_MAX,
-    syncKeepaliveInterval: CONFIG.SYNC.KEEPALIVE_INTERVAL,
-    syncRetryMax: CONFIG.SYNC.RETRY_MAX,
-  },
+  DEFAULTS: { ...RUNTIME_DEFAULTS },
   async load() {
     const stored = await chrome.storage.local.get(this.KEY);
     const cfg = stored[this.KEY];
@@ -388,7 +363,7 @@ const runtimeConfig = {
     const d = CONFIG.DELAY[type];
     if (d) return d;
     console.warn("[DY] unknown delay kind:", type);
-    return CONFIG.DELAY.syncWorks;
+    return { MIN: 0, MAX: 0 };
   },
   randomDelay(type) {
     const d = this.delayRange(type);
@@ -594,12 +569,6 @@ const formatters = {
       videoExpireAt = best.expireAt || 0;
     }
     videoUrl = utils.stripHttp(videoUrl);
-    const authorFollowed =
-      "follow_status" in author
-        ? author.follow_status === 1 || author.follow_status === 2
-        : "followStatus" in author
-          ? author.followStatus === 1 || author.followStatus === 2
-          : null;
     // 内容项配对（静帧+实况视频）：同源一次映射保证 images/imageVideos 逐位对位——
     // 图集每条可为纯静帧或实况（静帧+小视频），无静帧的项两者同步丢弃（视频无处可挂）
     const imagePairs = (aw.images || [])
@@ -614,7 +583,6 @@ const formatters = {
     return {
       awemeId: String(aw.aweme_id),
       type: (aw.aweme_type || aw.awemeType) === CONFIG.AWEME_TYPE_NOTE ? "note" : "video",
-      desc: aw.desc || "",
       nickname: String(author.nickname || author.nickName || ""),
       uid: String(author.uid || ""),
       authorHomeUrl: author.sec_uid ? CONFIG.URL_BASE + "/user/" + author.sec_uid : "",
@@ -625,7 +593,6 @@ const formatters = {
       imageVideos: imagePairs.map((p) => p.video),
       music: (aw.music && (aw.music.play_url || aw.music.playUrl || {}).uri) || "",
       createTime: aw.create_time || aw.createTime || utils.awemeIdCreateTime(aw.aweme_id) || 0,
-      authorFollowed,
     };
   },
   formatFollowing(item) {

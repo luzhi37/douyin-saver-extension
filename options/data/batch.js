@@ -29,7 +29,7 @@ class Batch {
 
   selectAll() {
     // 全选作用于当前可见视图（有筛选时只选筛出的条目，所见即所选）
-    const isWorkRecord = config.WORK_RECORD_DOMAINS.includes(state.domain);
+    const isWorkRecord = utils.isWorkRecordDomain();
     const items = isWorkRecord ? search.getWorksView() : search.getAuthorRecordsView();
     const idKey = isWorkRecord ? "awemeId" : "uid";
     const allSelected = items.every((w) => state.selectedIds.has(w[idKey]));
@@ -41,23 +41,30 @@ class Batch {
     return "all";
   }
 
-  // 全选按钮图标切换：未全选=双对勾（点击全选），已全选=实心勾选框（点击取消全选）
+  // 全选按钮图标与可见文案同步：未全选=双对勾「全选」，已全选=实心勾选框「取消全选」
   #setSelectAllBtn(allSelected) {
     const use = dom.batchSelectAll.querySelector("use");
     if (use) use.setAttribute("href", allSelected ? "#icon-select-clear" : "#icon-select-all");
-    dom.batchSelectAll.title = allSelected ? "取消全选" : "全选";
+    const label = dom.batchSelectAll.querySelector(".batch-bar-label");
+    if (label) label.textContent = allSelected ? "取消全选" : "全选";
   }
 
   // 已选计数与按钮可用性统一在此刷新（见 docs/11）
   syncSelectionUI() {
     const count = state.selectedIds.size;
-    dom.batchCount.textContent = `已选 ${count}`;
+    // 分母取当前视图长度（与全选判据同源）；筛选/分组/域切换后随重渲一起刷新
+    const view = utils.isAuthorRecordDomain() ? search.getAuthorRecordsView() : search.getWorksView();
+    dom.batchCount.textContent = String(count);
+    if (dom.batchTotal) dom.batchTotal.textContent = String(view.length);
+    dom.batchCount.closest(".batch-bar-count")?.setAttribute("aria-label", `已选 ${count} / ${view.length} 项`);
     const noneSelected = count === 0;
     dom.batchMove.disabled = noneSelected;
     dom.batchDelete.disabled = noneSelected;
     this.syncSaveToWorksBtn();
     this.syncSaveToCandidatesBtn();
     this.syncDownloadBtn();
+    // 全选按钮的图标与可见文案随“当前视图是否全选”同步（单选/取消也能立即回正）
+    this.#setSelectAllBtn(view.length > 0 && count === view.length);
   }
 
   // 从勾选圆反查所属条目 id（作品卡 data-aweme-id / 关注卡 data-uid）
@@ -66,25 +73,87 @@ class Batch {
   }
 
   #clearAllCheckboxes() {
-    const selector = config.WORK_RECORD_DOMAINS.includes(state.domain) ? ".work-checkbox" : ".following-checkbox";
+    const selector = utils.isWorkRecordDomain() ? ".work-checkbox" : ".following-checkbox";
     document.querySelectorAll(selector).forEach((el) => this.updateCheckboxDOM(el, false));
   }
 
-  async #executeBatchOp(serviceFn, { conditionallyRemove = false } = {}) {
+  async #executeBatchOp(
+    serviceFn,
+    { conditionallyRemove = false, kind = "delete", targetGroupId = null } = {},
+  ) {
     if (state.selectedIds.size === 0) return null;
     const ids = Array.from(state.selectedIds);
     const domain = state.domain;
-    const isAuthorRecord = config.AUTHOR_RECORD_DOMAINS.includes(domain);
+    const isAuthorRecord = utils.isAuthorRecordDomain(domain);
+    const isReview = domain === config.REVIEW_DOMAIN;
 
     const res = await serviceFn(ids, isAuthorRecord);
     // 失败即抛、不动选区：确认弹窗的 catch 统一反馈，选中项保留可重试
     if (!res || res.ok !== true) throw new Error(res?.error || "OPERATION_FAILED");
+
+    // authorCount 完整作者视图：本地增量收口，不再整域重载——
+    // 删除=摘卡并递减作者计数；移动离开当前分组=摘卡（不影响「全部」总数）；
+    // 移动落「全部」或同组=只改分组归属，网格零变化。顺序稳定到下次显式重排
+    if (!isReview && !isAuthorRecord && search.isAuthorViewPatchable()) {
+      const idSet = new Set(ids);
+      const grid = search.gridForDomain(domain);
+      if (kind === "move") {
+        const staysInView =
+          state.currentGroupId === "all" || state.currentGroupId === targetGroupId;
+        if (staysInView) {
+          store.updateWorkGroupSilent(domain, idSet, targetGroupId);
+        } else {
+          const removedCount = store.removeWorkRecordSilent(domain, idSet, {
+            preserveAuthorOrder: true,
+            adjustAllTotal: false,
+          });
+          // 目标分组缓存预加（后台 count 快照随后校正）
+          if (targetGroupId && removedCount) {
+            const targetKey = `${domain}|${targetGroupId}`;
+            if (typeof state.gridTotals[targetKey] === "number") {
+              state.gridTotals[targetKey] += removedCount;
+            }
+          }
+          grid.removeItems(idSet);
+        }
+      } else {
+        store.removeWorkRecordSilent(domain, idSet, { preserveAuthorOrder: true });
+        grid.removeItems(idSet);
+      }
+      state.selectedIds.clear();
+      this.#clearAllCheckboxes();
+      this.#setSelectAllBtn(false);
+      store.refreshGroups();
+      search.syncCount();
+      this.syncSelectionUI();
+      return { count: ids.length, isAuthorRecord };
+    }
+
+    // authorCount 视图不完整/加载中：游标与本地顺序不可混用，整域重载兜底
+    //（重载只清选区与 Shift 锚点，批量模式保留）
+    if (!isReview && !isAuthorRecord && search.isAuthorOrderActive()) {
+      state.selectedIds.clear();
+      this.#clearAllCheckboxes();
+      this.#setSelectAllBtn(false);
+      store.refreshGroups();
+      this.syncSelectionUI();
+      search.reloadForPageOrder();
+      return { count: ids.length, isAuthorRecord };
+    }
+
     state.selectedIds.clear();
 
     const grid = search.gridForDomain(domain);
-    const removeSilent = isAuthorRecord
-      ? (idSet) => store.removeAuthorRecordsSilent(domain, idSet)
-      : (idSet) => store.removeWorkRecordSilent(domain, idSet);
+    const idKey = state.reviewKind === "authors" ? "uid" : "awemeId";
+    // 作品域移动（conditionallyRemove=true）只移出当前分组，「全部」总数不变
+    const removeSilent = isReview
+      ? (idSet) => store.removeReviewItemsSilent(idSet, idKey)
+      : isAuthorRecord
+        ? (idSet) => store.removeAuthorRecordsSilent(domain, idSet)
+        : (idSet) =>
+            store.removeWorkRecordSilent(domain, idSet, {
+              adjustAllTotal: !conditionallyRemove,
+            });
     if (!conditionallyRemove || state.currentGroupId !== "all") {
       removeSilent(new Set(ids));
       grid.removeItems(new Set(ids));
@@ -100,6 +169,11 @@ class Batch {
   }
 
   deleteSelected() {
+    if (state.domain === config.REVIEW_DOMAIN) {
+      return this.#executeBatchOp((ids) =>
+        services.deleteReviewItems(state.reviewSourceDomain, ids),
+      );
+    }
     return this.#executeBatchOp((ids, isAuthorRecord) =>
       isAuthorRecord
         ? services.deleteAuthorRecords(state.domain, ids)
@@ -108,12 +182,18 @@ class Batch {
   }
 
   moveSelected(targetGroupId) {
+    if (state.domain === config.REVIEW_DOMAIN) {
+      return this.#executeBatchOp(
+        (ids) => services.moveReviewItems(state.reviewSourceDomain, ids, targetGroupId),
+        { conditionallyRemove: true, kind: "move", targetGroupId },
+      );
+    }
     return this.#executeBatchOp(
       (ids, isAuthorRecord) =>
         isAuthorRecord
           ? services.moveAuthorRecords(state.domain, ids, targetGroupId)
           : services.moveWorkRecord(state.domain, ids, targetGroupId),
-      { conditionallyRemove: true },
+      { conditionallyRemove: true, kind: "move", targetGroupId },
     );
   }
 
@@ -172,7 +252,7 @@ class Batch {
   // 两点间、实际移动的却是区间外的卡」。快照与挂载卡 DOM 同序，所见即所选；快照缺失
   // （render 前/abort 后）才回退视图函数
   #applyRange(fromId, toId) {
-    const isWorkRecord = config.WORK_RECORD_DOMAINS.includes(state.domain);
+    const isWorkRecord = utils.isWorkRecordDomain();
     const rendered = search.gridForDomain(state.domain).renderedItems();
     const view = rendered || (isWorkRecord ? search.getWorksView() : search.getAuthorRecordsView());
     const idKey = isWorkRecord ? "awemeId" : "uid";
@@ -217,7 +297,7 @@ class Batch {
   handleBatchSelectAll() {
     const result = this.selectAll();
     this.#setSelectAllBtn(result === "all");
-    const selector = config.AUTHOR_RECORD_DOMAINS.includes(state.domain)
+    const selector = utils.isAuthorRecordDomain()
       ? ".following-checkbox"
       : ".work-checkbox";
     document.querySelectorAll(selector).forEach((el) => {
@@ -229,12 +309,35 @@ class Batch {
   async handleBatchDelete() {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
+    // 回顾域：只从回顾批次移除引用，来源域数据保留
+    if (state.domain === config.REVIEW_DOMAIN) {
+      const name = state.reviewKind === "authors" ? "回顾作者" : "回顾作品";
+      const delBody = document.createElement("p");
+      delBody.className = "confirm-delete-msg";
+      delBody.textContent = `确定从回顾批次移除选中的 ${count} 个${name}？来源域数据不会被删除。`;
+      dialog.showDialog("确认移除", delBody, [
+        {
+          text: "移除",
+          danger: true,
+          callback: async () => {
+            await this.#runWithDialogLock(
+              "正在移除…",
+              `<p>正在移除 ${count} 个${name}…</p>`,
+              () => this.deleteSelected(),
+              `已移除 ${count} 个${name}`,
+              "移除失败: ",
+            );
+          },
+        },
+      ]);
+      return;
+    }
     // 点赞/收藏域：移除 = 取消远端点赞/收藏 + 删本地（长任务链路）
     if (config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works") {
       await this.cancelAndRemoveSelected();
       return;
     }
-    const isAuthorRecord = config.AUTHOR_RECORD_DOMAINS.includes(state.domain);
+    const isAuthorRecord = utils.isAuthorRecordDomain(state.domain);
     const name = isAuthorRecord
       ? state.domain === "candidates"
         ? "候选作者"
@@ -329,19 +432,33 @@ class Batch {
               }, Math.max(30000, ids.length * 3000));
             });
             const deletedIds = new Set(done?.deletedIds || []);
+            if (search.isAuthorOrderActive()) {
+              // authorCount：完整视图下本地摘卡并递减作者计数，不再整域重载；
+              // 视图不完整/加载中才回退重载兜底
+              // 超时未收到 CANCEL_DONE（done=null）无法得知实际删除集，必须重载校准
+              const patchable = Boolean(done) && search.isAuthorViewPatchable();
+              state.selectedIds.clear();
+              this.#clearAllCheckboxes();
+              this.#setSelectAllBtn(false);
+              if (patchable) {
+                store.removeWorkRecordSilent(domain, deletedIds, { preserveAuthorOrder: true });
+                search.activeWorkRecordGrid().removeItems(deletedIds);
+                search.syncCount();
+              }
+              store.refreshGroups();
+              this.syncSelectionUI();
+              dialog.closeDialog();
+              if (!patchable) search.reloadForPageOrder();
+              this.#showCancelResult(actionLabel, deletedIds, done, count);
+              return;
+            }
             state.selectedIds.clear();
             store.removeWorkRecordSilent(domain, deletedIds);
             search.activeWorkRecordGrid().removeItems(deletedIds);
             store.refreshGroups();
             search.syncCount();
             dialog.closeDialog();
-            const failedCount = done ? done.failed : count - deletedIds.size;
-            dialog.showToast(
-              failedCount > 0
-                ? `已${actionLabel} ${deletedIds.size} 个，${failedCount} 个失败保留`
-                : `已${actionLabel}并移除 ${deletedIds.size} 个作品`,
-              failedCount > 0 ? "error" : "success",
-            );
+            this.#showCancelResult(actionLabel, deletedIds, done, count);
           } catch (err) {
             dialog.closeDialog();
             dialog.showToast(`${actionLabel}失败: ` + (err.message || String(err)), "error");
@@ -351,6 +468,17 @@ class Batch {
         },
       },
     ]);
+  }
+
+  // 取消并移除的终态 toast：done=null（超时未收到 CANCEL_DONE）时按差额估算失败数
+  #showCancelResult(actionLabel, deletedIds, done, count) {
+    const failedCount = done ? done.failed : count - deletedIds.size;
+    dialog.showToast(
+      failedCount > 0
+        ? `已${actionLabel} ${deletedIds.size} 个，${failedCount} 个失败保留`
+        : `已${actionLabel}并移除 ${deletedIds.size} 个作品`,
+      failedCount > 0 ? "error" : "success",
+    );
   }
 
   // 弹窗锁定执行骨架（批量删除/直接移除/批量移动共用）：更新进度 → preventDialogClose 锁定
@@ -375,11 +503,16 @@ class Batch {
   async handleBatchMove() {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
-    const name = config.AUTHOR_RECORD_DOMAINS.includes(state.domain)
-      ? state.domain === "candidates"
-        ? "候选作者"
-        : "关注者"
-      : config.DOMAINS_META[state.domain].label;
+    const isReview = state.domain === config.REVIEW_DOMAIN;
+    const name = isReview
+      ? state.reviewKind === "authors"
+        ? "回顾作者"
+        : "回顾作品"
+      : utils.isAuthorRecordDomain(state.domain)
+        ? state.domain === "candidates"
+          ? "候选作者"
+          : "关注者"
+        : config.DOMAINS_META[state.domain].label;
     dialog.showGroupSelectDialog(`移动到分组...`, await services.loadGroups(), async (groupId) => {
       await this.#runWithDialogLock(
         "正在移动…",
@@ -467,7 +600,7 @@ class Batch {
 
   // 「批量下载」按钮显隐与可用态：仅作品型三域（作品/点赞/收藏）且批量模式下显示，关注域无媒体可下
   syncDownloadBtn() {
-    const show = config.WORK_RECORD_DOMAINS.includes(state.domain) && state.batchMode;
+    const show = utils.isWorkRecordDomain() && state.batchMode;
     dom.batchDownload.classList.toggle("hidden", !show);
     if (show) dom.batchDownload.disabled = state.selectedIds.size === 0;
   }
@@ -478,9 +611,9 @@ class Batch {
   // X/Esc 经 requestDialogClose 调用 #cancelDownload，abort 在途 fetch 与 zip worker
   async handleBatchDownload() {
     if (this.selectedCount() === 0) return;
-    if (!config.WORK_RECORD_DOMAINS.includes(state.domain)) return;
+    if (!utils.isWorkRecordDomain()) return;
     const count = this.selectedCount();
-    const label = config.DOMAINS_META[state.domain].label;
+    const label = state.domain === config.REVIEW_DOMAIN ? "回顾作品" : config.DOMAINS_META[state.domain].label;
     const all = state[state.domain].filter((w) => state.selectedIds.has(w.awemeId));
     const targets = all.filter(
       (w) => (w.type === "video" && utils.getVideoUrl(w)) || (w.type === "note" && w.images?.length),

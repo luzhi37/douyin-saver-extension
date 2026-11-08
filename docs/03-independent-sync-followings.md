@@ -22,7 +22,6 @@ options: findSecUid() → bgMsg({ type:"FETCH_FOLLOWING", secUid })
         ├─ secUid 解析链：
         │     secUid ∈ {undefined,"self",""} → storage.secUid（非 self）→ resolveSelfSecUid()
         │     仍为空 → sendResponse({ ok:false, error:"NO_SEC_UID" }); 结束
-        ├─ userId ← douyin.com cookie jar 的 uid cookie；缺失则从 savedCookie 正则提取
         ├─ requestId = randomUUID()；注册 cancelHandler（CANCEL_ACTIVE_TASK → cancelled）
         │
         └─ while (hasMore && !cancelled):
@@ -129,7 +128,7 @@ profileUrl: https://www.douyin.com/user/MS4wLjABAAAARrc8YjQCd8-nzW0qad8Nu4fghV0o
 → sec_uid = MS4wLjABAAAARrc8YjQCd8-nzW0qad8Nu4fghV0ouiLKKuUm107nj1DEGGW1NQ2qmpotMdNQb667
 ```
 
-sec_uid 是服务端签发的不可逆字符串 ID，**统一以 `MS4wLjABAAAA` 开头**（base64 解码即版本头 `1.0.0\x01` + 填充），无法从中还原数字 uid。数字 uid（如本例"双一" = `1002380664252222`）属于另一套体系，只能从 Cookie 取，仅作 `user_id` 参数附带。
+sec_uid 是服务端签发的不可逆字符串 ID，**统一以 `MS4wLjABAAAA` 开头**（base64 解码即版本头 `1.0.0\x01` + 填充），无法从中还原数字 uid。数字 uid（如本例"双一" = `1002380664252222`）属于另一套体系，只能从 Cookie 取；当前关注列表实现**不传 `user_id`**（归属由 Cookie 决定，见下文）。
 
 ### 第二步：拼装分页请求
 

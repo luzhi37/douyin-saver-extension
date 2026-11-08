@@ -14,92 +14,89 @@
 </head>
 
 <body>
-  <!-- ====== 固定顶栏（批量操作按钮常驻本栏，批量模式经 body.batch-mode 显隐；侧边栏折叠按钮在最右） ====== -->
+  <!-- ====== 固定顶栏（搜索框常驻；分组行在下方搜索栏；批量操作在内容区底部工具条） ====== -->
   <header id="topBar" class="flex-row">
-    <div class="group-selector">
-      <div class="group-tabs" id="groupTabs"></div>
+    <div class="sb-field">
+      <input id="searchInput" type="text" placeholder="输入昵称或 UID" spellcheck="false" />
+      <button id="btnClearInBar" class="sb-input-clear" title="清除搜索内容" aria-label="清除搜索内容">✕</button>
+      <button id="btnSearchGo" class="sb-input-go" title="搜索（回车）" aria-label="搜索">
+        <svg width="16" height="16"><use href="#icon-search" /></svg>
+      </button>
+      <span id="sbCount" class="sb-count"></span>
     </div>
+    <span id="sbWorkFilters" class="sb-domain-filters flex-row">
+      <div id="sbType" class="sb-scope" role="combobox" tabindex="0" aria-label="作品类型"
+        aria-haspopup="listbox" aria-expanded="false" aria-controls="sbTypeMenu">
+        <span class="sb-scope-value">全部</span>
+        <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+        <div id="sbTypeMenu" class="sb-scope-menu hidden" role="listbox" aria-label="作品类型选项">
+          <button class="sb-scope-option active" role="option" data-type="all" aria-selected="true">全部</button>
+          <button class="sb-scope-option" role="option" data-type="video" aria-selected="false">视频</button>
+          <button class="sb-scope-option" role="option" data-type="note" aria-selected="false">图集</button>
+        </div>
+      </div>
+      <div id="sbSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
+        aria-haspopup="listbox" aria-expanded="false" aria-controls="sbSortMenu">
+        <span class="sb-scope-value">保存时间(降)</span>
+        <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+        <div id="sbSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
+          <button class="sb-scope-option active" role="option" data-sort="saved-desc" aria-selected="true">保存时间(降)</button>
+          <button class="sb-scope-option" role="option" data-sort="saved-asc" aria-selected="false">保存时间(升)</button>
+          <button class="sb-scope-option" role="option" data-sort="authorCount-desc" aria-selected="false">作品数(降)</button>
+          <button class="sb-scope-option" role="option" data-sort="authorCount-asc" aria-selected="false">作品数(升)</button>
+        </div>
+      </div>
+    </span>
+    <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
+      <div id="sbFollowSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
+        aria-haspopup="listbox" aria-expanded="false" aria-controls="sbFollowSortMenu">
+        <span class="sb-scope-value">作品数(降)</span>
+        <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+        <div id="sbFollowSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
+          <button class="sb-scope-option active" role="option" data-fsort="works-desc" aria-selected="true">作品数(降)</button>
+          <button class="sb-scope-option" role="option" data-fsort="works-asc" aria-selected="false">作品数(升)</button>
+          <button class="sb-scope-option" role="option" data-fsort="update-desc" aria-selected="false">最近更新(降)</button>
+          <button class="sb-scope-option" role="option" data-fsort="update-asc" aria-selected="false">最近更新(升)</button>
+        </div>
+      </div>
+    </span>
     <div class="topbar-right flex-row">
-      <span id="batchCount" class="batch-count" aria-live="polite" title="Shift+点击连选">已选 0</span>
-      <button class="dy-btn dy-btn-icon flex-inline-center dy-btn-danger batch-action" id="btnBatchDelete" disabled title="移除">
-        <svg width="16" height="16"><use href="#icon-delete" /></svg>
-      </button>
-      <button class="dy-btn dy-btn-icon flex-inline-center batch-action hidden" id="btnBatchSaveToWorks" title="存入作品域">
-        <svg width="16" height="16"><use href="#icon-bookmark" /></svg>
-      </button>
-      <button class="dy-btn dy-btn-icon flex-inline-center batch-action hidden" id="btnBatchSaveToCandidates" title="入库到候选域">
-        <svg width="16" height="16"><use href="#icon-bookmark" /></svg>
-      </button>
-      <button class="dy-btn dy-btn-icon flex-inline-center batch-action" id="btnBatchMove" disabled title="移动到分组">
-        <svg width="16" height="16"><use href="#icon-folder" /></svg>
-      </button>
-      <button class="dy-btn dy-btn-icon flex-inline-center batch-action" id="btnBatchDownload" disabled title="下载选中的作品">
-        <svg width="16" height="16"><use href="#icon-download" /></svg>
-      </button>
-      <button class="dy-btn dy-btn-icon flex-inline-center batch-action" id="btnBatchSelectAll" title="全选">
-        <svg width="16" height="16"><use href="#icon-select-all" /></svg>
-      </button>
-      <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch" title="批量管理作品">批量</button>
-      <button id="btnSidebarToggle" class="btn-sidebar-toggle flex-center" aria-label="展开/收起侧边栏"
-        title="展开/收起侧边栏">☰</button>
+      <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch">批量</button>
     </div>
   </header>
 
   <!-- ====== 主体内容 ====== -->
   <div id="appBody">
     <div id="mainCol" class="flex-col">
-      <!-- ====== 搜索栏（侧边栏「搜索」在顶栏下方展开的内联工具条，见 docs/11） ====== -->
+      <!-- ====== 分组行（搜索栏常驻；搜索框已移至顶栏，见 docs/11） ====== -->
       <div id="searchBar" class="search-bar">
-        <div id="sbScope" class="sb-scope" aria-label="搜索范围">
-          <span class="sb-scope-value">作者</span>
-          <span class="sb-scope-arrow">▾</span>
-          <div class="sb-scope-menu hidden">
-            <button class="sb-scope-option" data-scope="author" id="sbScopeAuthor">作者</button>
-            <button class="sb-scope-option" data-scope="title" id="sbScopeTitle">标题</button>
-            <button class="sb-scope-option" data-scope="id">ID</button>
+        <div class="group-selector">
+          <div class="group-tabs" id="groupTabs"></div>
+        </div>
+        <!-- 回顾域配置：来源下拉 / 抽取数量 / 随机与追加，内联在分组行右端（仅 review 域显示） -->
+        <div id="reviewBar" class="review-bar">
+          <div id="reviewSourceScope" class="sb-scope review-source-scope" role="combobox" tabindex="0"
+            aria-label="回顾来源域" aria-haspopup="listbox" aria-expanded="false" aria-controls="reviewSourceMenu">
+            <span class="sb-scope-value">作品</span>
+            <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+            <div id="reviewSourceMenu" class="sb-scope-menu hidden" role="listbox" aria-label="回顾来源域选项">
+              <button class="sb-scope-option active" role="option" data-source="works" aria-selected="true">作品</button>
+              <button class="sb-scope-option" role="option" data-source="favorites" aria-selected="false">点赞</button>
+              <button class="sb-scope-option" role="option" data-source="collections" aria-selected="false">收藏</button>
+              <button class="sb-scope-option" role="option" data-source="followings" aria-selected="false">关注</button>
+              <button class="sb-scope-option" role="option" data-source="candidates" aria-selected="false">候选</button>
+            </div>
+          </div>
+          <label class="review-bar-field">
+            <input id="reviewCountInput" class="review-count-input" type="number" inputmode="numeric" min="1" max="500" step="1" value="20" aria-label="本轮数量" title="可自定义 1–500 条">
+          </label>
+          <div class="review-bar-actions">
+            <button id="btnReviewRandom" class="dy-btn flex-inline-center dy-btn-primary">随机</button>
+            <button id="btnReviewAppend" class="dy-btn flex-inline-center" title="追加抽样，结果落「未分组」（仅限同来源域）">追加</button>
           </div>
         </div>
-        <input id="searchInput" type="text" placeholder="输入作者昵称" spellcheck="false" />
-        <button id="btnClearInBar" class="sb-input-clear" title="清除搜索内容" aria-label="清除搜索内容">✕</button>
-        <button id="btnSearchGo" class="sb-input-go" title="搜索（回车）" aria-label="搜索">
-          <svg width="16" height="16"><use href="#icon-search" /></svg>
-        </button>
-        <span id="sbCount" class="sb-count"></span>
-        <span id="sbWorkFilters" class="sb-domain-filters flex-row">
-          <div id="sbType" class="sb-scope" aria-label="作品类型">
-            <span class="sb-scope-value">全部</span>
-            <span class="sb-scope-arrow">▾</span>
-            <div class="sb-scope-menu hidden">
-              <button class="sb-scope-option" data-type="all">全部</button>
-              <button class="sb-scope-option" data-type="video">视频</button>
-              <button class="sb-scope-option" data-type="note">图集</button>
-            </div>
-          </div>
-          <div id="sbSort" class="sb-scope" aria-label="排序方式">
-            <span class="sb-scope-value">保存时间(降)</span>
-            <span class="sb-scope-arrow">▾</span>
-            <div class="sb-scope-menu hidden">
-              <button class="sb-scope-option active" data-sort="saved-desc">保存时间(降)</button>
-              <button class="sb-scope-option" data-sort="saved-asc">保存时间(升)</button>
-              <button class="sb-scope-option" data-sort="authorCount-desc">作品数(降)</button>
-              <button class="sb-scope-option" data-sort="authorCount-asc">作品数(升)</button>
-            </div>
-          </div>
-        </span>
-        <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
-          <div id="sbFollowSort" class="sb-scope" aria-label="排序方式">
-            <span class="sb-scope-value">作品数(降)</span>
-            <span class="sb-scope-arrow">▾</span>
-            <div class="sb-scope-menu hidden">
-              <button class="sb-scope-option active" data-fsort="works-desc">作品数(降)</button>
-              <button class="sb-scope-option" data-fsort="works-asc">作品数(升)</button>
-              <button class="sb-scope-option" data-fsort="update-desc">最近更新(降)</button>
-              <button class="sb-scope-option" data-fsort="update-asc">最近更新(升)</button>
-            </div>
-          </div>
-        </span>
       </div>
-      <!-- 搜索栏之下：网格与侧边作品栏左右并排（搜索栏横跨两者；右侧菜单栏仍独占全高） -->
+      <!-- 分组行之下：网格与侧边作品栏左右并排（分组行横跨两者；右侧菜单栏仍独占全高） -->
       <div id="contentRow" class="content-row">
         <main id="mainGrid">
           <div class="empty-state state-message hidden" id="emptyState">
@@ -127,6 +124,21 @@
         <!-- 初始即折叠：侧栏内容恒绑定作者上下文，避免脚本初始化前以默认宽度闪现空面板 -->
         <aside id="sidebar" class="sidebar sidebar-zero">
           <div id="sidebarBody" class="sidebar-body">
+            <!-- 作者上下文头：吸顶显示身份/统计，滚动作品时仍能确认当前作者 -->
+            <div id="sidebarAuthorHead" class="sidebar-author-head">
+              <div id="sidebarAuthorAvatar" class="sidebar-author-avatar flex-center" role="img"></div>
+              <div class="sidebar-author-meta">
+                <div class="sidebar-author-name-row">
+                  <a id="sidebarAuthorName" class="sidebar-author-name" target="_blank" rel="noopener"></a>
+                  <span id="sidebarAuthorStatus" class="sidebar-author-status hidden"></span>
+                </div>
+                <div id="sidebarAuthorSub" class="sidebar-author-sub"></div>
+              </div>
+              <button id="sidebarAuthorClose" class="sidebar-author-action" type="button"
+                title="收起作品栏" aria-label="收起作品栏">
+                <svg width="15" height="15"><use href="#icon-close" /></svg>
+              </button>
+            </div>
             <div id="sidebarWorksGrid" class="sidebar-works-grid"></div>
             <!-- 列表终点提示：全部页取完（无更多游标）且有成列内容时驻底显示，替代「加载圈悬停」暗示 -->
             <div id="sidebarEndNotice" class="sidebar-end-notice hidden">已全部加载</div>
@@ -137,37 +149,93 @@
         </aside>
       </div>
     </div>
-    <!-- 域切换 + 功能菜单侧边栏：位于最右（比关注域作者作品侧边栏更靠右），☰ 按钮在顶栏最右折叠/展开 -->
-    <aside id="rightSidebar" class="right-sidebar">
-      <div class="right-sidebar-inner">
-        <div class="domain-switch">
-          <div class="ds-slider"></div>
-          <button class="ds-btn active" data-domain="works">作品</button>
-          <button class="ds-btn" data-domain="favorites">点赞</button>
-          <button class="ds-btn" data-domain="collections">收藏</button>
-          <button class="ds-btn" data-domain="followings">关注</button>
-          <button class="ds-btn" data-domain="candidates">候选</button>
-        </div>
-        <div class="menu-divider"></div>
-        <nav class="right-sidebar-menu flex-col">
-          <button class="menu-item" id="btnSync">同步</button>
-          <button class="menu-item" id="btnGroupManage">分组</button>
-          <button class="menu-item" id="btnSearch">搜索</button>
-          <button class="menu-item" id="btnAuthorImport">工具</button>
-          <button class="menu-item" id="btnSettings">设置</button>
-        </nav>
-        <div class="menu-spacer"></div>
-        <div class="menu-divider"></div>
-        <button class="menu-item" id="btnDataTools">维护</button>
-        <div class="menu-storage" id="menuStorage"><span class="storage-num">—</span><span class="storage-unit">MB</span></div>
+  </div>
+
+  <!-- 域切换 + 功能菜单导航轨：位于最右，贯穿顶栏到页面底部（全高，固定 48px） -->
+  <aside id="rightSidebar" class="right-sidebar">
+    <div class="right-sidebar-inner">
+      <div class="domain-switch">
+        <div class="ds-slider"></div>
+        <button class="ds-btn active" data-domain="works">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-works" /></svg><span>作品</span>
+        </button>
+        <button class="ds-btn" data-domain="favorites">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-heart-line" /></svg><span>点赞</span>
+        </button>
+        <button class="ds-btn" data-domain="collections">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-star-line" /></svg><span>收藏</span>
+        </button>
+        <button class="ds-btn" data-domain="followings">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-users" /></svg><span>关注</span>
+        </button>
+        <button class="ds-btn" data-domain="candidates">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-user-plus" /></svg><span>候选</span>
+        </button>
+        <button class="ds-btn" data-domain="review">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-shuffle" /></svg><span>回顾</span>
+        </button>
       </div>
-    </aside>
+      <div class="menu-divider"></div>
+      <nav class="right-sidebar-menu flex-col">
+        <button class="menu-item" id="btnSync">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-sync" /></svg><span>同步</span>
+        </button>
+        <button class="menu-item" id="btnGroupManage">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-folder" /></svg><span>分组</span>
+        </button>
+        <button class="menu-item" id="btnAuthorImport">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-tools" /></svg><span>工具</span>
+        </button>
+        <button class="menu-item" id="btnSettings">
+          <svg class="rail-icon" width="18" height="18"><use href="#icon-settings" /></svg><span>设置</span>
+        </button>
+      </nav>
+      <div class="menu-spacer"></div>
+      <div class="menu-divider"></div>
+      <button class="menu-item" id="btnStatus">
+        <svg class="rail-icon" width="18" height="18"><use href="#icon-status" /></svg><span>状态</span>
+      </button>
+      <button class="menu-item" id="btnDataTools">
+        <svg class="rail-icon" width="18" height="18"><use href="#icon-database" /></svg><span>维护</span>
+      </button>
+      <div class="menu-storage" id="menuStorage"><span class="storage-num">—</span><span class="storage-unit">MB</span></div>
+    </div>
+  </aside>
+
+  <!-- 批量底部工具条：复用原顶栏按钮 id，批量模式经 body.batch-mode 显隐；
+       固定在主内容区底部居中，操作对象与按钮保持在同一视线带 -->
+  <div id="batchBar" class="batch-bar" role="toolbar" aria-label="批量操作">
+    <div class="batch-bar-count" aria-live="polite" aria-label="已选 0 / 0 项" title="Shift+点击连选">
+      <span>已选</span><b id="batchCount">0</b><span class="batch-bar-total">/ <span id="batchTotal">0</span></span><span>项</span>
+    </div>
+    <span class="batch-bar-sep"></span>
+    <button class="batch-bar-btn" id="btnBatchSelectAll" title="全选（Ctrl+A）" aria-keyshortcuts="Control+A">
+      <svg width="15" height="15"><use href="#icon-select-all" /></svg><span class="batch-bar-label">全选</span>
+    </button>
+    <button class="batch-bar-btn" id="btnBatchMove" disabled title="移动到分组（M）" aria-keyshortcuts="M">
+      <svg width="15" height="15"><use href="#icon-folder" /></svg><span>移动</span>
+    </button>
+    <button class="batch-bar-btn" id="btnBatchDownload" disabled title="下载（D）" aria-keyshortcuts="D">
+      <svg width="15" height="15"><use href="#icon-download" /></svg><span>下载</span>
+    </button>
+    <button class="batch-bar-btn hidden" id="btnBatchSaveToWorks">
+      <svg width="15" height="15"><use href="#icon-bookmark" /></svg><span>存入作品</span>
+    </button>
+    <button class="batch-bar-btn hidden" id="btnBatchSaveToCandidates">
+      <svg width="15" height="15"><use href="#icon-bookmark" /></svg><span>入库候选</span>
+    </button>
+    <span class="batch-bar-sep"></span>
+    <button class="batch-bar-btn batch-bar-danger" id="btnBatchDelete" disabled title="移除（Delete）" aria-keyshortcuts="Delete">
+      <svg width="15" height="15"><use href="#icon-delete" /></svg><span>移除</span>
+    </button>
+    <span class="batch-bar-sep"></span>
+    <button class="batch-bar-btn batch-bar-done" id="btnBatchDone">完成</button>
   </div>
 
   <!-- ====== 详情覆盖层（对齐抖音播放界面：全宽播放器 + 56px 播放条） ====== -->
   <div id="detailOverlay" class="flex-col hidden">
-    <button id="detailClose" class="flex-center" aria-label="关闭详情">
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round">
+    <button id="detailClose" class="flex-center" type="button" aria-label="关闭详情（Esc）">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
         <path d="M5 5l14 14M19 5L5 19" />
       </svg>
     </button>
@@ -236,7 +304,7 @@
       <span class="bar-divider"></span>
       <div class="bar-group bar-meta flex-row">
         <a id="detailAuthor" class="detail-bar-text detail-bar-author hidden" target="_blank" rel="noopener"></a>
-        <a id="detailTitle" class="detail-bar-title text-ellipsis" target="_blank" rel="noopener"><span id="detailTitleText" class="detail-title-text"></span></a>
+        <a id="detailVisit" class="detail-bar-visit" target="_blank" rel="noopener" title="在抖音打开作品页"></a>
         <span id="detailCreateTime" class="detail-bar-text detail-bar-date hidden"></span>
       </div>
       <span class="bar-divider"></span>
@@ -280,11 +348,14 @@
         <span class="following-avatar-fallback hidden"></span>
         <div class="following-nickname"></div>
       </div>
-      <div class="following-stats">
-        <span class="stat-followers"></span>
-        <span class="stat-works"></span>
+      <!-- 信息区以细分隔线独立成次级区块（分辨批量点击区域，不抢身份行视觉重心） -->
+      <div class="following-details">
+        <div class="following-stats">
+          <span class="stat-followers"></span>
+          <span class="stat-works"></span>
+        </div>
+        <div class="following-update"></div>
       </div>
-      <div class="following-update"></div>
     </div>
   </template>
 
@@ -309,7 +380,7 @@
         <span class="sidebar-work-date"></span>
         <button class="sidebar-presence sidebar-presence-like" type="button"><svg width="11" height="11"><use href="#icon-heart" /></svg><span class="sidebar-presence-label">点赞</span></button>
         <button class="sidebar-presence sidebar-presence-collect" type="button"><svg width="11" height="11"><use href="#icon-star" /></svg><span class="sidebar-presence-label">收藏</span></button>
-        <button class="sidebar-work-save" type="button" title="存入作品域">存入</button>
+        <button class="sidebar-work-save" type="button">存入</button>
       </div>
     </div>
   </template>
@@ -337,7 +408,6 @@
       </div>
       <div class="work-checkbox" role="checkbox" aria-checked="false" aria-label="选择作品"></div>
       <div class="work-info flex-col">
-        <a class="work-title-text text-ellipsis" target="_blank" rel="noopener"></a>
         <div class="work-author-row">
           <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
           <span class="work-create-time hidden"></span>
@@ -350,7 +420,6 @@
     <div class="work-card work-skeleton flex-col">
       <div class="work-media"></div>
       <div class="work-info flex-col">
-        <a class="work-title-text text-ellipsis" target="_blank" rel="noopener"></a>
         <div class="work-author-row">
           <a class="work-author text-ellipsis" target="_blank" rel="noopener"></a>
           <span class="work-create-time hidden"></span>
@@ -361,7 +430,7 @@
 
   <!-- ====== 分组 tab 模板 ====== -->
   <template id="groupTabTemplate">
-    <button class="group-tab"></button>
+    <button class="group-tab"><span class="group-tab-name"></span><span class="group-tab-count"></span></button>
   </template>
 
   <!-- ====== 分组管理列表项模板 ====== -->
@@ -441,61 +510,55 @@
   <!-- ====== 设置面板模板 ====== -->
   <template id="settingsDialogTemplate">
     <div class="settings-panel">
-      <section class="settings-section">
-        <h3 class="settings-section-title">
-          运行参数
-          <button class="cookie-copy-all-btn" id="btnResetConfig" title="填入默认值，关闭面板时保存">恢复默认</button>
-          <span class="section-chevron"></span>
-        </h3>
-        <div class="section-body">
-          <div class="section-body-inner" id="settingsConfigSection">
-            <div class="kv-row"><label class="bf-label">请求超时 (ms)</label><input class="bf-input config-input" data-key="timeoutRequest" type="number" /></div>
-            <div class="kv-row"><label class="bf-label">安全状态超时 (ms)</label><input class="bf-input config-input" data-key="timeoutSecurityStatus" type="number" /></div>
-            <div class="kv-row"><label class="bf-label">同步作品 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncWorksDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">同步关注 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFollowingsDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFollowingsDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">扫描点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFavoritesDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">扫描收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncCollectionDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">取消点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelFavoritesDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">取消收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelCollectionDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">作者入库 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="importWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="importWorksDelayMax" type="number" style="width:80px" /></div>
-            <div class="kv-row"><label class="bf-label">同步批次大小</label><input class="bf-input config-input" data-key="syncBatchSize" type="number" /></div>
-            <div class="kv-row"><label class="bf-label">批次暂停最小值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMin" type="number" /></div>
-            <div class="kv-row"><label class="bf-label">批次暂停最大值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMax" type="number" /></div>
-            <div class="kv-row"><label class="bf-label">保活间隔 (ms)</label><input class="bf-input config-input" data-key="syncKeepaliveInterval" type="number" /></div>
-            <div class="kv-row"><label class="bf-label">最大重试次数</label><input class="bf-input config-input" data-key="syncRetryMax" type="number" /></div>
-            <div class="settings-mode-row"><label for="settingsModeSwitch">启用独立模式（无需抖音标签页）</label><input class="mode-toggle" type="checkbox" id="settingsModeSwitch" role="switch" /></div>
-            <div class="kv-row bf-item" style="margin-top:6px">
-              <label class="bf-label">secUid（用户身份）</label>
-              <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" spellcheck="false" />
-            </div>
-            <div id="settingsCacheList"></div>
-          </div>
+      <div id="settingsConfigSection">
+        <div class="kv-row"><label class="bf-label">请求超时 (ms)</label><input class="bf-input config-input" data-key="timeoutRequest" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">安全状态超时 (ms)</label><input class="bf-input config-input" data-key="timeoutSecurityStatus" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">同步作品 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncWorksDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">同步关注 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFollowingsDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFollowingsDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">扫描点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFavoritesDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">扫描收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncCollectionDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">取消点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelFavoritesDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">取消收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelCollectionDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">作者入库 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="importWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="importWorksDelayMax" type="number" style="width:80px" /></div>
+        <div class="kv-row"><label class="bf-label">同步批次大小</label><input class="bf-input config-input" data-key="syncBatchSize" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">批次暂停最小值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMin" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">批次暂停最大值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMax" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">保活间隔 (ms)</label><input class="bf-input config-input" data-key="syncKeepaliveInterval" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">最大重试次数</label><input class="bf-input config-input" data-key="syncRetryMax" type="number" /></div>
+        <div class="settings-mode-row"><label for="settingsModeSwitch">启用独立模式（无需抖音标签页）</label><input class="mode-toggle" type="checkbox" id="settingsModeSwitch" role="switch" /></div>
+        <div class="kv-row bf-item" style="margin-top:6px">
+          <label class="bf-label">secUid（用户身份）</label>
+          <input class="bf-input" id="settingsSecUid" type="text" placeholder="打开抖音个人页自动捕获，或手动输入" spellcheck="false" />
         </div>
-      </section>
+        <div id="settingsCacheList"></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ====== 状态面板模板（Cookie / 浏览器特征 / Tab 模式捕获状态） ====== -->
+  <template id="statusDialogTemplate">
+    <div class="settings-panel">
       <section class="settings-section">
         <h3 class="settings-section-title">
           Cookie 配置
-          <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
-          <div class="section-body-inner" id="settingsCookieList"></div>
+          <div class="section-body-inner" id="statusCookieList"></div>
         </div>
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">
           浏览器特征
-          <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
           <div class="section-body-inner">
-            <div id="settingsBFList"></div>
+            <div id="statusBFList"></div>
           </div>
         </div>
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">
           Tab 模式
-          <span class="section-chevron"></span>
         </h3>
         <div class="section-body">
           <div class="section-body-inner">
@@ -645,6 +708,13 @@
         <path fill="currentColor"
           d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
       </symbol>
+      <symbol id="icon-toast-check" viewBox="0 0 24 24">
+        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+      </symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24">
+        <path fill="currentColor"
+          d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
+      </symbol>
       <symbol id="icon-image-badge" viewBox="0 0 12 12">
         <path fill="currentColor"
           d="M1.455 0C.65 0 0 .651 0 1.455V8c0 .803.651 1.455 1.455 1.455H8c.803 0 1.455-.652 1.455-1.455V1.455C9.455.65 8.803 0 8 0H1.455z" />
@@ -679,10 +749,70 @@
         <path fill="currentColor"
           d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
       </symbol>
+      <!-- 右侧导航轨 / 作者栏 / 空态引导使用的线性图标（与填充图标区分工具型入口与内容标记） -->
+      <symbol id="icon-works" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="6" height="6" rx="1.5" />
+        <rect x="14" y="4" width="6" height="6" rx="1.5" />
+        <rect x="4" y="14" width="6" height="6" rx="1.5" />
+        <rect x="14" y="14" width="6" height="6" rx="1.5" />
+      </symbol>
+      <symbol id="icon-heart-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20.8 5.9a5.5 5.5 0 0 0-7.8 0L12 7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 22l8.8-8.3a5.5 5.5 0 0 0 0-7.8z" />
+      </symbol>
+      <symbol id="icon-star-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3z" />
+      </symbol>
+      <symbol id="icon-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="7" r="3" />
+        <path d="M3 20c0-3.3 2.7-5.8 6-5.8 1.5 0 2.9.5 4 1.4" />
+        <path d="M14 19l2 2 4-4.5" />
+      </symbol>
+      <symbol id="icon-user-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="8" r="3" />
+        <path d="M3 20c0-3 2.7-5 6-5s6 2 6 5" />
+        <path d="M18 7v6M15 10h6" />
+      </symbol>
+      <symbol id="icon-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 7h4l10 10h4M3 17h4l3-3M14 7h7M18 4l3 3-3 3M18 14l3 3-3 3" />
+      </symbol>
+      <symbol id="icon-sync" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 11a8 8 0 0 0-14.5-4L4 9M4 4v5h5M4 13a8 8 0 0 0 14.5 4L20 15M20 20v-5h-5" />
+      </symbol>
+      <symbol id="icon-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.5 9.5 20 4M6 20l5.2-5.2M13.8 5.2a4 4 0 0 0-5 5L4 15l5 5 4.8-4.8a4 4 0 0 0 5-5l-2.5 2.5-3-3 2.5-2.5z" />
+      </symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06-2.83 2.83-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21h-4v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06-2.83-2.83.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3v-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06 2.83-2.83.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3h4v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06 2.83 2.83-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21v4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </symbol>
+      <symbol id="icon-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <ellipse cx="12" cy="5.5" rx="7" ry="3" />
+        <path d="M5 5.5v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6M5 11.5v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+      </symbol>
+      <symbol id="icon-status" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12h4l2.5-6 5 12 2.5-6h4" />
+      </symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round">
+        <path d="M6 6l12 12M18 6 6 18" />
+      </symbol>
     </defs>
   </svg>
   <!-- ====== Toast 提示 ====== -->
-  <div id="dy-options-toast" class="toast"></div>
+  <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <!-- ====== 全局 Tooltip（接管剩余 title 属性，统一样式与定位） ====== -->
+  <div id="dyTooltip" class="dy-tooltip" role="tooltip" aria-hidden="true"></div>
 
   <!-- ====== 隐藏的文件输入 ====== -->
   <input type="file" id="fileInput" accept=".json,.txt" style="display: none" />

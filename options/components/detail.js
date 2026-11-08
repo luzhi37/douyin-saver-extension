@@ -75,7 +75,10 @@ class Detail {
       const doCommit = () => {
         if (token !== this.#imgProbeToken) return;
         dom.detailImage.style.backgroundImage = utils.cssUrl(url);
-        dom.detailImage.setAttribute("aria-label", this.#noteWork.desc || "");
+        dom.detailImage.setAttribute(
+          "aria-label",
+          this.#noteWork.nickname ? `@${this.#noteWork.nickname}的作品` : "",
+        );
         // 本条静帧就位后才起步实况小视频（切条前已由 #stopNoteClip 停掉上一条）。
         // 关键时序：静帧提交是异步探针（网络 + decode），若小视频在探针之前同步上屏，
         // 它会叠在「上一条仍保留的旧静帧背景」之上（零空档切图不先清背景），形成两层
@@ -494,27 +497,51 @@ class Detail {
   }
 
   async removeWork(awemeId) {
+    // 回顾域：只删回顾引用，来源域记录保留
+    if (state.domain === config.REVIEW_DOMAIN) {
+      await services.deleteReviewItems(state.reviewSourceDomain, [awemeId]);
+      store.removeReviewItemsSilent(new Set([awemeId]), "awemeId");
+      state.selectedIds.delete(awemeId);
+      search.activeWorkRecordGrid().removeItems(new Set([awemeId]));
+      store.refreshGroups();
+      search.syncCount();
+      return;
+    }
     // 作品型三域（作品/点赞/收藏）网格均可打开详情，按当前域删除本地记录
     //（点赞/收藏域仅删本地，远端取消走批量入口）；state.domain 恒属 WORK_RECORD_DOMAINS
     await services.deleteWorkRecord(state.domain, [awemeId]);
-    store.removeWorkRecordSilent(state.domain, new Set([awemeId]));
+    // authorCount 完整视图：本地摘卡并保留稳定顺序，不整域重载；视图不完整（加载中/
+    // 分页中断）才回退整域重载。重载传 keepDetail，详情层不因删除而退出
+    const authorOrderActive = search.isAuthorOrderActive();
+    const patchable = authorOrderActive && search.isAuthorViewPatchable();
+    store.removeWorkRecordSilent(state.domain, new Set([awemeId]), {
+      preserveAuthorOrder: patchable,
+    });
     state.selectedIds.delete(awemeId);
     search.activeWorkRecordGrid().removeItems(new Set([awemeId]));
     store.refreshGroups();
     search.syncCount();
+    if (authorOrderActive && !patchable) {
+      await search.reloadForPageOrder({ keepDetail: true });
+    }
   }
 
   // 详情移除确认流程：底栏「移除」按钮与 Delete/Backspace 快捷键共用入口（确认弹窗，不直接删）
   #confirmRemoveCurrent() {
     const work = this.getCurrentWork();
     if (!work) return;
-    // 点赞/收藏域的详情「移除」仅删本地记录（远端取消走批量入口），文案区分
+    // 点赞/收藏域的详情「移除」仅删本地记录（远端取消走批量入口），文案区分。
+    // 回顾域移除的是回顾引用，来源域数据不变。
+    const isReview = state.domain === config.REVIEW_DOMAIN;
     const localOnly = config.WORK_RECORD_DOMAINS.includes(state.domain) && state.domain !== "works";
     const removeBody = document.createElement("p");
     removeBody.className = "confirm-delete-msg";
-    removeBody.textContent = localOnly
-      ? `确定要从${config.DOMAINS_META[state.domain].label}域移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？远端点赞/收藏不受影响。`
-      : `确定要移除"${(work.desc || "无作品描述").slice(0, config.DETAIL_TITLE_MAX_LEN)}"？`;
+    const label = work.nickname ? `「@${work.nickname}的作品」` : "「该作品」";
+    removeBody.textContent = isReview
+      ? `确定要从回顾批次移除${label}？来源域数据不会被删除。`
+      : localOnly
+        ? `确定要从${config.DOMAINS_META[state.domain].label}域移除${label}？远端点赞/收藏不受影响。`
+        : `确定要移除${label}？`;
     dialog.showDialog("移除作品", removeBody, [
       {
         text: "移除",
@@ -523,13 +550,22 @@ class Detail {
           dialog.updateDialog("正在移除…", "");
           state.preventDialogClose = true;
           try {
+            // 删除前记下当前视图下标：本地摘卡后原下标处即「下一件」；authorCount
+            // 兜底重载会换序，重载后仍按该下标钳制顺延
+            const beforeIndex = this.#resolveIndex(this.#navList());
             await this.removeWork(work.awemeId);
+            // 兜底重载期间用户若已关闭详情（防御），只收尾弹窗与提示
+            if (dom.detailOverlay.classList.contains("hidden")) {
+              dialog.closeDialog();
+              dialog.showToast("已移除该作品", "success");
+              return;
+            }
             // 移除后导航列表同步收缩：原下标处已是「下一件」，越界钳到末条并按新条目重锚定
             const list = this.#navList();
             if (list.length === 0) {
               this.closeDetail();
             } else {
-              const at = Math.min(Math.max(this.#resolveIndex(list), 0), list.length - 1);
+              const at = Math.min(Math.max(beforeIndex, 0), list.length - 1);
               this.#setCurrent(at, list);
               this.renderDetail();
             }
@@ -767,17 +803,14 @@ class Detail {
       if (work.authorHomeUrl) {
         dom.detailAuthor.textContent = `@${work.nickname || "未知作者"}`;
         dom.detailAuthor.href = work.authorHomeUrl;
-        dom.detailAuthor.title = "打开作者主页";
         dom.detailAuthor.classList.remove("hidden");
       } else {
         dom.detailAuthor.classList.add("hidden");
       }
 
       const typePath = work.type === "note" ? "note" : "video";
-      dom.detailTitle.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
-      // 描述全文进入播放条（CSS 单行省略 + hover title 提示），不再 JS 截断
-      dom.detailTitleText.textContent = work.desc || "无作品描述";
-      dom.detailTitle.title = "在抖音打开作品页";
+      dom.detailVisit.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
+      dom.detailVisit.textContent = String(work.awemeId);
       dom.detailCreateTime.textContent = utils.formatPublishDate(work.createTime);
       dom.detailCreateTime.classList.toggle("hidden", !dom.detailCreateTime.textContent);
 
@@ -816,7 +849,7 @@ class Detail {
           this.#setMediaAspect(probe.naturalWidth, probe.naturalHeight);
           // div+background-image 载体：探针成功即提交，可见加载失败在结构上不存在
           dom.detailImage.style.backgroundImage = utils.cssUrl(work.cover);
-          dom.detailImage.setAttribute("aria-label", work.desc || "");
+          dom.detailImage.setAttribute("aria-label", work.nickname ? `@${work.nickname}的作品` : "");
           onReady();
         };
         probe.onerror = () => {
@@ -934,7 +967,7 @@ class Detail {
     // 先加载 cover：网格卡已加载过同一 cover 大概率命中缓存，探针通过即先落为占位；
     // 高清首帧（images[0]）随后经独立探针静默替换（见下方 up）。候选去重防 cover 与
     // 首帧同 URL 重复加载；全部失败才进失效态。期间无 aria-label，杜绝中央区闪现
-    // 作品标题文本（见 #clearDetailImage）
+    // 无障碍文本（见 #clearDetailImage）
     const candidates = [...new Set([
       utils.pickHttpsUrl(work.cover || ""),
       utils.pickHttpsUrl(work.images?.[0] || ""),
@@ -962,7 +995,7 @@ class Detail {
           // div+background-image 载体：探针成功即提交，可见加载失败在结构上不存在
           //（背景失败不可见，无需 img error 兜底）
           dom.detailImage.style.backgroundImage = utils.cssUrl(candidates[i]);
-          dom.detailImage.setAttribute("aria-label", work.desc || "");
+          dom.detailImage.setAttribute("aria-label", work.nickname ? `@${work.nickname}的作品` : "");
           fireReady();
           // 占位后换高清首帧：cover 命中网格缓存先落屏（瞬开），原图到达再替换（图集详情
           // 要原图细节）。静默换图不加熔断计数（与「单条候选失效不计数」同口径）
@@ -1109,7 +1142,7 @@ class Detail {
 
     dom.detailClose.addEventListener("click", () => this.closeDetail());
 
-    // 底栏作者/标题为真实链接（新标签页打开），无需额外点击逻辑
+    // 底栏作者与作品 awemeId 均为真实链接（新标签页打开），无需额外点击逻辑
 
     dom.detailRemoveBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1269,7 +1302,12 @@ class Detail {
     dom.detailOverlay.style.removeProperty("--bg-url");
     dom.detailOverlay.classList.add("hidden");
     document.body.style.overflow = "";
-    worksGrid.restoreGridScroll(restoredId);
+    // 按当前来源域的活动网格恢复（回顾模式下是随机网格；普通模式是当前域网格）。
+    // 作者域网格没有 restoreGridScroll，必须按能力调用，避免作者域关闭详情时报错
+    const activeGrid = search.activeWorkRecordGrid();
+    if (typeof activeGrid?.restoreGridScroll === "function") {
+      activeGrid.restoreGridScroll(restoredId);
+    }
   }
 
   resetVideo() {
@@ -1292,7 +1330,7 @@ class Detail {
   #clearDetailImage() {
     this.#stopNoteClip();
     dom.detailImage.style.backgroundImage = "";
-    // div 载体以 role="img" + aria-label 提供无障碍标注，清空杜绝加载期中央区闪现作品标题
+    // div 载体以 role="img" + aria-label 提供无障碍标注，清空杜绝加载期中央区闪现无障碍文本
     dom.detailImage.removeAttribute("aria-label");
     this.#hideImageFailed();
   }

@@ -78,7 +78,6 @@ class AuthorGrid extends VirtualGrid {
     card.querySelector(".stat-works").textContent = utils.formatCount(author.awemeCount) + " 作品";
     const updateEl = card.querySelector(".following-update");
     updateEl.textContent = "最近更新 " + utils.formatUpdateTime(author.lastUpdateAt);
-    updateEl.title = author.lastUpdateAt ? new Date(author.lastUpdateAt).toLocaleString() : "";
   }
 
   // 头像不可用时的占位：灰底圆圈换为昵称首字，不再让头像凭空消失
@@ -117,7 +116,6 @@ class AuthorGrid extends VirtualGrid {
     card.querySelector(".stat-works").textContent = "";
     const updateEl = card.querySelector(".following-update");
     updateEl.textContent = "";
-    updateEl.title = "";
     // 降级即移除勾选框（同 works-grid.clearCard：防勾选框随浏览量无界累积，回填时重建）
     card.querySelector(".following-checkbox")?.remove();
   }
@@ -160,15 +158,11 @@ class AuthorGrid extends VirtualGrid {
     // 两个作者域共用卡片类名与 uid itemKey：非当前域的实例不得响应（同作者同时在两域时防双触发）
     if (state.domain !== this.#domain) return;
 
-    // 批量模式临时旁路：Ctrl（macOS Cmd）+ 点击作者卡 → 与非批量模式点击一致，
-    // 直接打开/更新右侧作品栏，不切换勾选
-    if (state.batchMode && (event.ctrlKey || event.metaKey)) {
-      sidebar.openSidebar(author);
-      return;
-    }
+    const avatarHit = event.target.closest(".following-avatar, .following-avatar-fallback");
 
-    if (event.target.closest(".following-avatar, .following-avatar-fallback")) {
-      if (state.batchMode) return;
+    // Ctrl/Cmd + 点击作者卡（任意区域，含头像/统计区/勾选圆）：统一在新标签打开作者主页。
+    // 不再按命中区分支到侧边作品栏——修饰键旁路只保留「打开主页」一条路径
+    if (event.ctrlKey || event.metaKey) {
       event.stopPropagation();
       window.open(author.profileUrl || `${config.URL_BASE}/user/${author.uid}`, "_blank");
       return;
@@ -182,10 +176,23 @@ class AuthorGrid extends VirtualGrid {
       return;
     }
 
+    // 批量模式：头像+昵称行（.following-main）参与选中；该行以外的卡片区域保持
+    // 正常点击语义——打开侧边作品栏，不再因批量模式而失效
     if (state.batchMode) {
-      batch.toggleBatchSelect(author.uid, checkbox, event.shiftKey);
+      if (event.target.closest(".following-main")) {
+        batch.toggleBatchSelect(author.uid, checkbox, event.shiftKey);
+        return;
+      }
+      sidebar.openSidebar(author);
       return;
     }
+
+    if (avatarHit) {
+      event.stopPropagation();
+      window.open(author.profileUrl || `${config.URL_BASE}/user/${author.uid}`, "_blank");
+      return;
+    }
+
     sidebar.openSidebar(author);
   }
 }
@@ -204,4 +211,12 @@ export const candidatesGrid = new AuthorGrid({
   emptyHint: "从关注域批量入库，或在「工具」中粘贴作者主页链接",
   filteredEmptyMsg: "没有符合筛选条件的候选作者",
   checkboxLabel: "选择候选作者",
+});
+// 回顾域作者批次：独立实例，domain=review 使 AuthorGrid 的点击守卫通过
+export const reviewAuthorsGrid = new AuthorGrid({
+  domain: "review",
+  emptyMsg: "还没有回顾批次",
+  emptyHint: "在顶栏选择来源域，点击「随机」抽取一批作者",
+  filteredEmptyMsg: "没有符合筛选条件的回顾作者",
+  checkboxLabel: "选择回顾作者",
 });

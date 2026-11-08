@@ -7,7 +7,7 @@ import { dialog } from './dialog.js';
 // ---------- Sidebar ----------
 class Sidebar {
   static STORAGE_KEY = "douyin_sidebar_width";
-  // 展开默认落到的档位列数（1-3 档中取 3 列，五域一致）；档位总数不设固定上限——
+  // 展开默认落到 3 列（各域一致）；档位总数由可用宽度上限决定，不设固定上限——
   // 上限由 #availableMax 天然决定（主网格只剩 1 列可读卡时的宽度），窗口放不下
   // 目标档时自动回退到最大可用档（2/1 列）
   static DEFAULT_COLS = 3;
@@ -39,7 +39,11 @@ class Sidebar {
   #pendingReactions = new Set();
   // 侧栏分页代际：切换作者时自增，作废上一作者在途回包（不得写入已清空的列表）
   #loadToken = 0;
-  // 侧栏跨五域共用（关注/候选由作者卡打开，作品/点赞/收藏经 Ctrl/Cmd+点击作者名打开）：
+  // 作者头数据：当前作者摘要 + 已加载作品数；头像探针代际防止旧作者回包覆盖新头
+  #currentAuthor = null;
+  #headerLoaded = 0;
+  #avatarToken = 0;
+  // 侧栏跨各域共用（关注/候选由作者卡打开，作品/点赞/收藏/回顾点击作者名打开）：
   // 展开/拖宽/锚点一律作用于当前域的活动网格
   #activeGrid() {
     return search.gridForDomain();
@@ -100,9 +104,9 @@ class Sidebar {
       // 侧栏内容恒绑定作者上下文：无作者时展开只会得到一个空面板，改为提示入口
       if (!state.currentAuthorSecUid) {
         dialog.showToast(
-          config.AUTHOR_RECORD_DOMAINS.includes(state.domain)
+          utils.isAuthorRecordDomain()
             ? "先点击一张作者卡，再展开作品栏"
-            : "先 Ctrl/Cmd+点击作品的作者名，再展开作品栏",
+            : "先点击作品的作者名，再展开作品栏",
         );
         return;
       }
@@ -125,9 +129,12 @@ class Sidebar {
     gridStyle.setProperty("--sb-grid-padding", config.SIDEBAR_GRID_PADDING + "px");
     // 保存宽度（含历史值）吸附到最近可用档恢复；窗口放不下 1 列档时归 0 收起。
     // 侧栏内容恒绑定作者上下文：作品型三域启动不恢复宽度（此时无作者，展开只会是空面板）
-    const savedWidth = config.AUTHOR_RECORD_DOMAINS.includes(state.domain) ? this.#loadWidth() : 0;
+    const savedWidth = utils.isAuthorRecordDomain() ? this.#loadWidth() : 0;
     this.setSidebarWidth(savedWidth ? this.#resolveWidth(savedWidth) : 0);
     this.#initResize();
+    dom.sidebarAuthorClose.addEventListener("click", () => {
+      if (!dom.sidebar.classList.contains("sidebar-zero")) this.toggleSidebar();
+    });
     dom.sidebarBody.addEventListener("scroll", () => {
       if (this.#scrollRafPending) return;
       this.#scrollRafPending = true;
@@ -206,6 +213,7 @@ class Sidebar {
   }
 
   setSidebarWidth(w) {
+    document.documentElement.style.setProperty("--sidebar-live-width", w > 0 ? w + "px" : "0px");
     if (w === 0) {
       // 收起即视线离开列表：停掉悬停预览，避免面板不可见时音频继续
       this.stopAllMedia();
@@ -261,6 +269,10 @@ class Sidebar {
     state.currentAuthorSecUid = secUid;
     state.sidebarCursor = null;
     state.sidebarLoading = false;
+    this.#headerLoaded = 0;
+    this.#applyAuthorHead(author);
+    // 作品型三域的摘要没有头像；已打开作者域也可能缺少头像——都由后台按 uid 补一次
+    this.#hydrateAuthorHead(author.uid);
 
     const needsExpand = dom.sidebar.classList.contains("sidebar-zero");
     if (needsExpand) {
@@ -276,6 +288,111 @@ class Sidebar {
     this.loadSidebarWorks(state.currentAuthorSecUid, null, true);
     // 校准只对作者域记录有效（作品型三域没有可回写的作者记录）
     if (config.AUTHOR_RECORD_DOMAINS.includes(state.domain)) this.#calibrateFollowing(author);
+  }
+
+  // 作者身份头：作者域使用完整档案，作品型三域使用点击时已获得的作者摘要；
+  // 同 UID 的另一作者域记录（若已加载）只用于补缺失头像/昵称，不回写任何域数据。
+  // 候选域历史记录可能只有 avatar 或头像字段为空，不能只看 avatarLarger。
+  #applyAuthorHead(author) {
+    const uid = String(author.uid);
+    // 优先查“另一个作者域”的记录补档案字段（当前域对象本身无需再查）；
+    // 作品型三域两侧都可作为已知作者摘要来源
+    const known =
+      state.domain === "candidates"
+        ? state.followings.find((f) => String(f.uid) === uid)
+        : state.domain === "followings"
+          ? state.candidates.find((f) => String(f.uid) === uid)
+          : state.followings.find((f) => String(f.uid) === uid) ||
+            state.candidates.find((f) => String(f.uid) === uid) ||
+            null;
+    const info = { ...known, ...author };
+    info.nickname = info.nickname || known?.nickname || "未知作者";
+    info.avatarLarger =
+      info.avatarLarger || info.avatar || known?.avatarLarger || known?.avatar || "";
+    this.#currentAuthor = info;
+    this.#renderAuthorHead();
+  }
+
+  #renderAuthorHead() {
+    const info = this.#currentAuthor;
+    if (!info) return;
+    const name = info.nickname || "未知作者";
+    dom.sidebarAuthorName.textContent = `@${name}`;
+    dom.sidebarAuthorAvatar.setAttribute("aria-label", name);
+
+    const status = state.domain === "followings" ? "关注" : state.domain === "candidates" ? "候选" : "";
+    dom.sidebarAuthorStatus.textContent = status;
+    dom.sidebarAuthorStatus.classList.toggle("hidden", !status);
+
+    // 昵称本身即作者主页入口，不再额外放独立主页按钮
+    const profileUrl = info.profileUrl || "";
+    if (profileUrl) dom.sidebarAuthorName.href = profileUrl;
+    else dom.sidebarAuthorName.removeAttribute("href");
+
+    this.#loadAuthorAvatar();
+    this.#syncAuthorHeadMeta();
+  }
+
+  // 作品型三域只有作者摘要（无头像/计数）：按 uid 从 background 一次取关注/候选档案补头。
+  // 候选域记录缺头像时同样能借关注域记录；失败静默保留摘要，不阻塞作品栏加载。
+  async #hydrateAuthorHead(uid) {
+    if (!uid) return;
+    const token = this.#loadToken;
+    const records = await services.loadAuthorByUid(uid);
+    if (!records || token !== this.#loadToken) return;
+    const info = this.#currentAuthor;
+    if (!info || String(info.uid) !== String(uid)) return;
+    const found = [records.candidates, records.followings].filter(Boolean);
+    if (!found.length) return;
+
+    const withAvatar = found.find((r) => r.avatarLarger || r.avatar);
+    const url = info.avatarLarger || info.avatar || withAvatar?.avatarLarger || withAvatar?.avatar || "";
+    if (url) info.avatarLarger = url;
+    for (const r of found) {
+      if (!info.followerCount && r.followerCount) info.followerCount = r.followerCount;
+      if (!info.awemeCount && r.awemeCount) info.awemeCount = r.awemeCount;
+      if (!info.lastUpdateAt && r.lastUpdateAt) info.lastUpdateAt = r.lastUpdateAt;
+    }
+    this.#renderAuthorHead();
+  }
+
+  #syncAuthorHeadMeta() {
+    const info = this.#currentAuthor;
+    if (!info) return;
+    const parts = [];
+    if (info.followerCount != null) parts.push(`${utils.formatCount(info.followerCount)} 粉丝`);
+    if (info.awemeCount != null) parts.push(`${utils.formatCount(info.awemeCount)} 作品`);
+    if (info.lastUpdateAt) parts.push(`最近更新 ${utils.formatUpdateTime(info.lastUpdateAt)}`);
+    if (this.#headerLoaded > 0) parts.push(`已加载 ${this.#headerLoaded} 个作品`);
+    const text = parts.join(" · ") || "作者作品栏";
+    dom.sidebarAuthorSub.textContent = text;
+  }
+
+  // 头像走探针先行：成功才提交背景图，失败保留昵称首字占位；代际 + secUid 双校验
+  // 防止切换作者后在途旧图覆盖新头
+  #loadAuthorAvatar() {
+    const info = this.#currentAuthor;
+    const secUid = state.currentAuthorSecUid;
+    const token = ++this.#avatarToken;
+    const avatar = dom.sidebarAuthorAvatar;
+    const name = info?.nickname || "未知作者";
+    const initial = name.trim().charAt(0).toUpperCase() || "?";
+    avatar.textContent = initial;
+    avatar.style.backgroundImage = "";
+    const url = info?.avatarLarger || info?.avatar || "";
+    if (!url) return;
+    const probe = new Image();
+    probe.onload = () => {
+      if (token !== this.#avatarToken || state.currentAuthorSecUid !== secUid) return;
+      avatar.style.backgroundImage = utils.cssUrl(url);
+      avatar.textContent = "";
+    };
+    probe.onerror = () => {
+      if (token !== this.#avatarToken || state.currentAuthorSecUid !== secUid) return;
+      avatar.style.backgroundImage = "";
+      avatar.textContent = initial;
+    };
+    probe.src = url;
   }
 
   // 打开侧边栏即顺带校准该用户的权威计数与档案字段（profile/other + 作品第一页取最近更新日期）：成功后同步
@@ -320,6 +437,20 @@ class Sidebar {
       // 在途旧探针），无需在此逐节点打补丁
       if (card && !card.classList.contains(grid.skeletonClass)) {
         grid.fillCard(card, entry);
+      }
+      if (state.currentAuthorSecUid === secUid) {
+        const prev = this.#currentAuthor || {};
+        this.#currentAuthor = {
+          ...prev,
+          ...entry,
+          // 校准响应缺失字段时保留头上一次的值，避免头文案/头像退化
+          nickname: entry.nickname || prev.nickname,
+          avatarLarger: entry.avatarLarger || prev.avatarLarger || prev.avatar || "",
+          followerCount: entry.followerCount ?? prev.followerCount,
+          awemeCount: entry.awemeCount ?? prev.awemeCount,
+          lastUpdateAt: entry.lastUpdateAt ?? prev.lastUpdateAt,
+        };
+        this.#renderAuthorHead();
       }
     }
   }
@@ -388,6 +519,8 @@ class Sidebar {
         }
         dom.sidebarWorksGrid.appendChild(fragment);
         state.sidebarCursor = res.hasMore ? res.maxCursor || "" : null;
+        this.#headerLoaded += res.works.length;
+        this.#syncAuthorHeadMeta();
         // 新条目只进"观察圈"：进入视口才升级（发探针+绘制），滚出远圈后降级回占位态
         this.#ensureSideObservers();
         for (const el of items) this.#sideFillObs.observe(el);
@@ -435,7 +568,7 @@ class Sidebar {
   // 主网格保底宽度按域取：作者域沿用 SIDEBAR_MAIN_GRID_MIN（关注卡单列可读下限）；
   // 作品型三域取作品卡带宽下限（理想卡宽 × WORK_CARD_SIZE_BAND_MIN），保住一列可读的作品卡
   #mainGridMin() {
-    return config.AUTHOR_RECORD_DOMAINS.includes(state.domain)
+    return utils.isAuthorRecordDomain()
       ? config.SIDEBAR_MAIN_GRID_MIN
       : Math.round(config.CARD_SIZE_FALLBACK * config.WORK_CARD_SIZE_BAND_MIN);
   }
@@ -506,7 +639,7 @@ class Sidebar {
     dom.sidebarWorksGrid.style.gridTemplateColumns = `repeat(${n}, ${config.SIDEBAR_CARD_SIZE}px)`;
   }
 
-  // 展开默认落到 3 列档（DEFAULT_COLS，五域一致），不读保存偏好（保存值仅页面加载
+  // 展开默认落到 3 列档（DEFAULT_COLS，各域一致），不读保存偏好（保存值仅页面加载
   // 恢复/拖拽落定生效）；窗口放不下 3 列时回退到当前最大可用档（2/1 列），
   // 一个都放不下归 0 收起
   #expandWidth() {
@@ -769,7 +902,6 @@ class Sidebar {
     const id = String(work.awemeId);
     const dateEl = item.querySelector(".sidebar-work-date");
     dateEl.textContent = utils.formatPublishDate(work.createTime) || "-";
-    if (work.createTime) dateEl.title = new Date(work.createTime * 1000).toLocaleString();
 
     this.#workMeta.set(item, {
       url,
@@ -794,7 +926,7 @@ class Sidebar {
   }
 
   // ♥/★ 两态常显 + 点击切换：存在 = .on 高亮、不存在暗色；请求在途禁用并提示。
-  // title/aria-label 描述点击动作（点赞并加入点赞域 / 取消点赞并移出点赞域）
+  // 可见文案已表达点赞/收藏，额外语义只挂 aria-label（不重复挂 title tooltip）
   #syncPresenceState(item, domain) {
     const meta = this.#workMeta.get(item);
     if (!meta || !meta.work) return;
@@ -807,7 +939,6 @@ class Sidebar {
     el.classList.toggle("on", active);
     el.classList.toggle("pending", pending);
     el.disabled = pending;
-    el.title = title;
     el.setAttribute("aria-label", title);
     el.setAttribute("aria-pressed", String(active));
   }
@@ -824,9 +955,8 @@ class Sidebar {
     btn.disabled = inWorks || pending;
     btn.classList.toggle("in-works", inWorks);
     btn.textContent = pending ? "存入中…" : inWorks ? "已入库" : "存入";
-    // 状态随文案同步（禁用态不靠 title 提示可点性，只描述当前归属）
+    // 状态随文案同步；aria-label 只服务辅助技术，不重复挂可见 tooltip
     const label = inWorks ? "已在作品域" : "存入作品域";
-    btn.title = label;
     btn.setAttribute("aria-label", label);
   }
 

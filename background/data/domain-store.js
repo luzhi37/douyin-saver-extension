@@ -19,15 +19,15 @@ function isSameRecord(a, b) {
 
 class DomainStore {
   storeName(domain) {
-    return DOMAIN_CONFIG[domain || CONFIG.STORAGE_KEYS.WORKS].storeName;
+    return DOMAIN_CONFIG[domain].storeName;
   }
 
   groupsName(domain) {
-    return DOMAIN_CONFIG[domain || CONFIG.STORAGE_KEYS.WORKS].groupsName;
+    return DOMAIN_CONFIG[domain].groupsName;
   }
 
   defaultGroups(domain) {
-    return DOMAIN_CONFIG[domain || CONFIG.STORAGE_KEYS.WORKS].defaultGroups;
+    return DOMAIN_CONFIG[domain].defaultGroups;
   }
 
   toStorageId(domain, id) {
@@ -62,12 +62,17 @@ class DomainStore {
   }
 
   mergeWork(w, old) {
+    // 类型归一化是 groupId_uid_sort 索引的硬前提：uid/groupId/awemeId 为字符串、
+    // createTime/savedAt 为数字。索引对 undefined 分量不建项，字段类型混杂会让同一
+    // 作者被拆成数字/字符串两个簇（历史导入 JSON 可能携带数字 uid）
+    const uid = w.uid != null && w.uid !== "" ? String(w.uid) : String(old?.uid || "");
+    const createTime = Number(w.createTime) || utils.awemeIdCreateTime(w.awemeId) || 0;
     const merged = {
       ...w,
-      groupId: old?.groupId || w.groupId || CONFIG.GROUPS.DEFAULT_ID,
-      savedAt: old?.savedAt || w.savedAt || Date.now(),
-      // createTime 恒非零：旧备份导入的 0 值记录按 aweme_id 高 32 位推导（发布 Unix 秒）兜底
-      createTime: w.createTime || utils.awemeIdCreateTime(w.awemeId) || 0,
+      uid,
+      groupId: String(old?.groupId || w.groupId || CONFIG.GROUPS.DEFAULT_ID),
+      savedAt: Number(old?.savedAt || w.savedAt) || Date.now(),
+      createTime,
     };
     // 旧记录已存长效 v1/play 链接而新结果是短效 CDN 直链 → 保留旧链接，
     // 避免手动添加的作品被同步以短效直链覆盖降级
@@ -75,6 +80,9 @@ class DomainStore {
       merged.video = old.video;
       merged.videoExpireAt = old.videoExpireAt || 0;
     }
+    // 已废弃字段：旧版导入/历史记录仍可能携带，落库前统一剔除
+    delete merged.desc;
+    delete merged.authorFollowed;
     return merged;
   }
 

@@ -7,7 +7,7 @@ import { config, dom, state } from '../core.js';
 // dom.dialogTitle/dialogBody/dialogFooter/dialogClose 四字段由本类动态指向顶层实例元素，调用方
 // 即时访问自动命中顶层（仅本类可写）；dom.dialogOverlay 恒指基层，其 hidden 即「有无弹窗」全局信号。
 class Dialog {
-  #toastTimer = null;
+  #toastTimers = new Map();
   #lastFocused = null;
   #layers = []; // { overlay, title, body, footer, onClose }
 
@@ -269,17 +269,60 @@ class Dialog {
     this.addDialogBtn("好的", "primary", () => this.closeDialog());
   }
 
-  // 分型 toast：info 默认；success/error 带左色条，error 加长驻留
+  // 分型 toast：右下角堆叠（最多 3 条），info/success 短驻留、error 长驻留；
+  // message 可为字符串或 { title, description }，兼容全部既有调用点
   showToast(message, type = "info") {
-    const toast = document.getElementById("dy-options-toast");
-    toast.textContent = message;
-    toast.classList.remove("hide", "toast-info", "toast-success", "toast-error");
-    toast.classList.add("show", `toast-${type}`);
-    if (this.#toastTimer) clearTimeout(this.#toastTimer);
-    this.#toastTimer = setTimeout(() => {
-      toast.classList.remove("show");
-      toast.classList.add("hide");
-    }, type === "error" ? config.TOAST_ERROR_DURATION : config.TOAST_DURATION);
+    const stack = dom.toastStack;
+    if (!stack) return;
+    const tone = ["info", "success", "error"].includes(type) ? type : "info";
+    const payload = typeof message === "string" ? { title: message } : message || {};
+    const iconId = tone === "success" ? "icon-toast-check" : tone === "error" ? "icon-error" : "icon-info";
+
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${tone}`;
+    // 容器已 aria-live=polite；仅错误提升为 alert，避免嵌套 live region 重复播报
+    if (tone === "error") toast.setAttribute("role", "alert");
+    toast.innerHTML =
+      `<span class="toast-icon"><svg width="13" height="13" aria-hidden="true"><use href="#${iconId}"></use></svg></span>` +
+      '<div class="toast-body"><div class="toast-title"></div>' +
+      (payload.description ? '<div class="toast-desc"></div>' : "") +
+      "</div>" +
+      '<button class="toast-close" type="button" aria-label="关闭提示">' +
+      '<svg width="12" height="12" aria-hidden="true"><use href="#icon-close"></use></svg></button>';
+
+    toast.querySelector(".toast-title").textContent = String(payload.title || "");
+    if (payload.description) {
+      toast.querySelector(".toast-desc").textContent = String(payload.description);
+    }
+    toast.querySelector(".toast-close").addEventListener("click", () => this.#dismissToast(toast));
+
+    // 超出容量先移除最旧一条（连同其计时器），保证新消息不被静默丢弃
+    while (stack.children.length >= 3) {
+      this.#dismissToast(stack.firstElementChild, { immediate: true });
+    }
+    stack.appendChild(toast);
+
+    const timer = setTimeout(
+      () => this.#dismissToast(toast),
+      tone === "error" ? config.TOAST_ERROR_DURATION : config.TOAST_DURATION,
+    );
+    this.#toastTimers.set(toast, timer);
+  }
+
+  #dismissToast(toast, { immediate = false } = {}) {
+    if (!toast || !toast.isConnected) return;
+    const timer = this.#toastTimers.get(toast);
+    if (timer) {
+      clearTimeout(timer);
+      this.#toastTimers.delete(toast);
+    }
+    if (immediate) {
+      toast.remove();
+      return;
+    }
+    if (toast.classList.contains("hide")) return;
+    toast.classList.add("hide");
+    setTimeout(() => toast.remove(), 220);
   }
 
   showGroupSelectDialog(title, groups, onSelect) {

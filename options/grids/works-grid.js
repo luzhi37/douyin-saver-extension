@@ -34,7 +34,7 @@ class WorksGrid extends VirtualGrid {
     this.#bindMediaEvents();
   }
 
-  // 行高解析钩子（.work-card 的 height calc 同式：卡宽 × 4/3 + 信息块 44 + 行距 11）：
+  // 行高解析钩子（.work-card 的 height calc 同式：卡宽 × 4/3 + 信息块 30 + 行距 11）：
   // 改宽当帧头部占位按解析式落笔，免一次实测重排；返回 0 表示未落笔（走实测缓存）
   rowHeightFor(cardW) {
     return cardW > 0 ? (cardW * 4) / 3 + config.CARD_HEIGHT_OFFSET + config.CARD_GAP : 0;
@@ -57,6 +57,7 @@ class WorksGrid extends VirtualGrid {
     if (filtered) {
       this.render(view, "没有符合筛选条件的作品", "调整关键词或筛选条件后重试", totalSlots, premountCap);
     } else {
+      // 各域统一轻量空态（图标 + 文案 + 提示），不再展示首次使用行动区
       this.render(view, this.emptyText, this.emptyHintText, totalSlots, premountCap);
     }
   }
@@ -124,16 +125,10 @@ class WorksGrid extends VirtualGrid {
     this.#applyInfo(card, work);
   }
 
-  // 卡片标题/作者与详情页同款交互：标题链作品页、作者链作者主页（新标签打开）；
-  // 无 authorHomeUrl 时作者位与详情页一致整行不显示（置空，行高由 .work-info 固定）
+  // 卡片作者为外链锚点：链作者主页（Ctrl/Cmd+点击新标签打开，普通点击打开侧边
+  // 作品栏，见 handleClick）；无 authorHomeUrl 时作者位整行不显示（置空，行高由
+  // .work-info 固定）。作品标题已不再入库，信息条只保留作者与发布日期
   #applyInfo(card, work) {
-    const title = card.querySelector(".work-title-text");
-    if (title) {
-      const typePath = work.type === "note" ? "note" : "video";
-      title.textContent = work.desc || "无作品描述";
-      title.href = `${config.URL_BASE}/${typePath}/${work.awemeId}`;
-      title.title = "在抖音打开作品页";
-    }
     // 发布日期与作者分支解耦：无 authorHomeUrl 的记录日期仍靠右显示
     const createTimeEl = card.querySelector(".work-create-time");
     if (createTimeEl) {
@@ -146,17 +141,15 @@ class WorksGrid extends VirtualGrid {
     if (work.authorHomeUrl) {
       author.textContent = `@${work.nickname || "未知作者"}`;
       author.href = work.authorHomeUrl;
-      author.title = "打开作者主页（Ctrl/Cmd+点击打开作品栏）";
     } else {
       author.textContent = "";
       author.removeAttribute("href");
-      author.removeAttribute("title");
     }
   }
 
   // 作者域状态 chip（关注/候选）：按 uid 主键集判定（跨分组），命中才显示。节点随填充
   // 懒创建、降级移除（同勾选框，骨架卡不多带节点）；chip 不可点击（pointer-events:none），
-  // 不改变 .work-info 44px 高度数学（14px 行高嵌在 16px 作者行内）
+  // 不改变 .work-info 30px 高度数学（14px 行高嵌在 16px 作者行内）
   #applyAuthorFlags(card, work) {
     card.dataset.uid = String(work.uid || "");
     const row = card.querySelector(".work-author-row");
@@ -167,7 +160,6 @@ class WorksGrid extends VirtualGrid {
       following = document.createElement("span");
       following.className = "work-author-flag work-author-flag-following hidden";
       following.textContent = "关注";
-      following.title = "该作者在你的关注域中";
       row.insertBefore(following, date);
     }
     let candidate = row.querySelector(".work-author-flag-candidate");
@@ -175,7 +167,6 @@ class WorksGrid extends VirtualGrid {
       candidate = document.createElement("span");
       candidate.className = "work-author-flag work-author-flag-candidate hidden";
       candidate.textContent = "候选";
-      candidate.title = "该作者在你的候选域中";
       row.insertBefore(candidate, date);
     }
     const uid = card.dataset.uid;
@@ -261,23 +252,16 @@ class WorksGrid extends VirtualGrid {
     });
   }
 
-  // 原地还原骨架：清空媒体区与标题/作者，根节点与 .work-media/.work-info 容器保留
+  // 原地还原骨架：清空媒体区与作者，根节点与 .work-media/.work-info 容器保留
   clearCard(card) {
     // #demote 等摘除媒体子树的路径经此统一停掉预览，防止游离视频残留音频
     const previewVideo = card.querySelector(".work-video-player");
     if (previewVideo) this.#stopPreview(previewVideo);
     card.querySelector(".work-media")?.replaceChildren();
-    const titleText = card.querySelector(".work-title-text");
-    if (titleText) {
-      titleText.textContent = "";
-      titleText.removeAttribute("href");
-      titleText.removeAttribute("title");
-    }
     const author = card.querySelector(".work-author");
     if (author) {
       author.textContent = "";
       author.removeAttribute("href");
-      author.removeAttribute("title");
     }
     const createTimeEl = card.querySelector(".work-create-time");
     if (createTimeEl) {
@@ -325,30 +309,23 @@ class WorksGrid extends VirtualGrid {
   }
 
   handleClick(event, work, el) {
-    // 标题/作者是详情页同款外链（新标签打开抖音页），非批量模式下点击不再触发进详情；
-    // 批量模式下链接让位于勾选：阻止默认导航，按普通卡片选中处理（外链旁路已移除）。
-    // 作者名另有 Ctrl/Cmd 旁路：打开该作者作品栏（两模式均不切换勾选、不退出批量）
-    if (event.target.closest(".work-author")) {
-      if (event.ctrlKey || event.metaKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        sidebar.openSidebar(
-          { uid: work.uid, nickname: work.nickname, profileUrl: work.authorHomeUrl },
-          el,
-        );
-        return;
-      }
-      if (!state.batchMode) {
+    // 作者名是外链（作者主页）：Ctrl/Cmd+点击走浏览器默认行为在新标签打开，不进入
+    // 侧栏/详情/勾选（两模式一致）；无修饰键时普通点击打开侧边作品栏——批量模式同样
+    // 生效，链接点击不参与选中（选中命中区仅为 .work-media 内容区）
+    const ctrl = event.ctrlKey || event.metaKey;
+    const authorLink = event.target.closest(".work-author");
+    if (authorLink) {
+      if (ctrl) {
         event.stopPropagation();
         return;
       }
       event.preventDefault();
-    } else if (event.target.closest(".work-title-text")) {
-      if (!state.batchMode) {
-        event.stopPropagation();
-        return;
-      }
-      event.preventDefault();
+      event.stopPropagation();
+      sidebar.openSidebar(
+        { uid: work.uid, nickname: work.nickname, profileUrl: work.authorHomeUrl },
+        el,
+      );
+      return;
     }
     if (event.target.closest(".work-checkbox")) {
       event.stopPropagation();
@@ -378,7 +355,11 @@ class WorksGrid extends VirtualGrid {
       return;
     }
     if (state.batchMode) {
-      batch.toggleBatchSelect(work.awemeId, el.querySelector(".work-checkbox"), event.shiftKey);
+      // 选中命中区 = 卡片内容区（.work-media）；作者/日期所在信息条不改变选中态。
+      // 播放/静音/进度控件已在上面各自收口，不会进入这里
+      if (event.target.closest(".work-media")) {
+        batch.toggleBatchSelect(work.awemeId, el.querySelector(".work-checkbox"), event.shiftKey);
+      }
       return;
     }
     detail.openDetail(work.awemeId);
@@ -624,4 +605,9 @@ export const favoritesGrid = new WorksGrid({
 export const collectionsGrid = new WorksGrid({
   emptyMsg: "还没有同步的收藏作品",
   emptyHint: "点击菜单「同步」拉取本账户的收藏列表",
+});
+// 回顾域作品批次：复用作品卡与详情播放器，itemKey 仍为源作品 awemeId
+export const reviewWorksGrid = new WorksGrid({
+  emptyMsg: "还没有回顾批次",
+  emptyHint: "点击「重新配置」从任意域随机抽取一批数据",
 });

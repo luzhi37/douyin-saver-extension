@@ -231,14 +231,16 @@ class IndependentTasks {
     }
   }
 
-  // 侧边栏卡片单作品收藏/取消收藏（独立模式）：与批量取消同一 collect 端点，
-  // action 由 active 决定；本地域落库/删除由路由层收口（点赞无独立分支，路由层拒绝）
-  async setReaction(awemeId, active) {
-    if (!awemeId) return { ok: false, error: "EMPTY" };
+  // 收藏端点鉴权：savedCookie 门禁 + ticket-guard 公钥（批次内只读一次）
+  async #collectionAuth() {
+    const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
+    if (!savedCookie) return { ok: false, error: "NO_COOKIE" };
+    return { ok: true, key: (browserFeatures && browserFeatures.securityKey) || "" };
+  }
+
+  // 收藏端点 POST 单一实现：active=false 取消、true 收藏；单作品切换与批量取消共用
+  async #postCollectionAction(awemeId, active, key) {
     try {
-      const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
-      if (!savedCookie) return { ok: false, error: "NO_COOKIE" };
-      const key = (browserFeatures && browserFeatures.securityKey) || "";
       const ep = CONFIG.CANCEL.collection;
       const resp = await fetch(ep.url, {
         method: "POST",
@@ -257,14 +259,21 @@ class IndependentTasks {
     }
   }
 
+  // 侧边栏卡片单作品收藏/取消收藏（独立模式）：与批量取消同一 collect 端点，
+  // action 由 active 决定；本地域落库/删除由路由层收口（点赞无独立分支，路由层拒绝）
+  async setReaction(awemeId, active) {
+    if (!awemeId) return { ok: false, error: "EMPTY" };
+    const auth = await this.#collectionAuth();
+    if (!auth.ok) return auth;
+    return this.#postCollectionAction(awemeId, active, auth.key);
+  }
+
   async cancel(awemeIds, persistDomain, sendResponse) {
     try {
       if (!Array.isArray(awemeIds) || awemeIds.length === 0) return sendResponse({ ok: false, error: "EMPTY" });
-      const { savedCookie, browserFeatures } = await chrome.storage.local.get(["savedCookie", "browserFeatures"]);
-      if (!savedCookie) return sendResponse({ ok: false, error: "NO_COOKIE" });
-      const key = (browserFeatures && browserFeatures.securityKey) || "";
-      // 独立模式仅支持取消收藏；取消点赞在路由层已拒绝（UNSUPPORTED_INDEPENDENT）
-      const ep = CONFIG.CANCEL.collection;
+      const auth = await this.#collectionAuth();
+      if (!auth.ok) return sendResponse(auth);
+      const key = auth.key;
 
       const requestId = crypto.randomUUID();
       const guard = utils.withCancelGuard();
@@ -272,21 +281,8 @@ class IndependentTasks {
       sendResponse({ ok: true, requestId, total: awemeIds.length });
 
       for (let i = 0; i < awemeIds.length && !guard.isCancelled(); i++) {
-        let ok = false;
-        try {
-          const resp = await fetch(ep.url, {
-            method: "POST",
-            credentials: "include",
-            referrer: ep.referrer,
-            referrerPolicy: "unsafe-url",
-            headers: {
-              "content-type": ep.type,
-              ...(key ? { "bd-ticket-guard-ree-public-key": key } : {}),
-            },
-            body: ep.body(awemeIds[i]),
-          });
-          ok = resp.ok;
-        } catch (_) {}
+        const result = await this.#postCollectionAction(awemeIds[i], false, key);
+        const ok = result.ok;
         if (!ok) errors.push({ awemeId: awemeIds[i], error: "FAILED" });
         utils.sendMessageSafe({
           type: "CANCEL_PROGRESS",

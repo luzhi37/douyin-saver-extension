@@ -4,11 +4,11 @@ import { dialog } from '../components/dialog.js';
 import { sync } from './sync.js';
 import { domainScanSync } from './domain-scan-sync.js';
 
-// ---------- 工具弹窗（作者入库 + 作者域批量校准 + 未关注清理 + uid 反查） ----------
-// 菜单「工具」弹窗：两行输入各配一个域入库按钮 + 一行两个批量校准按钮 + 一行两个清理按钮
+// ---------- 工具弹窗（作者入库 + 作者域批量校准 + 清理 + uid 反查） ----------
+// 菜单「工具」弹窗：两行输入各配一个域入库按钮 + 一行两个批量校准按钮 + 两行清理按钮
 // + 底部 uid 反查区块。
-// 清理 = 本地短操作：关注全集比对后把点赞/收藏域未关注作者的作品移入「稍后删除」
-// （候选域同名逻辑归「同步」按钮，不在本弹窗重复提供）。
+// 清理 = 本地短操作：关注全集比对后把点赞/收藏域未关注作者的作品、候选域已关注作者
+// 移入「稍后删除」（候选域无账号同步源，重叠比对即其原「同步」按钮功能，现归本弹窗）。
 // 作品域入库 = IMPORT_USER_WORKS 分页循环长任务（进度态复用 syncDialogBodyTemplate，关闭即取消）；
 // 候选域入库 = IMPORT_CANDIDATE 单请求收录作者档案（短操作，toast 反馈）；
 // 校准作品/粉丝数 = CALIBRATE_FOLLOWINGS / CALIBRATE_CANDIDATES 批量长任务（按域全部作者，
@@ -35,6 +35,7 @@ class AuthorImport {
   #uidProfileUrl = "";
   #btnCleanupFavorites = null;
   #btnCleanupCollections = null;
+  #btnCleanupCandidates = null;
   #cleanupBusy = false;
   // 弹窗代际：关闭/重开自增，清理短操作在 await 后校验，防止已关闭会话的迟到结果
   // 把确认层推进新的工具弹窗
@@ -77,6 +78,10 @@ class AuthorImport {
         <button class="dy-btn flex-inline-center dy-btn-primary btn-cleanup-collections" aria-label="清理收藏域未关注作者作品">清理收藏域</button>
       </div>
       <div class="import-row">
+        <span class="import-calibrate-hint">将候选域已关注作者移入「稍后删除」分组（关注域记录保留）</span>
+        <button class="dy-btn flex-inline-center dy-btn-primary btn-cleanup-candidates" aria-label="清理候选域已关注作者">清理候选域</button>
+      </div>
+      <div class="import-row">
         <input class="import-input uid-input" placeholder="抖音用户 uid（纯数字）" inputmode="numeric" spellcheck="false" aria-label="抖音用户 uid">
         <button class="dy-btn flex-inline-center dy-btn-primary btn-resolve-uid">获取主页链接</button>
       </div>
@@ -100,6 +105,7 @@ class AuthorImport {
     this.#uidCopyBtn = body.querySelector(".btn-copy-uid-link");
     this.#btnCleanupFavorites = body.querySelector(".btn-cleanup-favorites");
     this.#btnCleanupCollections = body.querySelector(".btn-cleanup-collections");
+    this.#btnCleanupCandidates = body.querySelector(".btn-cleanup-candidates");
     dialog.showDialog("工具", body, [], () => this.closeDialog(), { autoFocus: false });
 
     btnWorks.addEventListener("click", () => this.startWorksImport());
@@ -120,6 +126,7 @@ class AuthorImport {
     });
     this.#btnCleanupFavorites.addEventListener("click", () => this.#cleanupUnfollowed("favorites"));
     this.#btnCleanupCollections.addEventListener("click", () => this.#cleanupUnfollowed("collections"));
+    this.#btnCleanupCandidates.addEventListener("click", () => this.#cleanupFollowedCandidates());
   }
 
   closeDialog() {
@@ -136,6 +143,27 @@ class AuthorImport {
     this.#uidProfileUrl = "";
     this.#uidBusy = false;
     this.#btnCleanupFavorites = this.#btnCleanupCollections = null;
+    this.#btnCleanupCandidates = null;
+  }
+
+  // 清理流程公共前置：加载关注全集（失败/为空拒绝）并解析本域「稍后删除」分组。
+  // 弹窗关闭/重开（gen 变化）返回 null，调用方直接退出。
+  async #prepareCleanup(domain, gen) {
+    const followedOk = await services.loadFollowedUids();
+    if (gen !== this.#cleanupGen) return null;
+    if (!followedOk) {
+      dialog.showToast("读取关注域失败，请稍后重试", "error");
+      return null;
+    }
+    if (state.followedUids.size === 0) {
+      dialog.showToast("关注域暂无数据，请先同步关注域后再清理", "info");
+      return null;
+    }
+    const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain });
+    if (gen !== this.#cleanupGen) return null;
+    return {
+      trashGroup: (groupsRes.groups || []).find((g) => g.name === config.TRASH_GROUP_NAME),
+    };
   }
 
   // ---------- 清理点赞/收藏域未关注作者作品 ----------
@@ -150,20 +178,10 @@ class AuthorImport {
     this.#setCleanupButtonsDisabled(true);
     const gen = this.#cleanupGen;
     try {
-      const followedOk = await services.loadFollowedUids();
-      if (gen !== this.#cleanupGen) return; // 弹窗已关闭/重开：迟到的读取结果作废
-      if (!followedOk) {
-        dialog.showToast("读取关注域失败，请稍后重试", "error");
-        return;
-      }
-      if (state.followedUids.size === 0) {
-        dialog.showToast("关注域暂无数据，请先同步关注域后再清理", "info");
-        return;
-      }
+      const ctx = await this.#prepareCleanup(domain, gen);
+      if (!ctx) return;
       const meta = config.DOMAINS_META[domain];
-      const groupsRes = await services.bgMsg({ type: "GET_GROUPS", domain });
-      if (gen !== this.#cleanupGen) return;
-      const trashGroup = (groupsRes.groups || []).find((g) => g.name === config.TRASH_GROUP_NAME);
+      const trashGroup = ctx.trashGroup;
       // keyset 分页逐页比对、只留 awemeId（不做整域单发大载荷）；已位于「稍后删除」的条目跳过
       const ids = [];
       let res = await services.bgMsg({ type: "GET_" + domain.toUpperCase(), groupId: "all", page: 0 });
@@ -236,8 +254,59 @@ class AuthorImport {
   }
 
   #setCleanupButtonsDisabled(disabled) {
-    for (const btn of [this.#btnCleanupFavorites, this.#btnCleanupCollections]) {
+    for (const btn of [this.#btnCleanupFavorites, this.#btnCleanupCollections, this.#btnCleanupCandidates]) {
       if (btn) btn.disabled = disabled;
+    }
+  }
+
+  // ---------- 清理候选域已关注作者 ----------
+  // 候选域无账号同步源（原「同步」按钮功能迁入本弹窗）：按关注域 uid 全集做本地重叠比对
+  // （不发网络请求），重叠作者确认后移入「稍后删除」分组（不自动删除，保留候选分组与
+  // savedAt 台账）。判定口径同点赞/收藏清理：已位于「稍后删除」的条目不重复计入；
+  // 关注域为空时拒绝执行，避免「零重叠」的假阳性结论。
+  async #cleanupFollowedCandidates() {
+    if (this.#cleanupBusy) {
+      dialog.showToast("正在处理中，请稍候", "info");
+      return;
+    }
+    this.#cleanupBusy = true;
+    this.#setCleanupButtonsDisabled(true);
+    const gen = this.#cleanupGen;
+    try {
+      const ctx = await this.#prepareCleanup("candidates", gen);
+      if (!ctx) return;
+      const trashGroup = ctx.trashGroup;
+      // 候选域作者档案单发全量（无分页），一次取回后本地比对；已位于「稍后删除」的跳过
+      const res = await services.bgMsg({ type: "GET_CANDIDATES", groupId: "all" });
+      if (gen !== this.#cleanupGen) return;
+      if (res.error || !Array.isArray(res.candidates)) {
+        dialog.showToast("读取候选域失败：" + (res.error || "未知错误"), "error");
+        return;
+      }
+      const uids = [];
+      for (const c of res.candidates) {
+        if (!c || !c.uid) continue;
+        if (trashGroup && c.groupId === trashGroup.id) continue;
+        if (state.followedUids.has(String(c.uid))) uids.push(String(c.uid));
+      }
+      if (uids.length === 0) {
+        dialog.showToast("未发现候选域已关注作者", "info");
+        return;
+      }
+      this.#confirmTrash(
+        "candidates",
+        uids,
+        "清理候选域已关注作者",
+        `发现 ${uids.length} 位候选作者已在关注域，可将它们移入「${config.TRASH_GROUP_NAME}」分组（关注域记录保留）。`,
+        "位作者",
+        async (gid) => {
+          const res = await services.moveAuthorRecords("candidates", uids, gid);
+          if (res.error || res.ok !== true) throw new Error(res.error || "MOVE_FAILED");
+        },
+      );
+    } finally {
+      this.#cleanupBusy = false;
+      this.#setCleanupButtonsDisabled(false);
     }
   }
 

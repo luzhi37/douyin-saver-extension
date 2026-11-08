@@ -1,0 +1,25 @@
+// ---------- 运行时参数默认值（options 设置面板与 background CONFIG 共用单一来源） ----------
+// 纯常量模块：不依赖 chrome.* / DOM；两侧改动默认值只改这一处。
+export const RUNTIME_DEFAULTS = Object.freeze({
+  timeoutRequest: 30000,
+  timeoutSecurityStatus: 5000,
+  syncWorksDelayMin: 500,
+  syncWorksDelayMax: 1000,
+  syncFollowingsDelayMin: 500,
+  syncFollowingsDelayMax: 1000,
+  syncFavoritesDelayMin: 500,
+  syncFavoritesDelayMax: 1000,
+  syncCollectionDelayMin: 500,
+  syncCollectionDelayMax: 1000,
+  cancelFavoritesDelayMin: 500,
+  cancelFavoritesDelayMax: 1000,
+  cancelCollectionDelayMin: 500,
+  cancelCollectionDelayMax: 1000,
+  importWorksDelayMin: 500,
+  importWorksDelayMax: 1000,
+  syncBatchSize: 40,
+  syncBatchPauseMin: 10000,
+  syncBatchPauseMax: 20000,
+  syncKeepaliveInterval: 2000,
+  syncRetryMax: 2,
+});

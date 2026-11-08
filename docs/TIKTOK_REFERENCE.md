@@ -51,7 +51,7 @@ ChaCha20 + MD5 + 自定义 Base64（无 padding）。**本扩展已移除**（20
 | `/aweme/post/`                    | GET  | `sec_user_id, max_cursor, count`         | `aweme_list`   |
 | `/aweme/favorite/`                | GET  | `sec_user_id, max_cursor, count`         | `aweme_list`   |
 | `/aweme/listcollection/`          | POST | body: `cursor, count`                    | `aweme_list`   |
-| `/user/following/list/`           | GET  | `sec_user_id, count, offset`（不传 `user_id`——归属由 Cookie 决定，多账号下传错会 2096） | `followings`   |
+| `/user/following/list`            | GET  | `sec_user_id, count, offset`（不传 `user_id`——归属由 Cookie 决定，多账号下传错会 2096） | `followings`   |
 | `/aweme/v1/web/commit/item/digg/` | POST | body: `aweme_id, item_type=0, type=0`    | —              |
 | `/aweme/v1/web/aweme/collect/`    | POST | body: `action=0, aweme_id, aweme_type=0` | —              |
 | `/im/user/info/`                  | POST | body: `sec_user_ids=[...]`               | `data`         |
