@@ -1,6 +1,6 @@
 // ---------- WorksGrid（作品/点赞/收藏三域共用） ----------
 import { config, dom, state, utils } from '../core.js';
-import { VirtualGrid } from './virtual-grid.js';
+import { VirtualGrid, noteProgrammaticScroll } from './virtual-grid.js';
 import { search } from '../components/search-bar.js';
 import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
@@ -384,6 +384,7 @@ class WorksGrid extends VirtualGrid {
         const target = cardTopInScroll - Math.min(grid.clientHeight / 3, cardTopInScroll);
         // 滚动容器是 #mainGrid 自身（overflow-y:auto），对 window 调 scrollTo 不生效
         grid.scrollTo({ top: Math.max(0, target) });
+        noteProgrammaticScroll();
         return;
       }
       // 兜底：卡片尚未创建（分块渲染未完成），用数学估算（优先取自适应布局落笔值，
@@ -402,6 +403,7 @@ class WorksGrid extends VirtualGrid {
       const cardTopInScroll = row * (cardH + gap);
       const target = cardTopInScroll - Math.min(grid.clientHeight / 3, cardTopInScroll);
       grid.scrollTo({ top: Math.max(0, target) });
+      noteProgrammaticScroll();
     });
   }
 

@@ -2,34 +2,59 @@
 
 import { MSSDK_STR_DATA } from "./identity/crypto.js";
 import { RUNTIME_DEFAULTS } from "../shared/runtime-defaults.js";
+import { GRID_MOUNT_MAX } from "../shared/limits.js";
+import { URL_BASE, tabUrl, profileUrl as buildProfileUrl } from "../shared/douyin-urls.js";
+import { STORAGE_KEYS, DEFAULT_GROUPS, GROUP_IDS, DOMAINS, WORK_RECORD_DOMAINS, AUTHOR_RECORD_DOMAINS } from "../shared/domains.js";
 // identity/independent-client.js 单向依赖本文件的 CONFIG；本模块不反向引用，避免无意义的循环依赖。
+
+// ---------- DNR 头模板 ----------
+// 同源 POST 端点（listcollection / collect）要求的 fetch 元数据。真实同源请求不带 Origin，
+// 故只补 Sec-Fetch-*；Referer 对齐收藏 tab（页面同款）。
+const SAME_ORIGIN_HEADERS = Object.freeze([
+  { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
+  { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
+  { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
+  { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
+  { header: "Referer", operation: "set", value: tabUrl("collections") },
+]);
+
+// rule 4/5 只有 urlFilter 与 resourceTypes 不同；priority 2 覆盖 rule 3 的 remove
+const sameOriginRule = (id, urlFilter, resourceTypes = ["xmlhttprequest"]) => ({
+  id,
+  priority: 2,
+  condition: {
+    urlFilter,
+    resourceTypes,
+    excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
+  },
+  action: { type: "modifyHeaders", requestHeaders: [...SAME_ORIGIN_HEADERS] },
+});
+
+// rule 3：剥离 SW 跨域请求的 fetch 元数据，伪装成页面同源
+const STRIP_FETCH_HEADERS = Object.freeze([
+  { header: "Sec-Fetch-Site", operation: "remove" },
+  { header: "Sec-Fetch-Mode", operation: "remove" },
+  { header: "Sec-Fetch-Dest", operation: "remove" },
+  { header: "Sec-Fetch-User", operation: "remove" },
+  { header: "Sec-Fetch-Storage-Access", operation: "remove" },
+  { header: "Origin", operation: "remove" },
+  { header: "Accept-Language", operation: "remove" },
+  { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
+  { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
+]);
 
 // ---------- config ----------
 const CONFIG = {
-  STORAGE_KEYS: {
-    WORKS: "works",
-    WORKS_GROUPS: "works_groups",
-    FOLLOWINGS: "followings",
-    FOLLOWINGS_GROUPS: "followings_groups",
-    FAVORITES: "favorites",
-    FAVORITES_GROUPS: "favorites_groups",
-    COLLECTIONS: "collections",
-    COLLECTIONS_GROUPS: "collections_groups",
-    CANDIDATES: "candidates",
-    CANDIDATES_GROUPS: "candidates_groups",
-    REVIEW: "review",
-    REVIEW_GROUPS: "review_groups",
-  },
+  // 存储键 / 域分类 / 默认分组的唯一来源是 shared/domains.js，这里仅别名挂载，
+  // 既有 CONFIG.xxx 消费点保持不变
+  STORAGE_KEYS,
   // 作者档案型域：复用同一 7 字段记录结构与合并语义；followings=账号原生关注镜像，
   // candidates=扩展自建候选作者池（数据来源不同、生命周期独立）
-  AUTHOR_RECORD_DOMAINS: ["followings", "candidates"],
+  AUTHOR_RECORD_DOMAINS,
   // 作品型三域（存储结构与 mergeWork 语义一致；作者数分页索引也只建在这三个域）
-  WORK_RECORD_DOMAINS: ["works", "favorites", "collections"],
-  // 各域的默认分组结构一致（全部 → 未分组），共用同一份定义；消费处通过 .map 拷贝，避免原地改写污染共享引用
-  DEFAULT_GROUPS: [
-    { id: "all", name: "全部", fixed: true },
-    { id: "uncategorized", name: "未分组", fixed: true },
-  ],
+  WORK_RECORD_DOMAINS,
+  // 各域默认分组（全部 → 未分组），消费处通过 .map 拷贝，避免原地改写污染共享引用
+  DEFAULT_GROUPS,
   DNR_RULES: [
     {
       id: 1,
@@ -82,76 +107,14 @@ const CONFIG = {
       },
       action: {
         type: "modifyHeaders",
-        requestHeaders: [
-          { header: "Sec-Fetch-Site", operation: "remove" },
-          { header: "Sec-Fetch-Mode", operation: "remove" },
-          { header: "Sec-Fetch-Dest", operation: "remove" },
-          { header: "Sec-Fetch-User", operation: "remove" },
-          { header: "Sec-Fetch-Storage-Access", operation: "remove" },
-          { header: "Origin", operation: "remove" },
-          { header: "Accept-Language", operation: "remove" },
-          { header: "Accept-Encoding", operation: "set", value: "gzip, deflate" },
-          { header: "Referer", operation: "set", value: "https://www.douyin.com/" },
-        ],
+        requestHeaders: [...STRIP_FETCH_HEADERS],
       },
     },
-    {
-      // 收藏扫描（listcollection）是独立模式唯一的 POST 端点。POST 端点比 GET 更严格地
-      // 校验「同源 fetch 元数据」：服务端要求 Sec-Fetch-Site: same-origin 等头，否则 403。
-      // 关键点：真实同源请求【不会】携带 Origin 头（Origin 仅跨域请求才有），因此这里只补
-      // Sec-Fetch-*，绝不可 set Origin —— same-origin + Origin 的非法组合会被抖音 WAF 拦截。
-      // 标签页模式在 douyin.com 页面内发起请求天然携带这些头；SW 跨界请求被 rule 3 剥离，
-      // 此规则（优先级更高）仅对 listcollection 补回 Sec-Fetch-*，与页面内/GET 行为一致。
-      // Referer 同步对齐真实页面（收藏 tab）：请求由收藏页发起（参考项目同款 referer）。
-      id: 4,
-      priority: 2,
-      condition: {
-        urlFilter: "||douyin.com/aweme/v1/web/aweme/listcollection/",
-        resourceTypes: ["xmlhttprequest", "other"],
-        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-      },
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
-          { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
-          { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
-          { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
-          {
-            header: "Referer",
-            operation: "set",
-            value: "https://www.douyin.com/user/self?showTab=favorite_collection",
-          },
-        ],
-      },
-    },
-    {
-      // 取消收藏 POST：与 rule 4 同理，独立模式 SW 跨界请求被 rule 3 剥离同源 fetch 元数据，
-      // POST 端点会 403。提升到 priority 2 以覆盖 rule 3 的 remove，补回 Sec-Fetch-* + Accept-Language；
-      // 同源请求不带 Origin，故不设 Origin。同时让精确 Referer（showTab=favorite_collection）真正生效
-      // （原先与 rule 3 同优先级、低 id 被覆盖，实际一直用的是 rule 3 的 https://www.douyin.com/）。
-      id: 5,
-      priority: 2,
-      condition: {
-        urlFilter: "||douyin.com/aweme/v1/web/aweme/collect/",
-        resourceTypes: ["xmlhttprequest"],
-        excludedInitiatorDomains: ["www.douyin.com", "douyin.com"],
-      },
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          { header: "Sec-Fetch-Site", operation: "set", value: "same-origin" },
-          { header: "Sec-Fetch-Mode", operation: "set", value: "cors" },
-          { header: "Sec-Fetch-Dest", operation: "set", value: "empty" },
-          { header: "Accept-Language", operation: "set", value: "zh-CN,zh;q=0.9" },
-          {
-            header: "Referer",
-            operation: "set",
-            value: "https://www.douyin.com/user/self?showTab=favorite_collection",
-          },
-        ],
-      },
-    },
+    // 收藏扫描（listcollection）是独立模式唯一的 POST 端点，要求同源 fetch 元数据（缺则 403）；
+    // 取消收藏（collect）同理。rule 3 会剥离这些头，故本规则 priority 2 覆盖它。
+    // 注意：真实同源请求【不带 Origin】，绝不可 set Origin（会被 WAF 拦截）。
+    sameOriginRule(4, "||douyin.com/aweme/v1/web/aweme/listcollection/", ["xmlhttprequest", "other"]),
+    sameOriginRule(5, "||douyin.com/aweme/v1/web/aweme/collect/"),
     {
       // mssdk 兑换 msToken：SW 发起时 Origin 是 chrome-extension://...；且 fetch 的 headers
       // 里设 Referer 属 forbidden header，会被浏览器静默忽略。服务端校验这两头 → 拒签
@@ -173,7 +136,7 @@ const CONFIG = {
       },
     },
   ],
-  URL_BASE: "https://www.douyin.com",
+  URL_BASE,
   TIMEOUT: {
     REQUEST: RUNTIME_DEFAULTS.timeoutRequest,
     SECURITY_STATUS: RUNTIME_DEFAULTS.timeoutSecurityStatus,
@@ -198,7 +161,7 @@ const CONFIG = {
   },
   GROUPS: {
     ID_PREFIX: "custom_",
-    DEFAULT_ID: "uncategorized",
+    DEFAULT_ID: GROUP_IDS.UNCATEGORIZED,
   },
   PAGE: {
     // 页大小键沿用 API 词：FAVORITE=点赞扫描（favorite 端点）、COLLECTION=收藏扫描（listcollection 端点）、POST=作者作品（post 端点）
@@ -211,10 +174,10 @@ const CONFIG = {
     // 主线程任务减半，配合 options 侧首屏错峰（首页渲染/填充先跑、续页后跟），避免续页
     // 长任务把首屏填充与封面探针挤到后面；页数翻倍是有意取舍
     GRID: 1000,
-    // 网格首屏页大小：首帧只等「铺满活动 DOM 上限」的条数（= options 侧 GRID_MOUNT_MAX 600），
+    // 网格首屏页大小：首帧只等「铺满活动 DOM 上限」的条数（= shared/limits.js GRID_MOUNT_MAX），
     // 余页继续按 GRID 续传。万级域切域的首屏等待从「整页千级条的游标读取 + MB 级消息克隆」
     // 降到 600 条；keyset 游标 / hasMore / 首页 total 语义不变
-    GRID_FIRST: 600,
+    GRID_FIRST: GRID_MOUNT_MAX,
   },
   // 作者数排序视图：SW 内存 LRU 上限（每份视图含该分组全部 id，100k ≈ 5–10MB）与
   // 单次请求的最大物化条数（作者域分页由 DomainHandlers 统一钳制）
@@ -257,7 +220,7 @@ const CONFIG = {
       url: "https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383",
       body: (id, active = false) => "action=" + (active ? 1 : 0) + "&aweme_id=" + id + "&aweme_type=0",
       type: "application/x-www-form-urlencoded",
-      referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
+      referrer: tabUrl("collections"),
     },
   },
   DOUYIN_URL_PATTERN: "*://*.douyin.com/*",
@@ -272,55 +235,10 @@ const CONFIG = {
   ]),
 };
 
-const DOMAIN_CONFIG = {
-  [CONFIG.STORAGE_KEYS.WORKS]: {
-    storeName: CONFIG.STORAGE_KEYS.WORKS,
-    groupsName: CONFIG.STORAGE_KEYS.WORKS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.WORKS,
-    idField: "awemeId",
-  },
-  [CONFIG.STORAGE_KEYS.FOLLOWINGS]: {
-    storeName: CONFIG.STORAGE_KEYS.FOLLOWINGS,
-    groupsName: CONFIG.STORAGE_KEYS.FOLLOWINGS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.FOLLOWINGS,
-    idField: "uid",
-    idToString: true,
-  },
-  [CONFIG.STORAGE_KEYS.FAVORITES]: {
-    storeName: CONFIG.STORAGE_KEYS.FAVORITES,
-    groupsName: CONFIG.STORAGE_KEYS.FAVORITES_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.FAVORITES,
-    idField: "awemeId",
-  },
-  [CONFIG.STORAGE_KEYS.COLLECTIONS]: {
-    storeName: CONFIG.STORAGE_KEYS.COLLECTIONS,
-    groupsName: CONFIG.STORAGE_KEYS.COLLECTIONS_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.COLLECTIONS,
-    idField: "awemeId",
-  },
-  [CONFIG.STORAGE_KEYS.CANDIDATES]: {
-    storeName: CONFIG.STORAGE_KEYS.CANDIDATES,
-    groupsName: CONFIG.STORAGE_KEYS.CANDIDATES_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.CANDIDATES,
-    idField: "uid",
-    idToString: true,
-  },
-  // 回顾域是真实域（独立分组/搜索/批量），但只持久化“批次引用”：
-  // review 表存 { reviewId, sourceDomain, sourceId, kind, groupId, addedAt }，
-  // 展示时由 review-handlers 回源域 hydration；不复制完整作品/作者记录。
-  [CONFIG.STORAGE_KEYS.REVIEW]: {
-    storeName: CONFIG.STORAGE_KEYS.REVIEW,
-    groupsName: CONFIG.STORAGE_KEYS.REVIEW_GROUPS,
-    defaultGroups: CONFIG.DEFAULT_GROUPS,
-    itemKey: CONFIG.STORAGE_KEYS.REVIEW + "Items",
-    idField: "reviewId",
-  },
-};
+// 六域结构直接引用 shared/domains.js 的事实表；字段名与旧结构保持一致
+// （storeName / groupsName / defaultGroups / itemKey / idField / idToString），
+// 消费方零改动。注意 review 另有 idKey = "sourceId"（hydration 后条目键）。
+const DOMAIN_CONFIG = DOMAINS;
 
 // ---------- runtimeConfig ----------
 // 对标 options/core.js 的同名对象：从 chrome.storage.local 读取运行时配置并叠加进 CONFIG。
@@ -585,7 +503,7 @@ const formatters = {
       type: (aw.aweme_type || aw.awemeType) === CONFIG.AWEME_TYPE_NOTE ? "note" : "video",
       nickname: String(author.nickname || author.nickName || ""),
       uid: String(author.uid || ""),
-      authorHomeUrl: author.sec_uid ? CONFIG.URL_BASE + "/user/" + author.sec_uid : "",
+      authorHomeUrl: author.sec_uid ? buildProfileUrl(author.sec_uid) : "",
       cover: ((video.cover && video.cover.url_list) || [])[0] ? utils.stripHttp(video.cover.url_list[0]) : "",
       video: videoUrl,
       videoExpireAt,
@@ -605,7 +523,7 @@ const formatters = {
       awemeCount: 0,
       // 最近更新日期（毫秒时间戳）：仅由校准阶段取作品第一页 max(create_time) 写入，未校准占位 0
       lastUpdateAt: 0,
-      profileUrl: CONFIG.URL_BASE + "/user/" + (item.sec_uid || ""),
+      profileUrl: buildProfileUrl(item.sec_uid || ""),
     };
   },
   // profile/other 权威档案 → 作者域记录：入参是归一化 user 摘要（scanTasks.#fetchProfileUser
@@ -620,7 +538,7 @@ const formatters = {
       followerCount: user.followerCount || 0,
       awemeCount: user.awemeCount || 0,
       lastUpdateAt: 0,
-      profileUrl: CONFIG.URL_BASE + "/user/" + (user.secUid || ""),
+      profileUrl: buildProfileUrl(user.secUid || ""),
     };
   },
 };

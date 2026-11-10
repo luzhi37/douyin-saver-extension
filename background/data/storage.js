@@ -355,9 +355,27 @@ class Storage {
     });
   }
 
+  // 数据写事务统一骨架：同一事务内维护 *_groups.count，提交后 bumpRevision。
+  // 请求级失败走 fail(err)：保持「拒绝 Promise 但不中止事务」的既有语义
+  //（不引入 tx.abort()，避免改变半提交时的可见行为）。
+  #writeTx(storeName, mutate) {
+    const groupsName = DOMAIN_CONFIG[storeName].groupsName;
+    return this.#openDB().then(
+      (db) =>
+        new Promise((resolve, reject) => {
+          const tx = db.transaction([storeName, groupsName], "readwrite");
+          mutate({ tx, store: tx.objectStore(storeName), groupsName, fail: reject });
+          tx.oncomplete = () => {
+            this.#bumpRevision(storeName);
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        }),
+    );
+  }
+
   async putBatch(storeName, items) {
     if (!DATA_STORES.has(storeName)) throw new Error("putBatch: unknown data store " + storeName);
-    const db = await this.#openDB();
     // 同一 key 的重复 put 收敛为最后一条，避免计数被重复 +1
     const keyPath = STORES[storeName].keyPath;
     const unique = new Map();
@@ -365,10 +383,7 @@ class Storage {
       if (item && item[keyPath] != null) unique.set(item[keyPath], item);
     }
     if (unique.size === 0) return;
-    const groupsName = DOMAIN_CONFIG[storeName].groupsName;
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction([storeName, groupsName], "readwrite");
-      const store = tx.objectStore(storeName);
+    return this.#writeTx(storeName, ({ tx, store, fail }) => {
       const deltas = new Map();
       let pending = unique.size;
       for (const item of unique.values()) {
@@ -388,25 +403,16 @@ class Storage {
           store.put(item);
           if (--pending === 0) this.#applyCountDeltas(tx, storeName, deltas);
         };
-        req.onerror = () => reject(req.error);
+        req.onerror = () => fail(req.error);
       }
-      tx.oncomplete = () => {
-        this.#bumpRevision(storeName);
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
     });
   }
 
   async deleteBatch(storeName, keys) {
     if (!DATA_STORES.has(storeName)) throw new Error("deleteBatch: unknown data store " + storeName);
-    const db = await this.#openDB();
     const unique = [...new Set(keys)];
     if (unique.length === 0) return;
-    const groupsName = DOMAIN_CONFIG[storeName].groupsName;
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction([storeName, groupsName], "readwrite");
-      const store = tx.objectStore(storeName);
+    return this.#writeTx(storeName, ({ tx, store, fail }) => {
       const deltas = new Map();
       let pending = unique.length;
       for (const key of unique) {
@@ -417,29 +423,16 @@ class Storage {
           store.delete(key);
           if (--pending === 0) this.#applyCountDeltas(tx, storeName, deltas);
         };
-        req.onerror = () => reject(req.error);
+        req.onerror = () => fail(req.error);
       }
-      tx.oncomplete = () => {
-        this.#bumpRevision(storeName);
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
     });
   }
 
   async clear(storeName) {
     if (!DATA_STORES.has(storeName)) throw new Error("clear: unknown data store " + storeName);
-    const db = await this.#openDB();
-    const groupsName = DOMAIN_CONFIG[storeName].groupsName;
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction([storeName, groupsName], "readwrite");
-      tx.objectStore(storeName).clear();
+    return this.#writeTx(storeName, ({ tx, store, groupsName }) => {
+      store.clear();
       this.#resetGroupCounts(tx, groupsName);
-      tx.oncomplete = () => {
-        this.#bumpRevision(storeName);
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
     });
   }
 

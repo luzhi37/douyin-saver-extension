@@ -457,6 +457,7 @@ class AuthorImport {
       }
       const f = res.candidate || {};
       const nick = f.nickname || "未知";
+      // 兜底文案与 shared/domains.js DEFAULT_GROUPS 的「未分组」保持一致
       const groupName = res.groupName || "未分组";
       // added>0 为新收录；否则作者已在候选域，按落库 groupId 解析的分组名提示所在组
       dialog.showToast(

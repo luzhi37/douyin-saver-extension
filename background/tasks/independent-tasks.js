@@ -5,6 +5,7 @@ import { credentials } from "../identity/credentials.js";
 import { independentClient } from "../identity/independent-client.js";
 import { scanTasks, finishSyncWorks } from "./scan-tasks.js";
 import { runAuthorWorksImport } from "./author-works-import.js";
+import { tabUrl } from "../../shared/douyin-urls.js";
 
 // ---------- IndependentTasks ----------
 // 独立模式长任务（经 IndependentClient.request 直连循环）
@@ -83,7 +84,7 @@ class IndependentTasks {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({ count: String(CONFIG.PAGE.COLLECTION), cursor: String(cursor) }).toString(),
-            referrer: "https://www.douyin.com/user/self?showTab=favorite_collection",
+            referrer: tabUrl("collections"),
           },
         );
         if (data.status_code === 0 && Array.isArray(data.aweme_list)) {

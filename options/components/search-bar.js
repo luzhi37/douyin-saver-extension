@@ -1,8 +1,9 @@
 // ---------- SearchBar ----------
 import { config, dom, state, services, utils } from '../core.js';
-import { authorKeyOf } from "../../shared/author-sort.js";
+import { authorKeyOf, buildAuthorRank } from "../../shared/author-sort.js";
 import { followingsGrid, candidatesGrid, reviewAuthorsGrid } from '../grids/author-grid.js';
 import { worksGrid, favoritesGrid, collectionsGrid, reviewWorksGrid } from '../grids/works-grid.js';
+import { noteProgrammaticScroll } from '../grids/virtual-grid.js';
 import { batch } from '../data/batch.js';
 import { SelectMenu } from './select-menu.js';
 
@@ -298,11 +299,7 @@ class SearchBar {
       order.counts &&
       order.counts.size > 0
     ) {
-      return new Map(
-        [...order.counts.entries()]
-          .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-          .map(([key], i) => [key, i]),
-      );
+      return buildAuthorRank(order.counts);
     }
     // 失效判据 = dataVersion 且 source 引用（原地追加变更引用不变，dataVersion 是唯一可靠信号）
     if (this.#rankCache.version === state.dataVersion && this.#rankCache.source === source) {
@@ -313,9 +310,7 @@ class SearchBar {
       const key = lcFields(w).ak;
       counts.set(key, (counts.get(key) || 0) + 1);
     }
-    const rank = new Map(
-      [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a) || (a < b ? -1 : 1)).map((k, i) => [k, i]),
-    );
+    const rank = buildAuthorRank(counts);
     this.#rankCache = { version: state.dataVersion, source, rank };
     return rank;
   }
@@ -396,7 +391,10 @@ class SearchBar {
       if (isWorkRecord) grid.renderCards(view);
       else grid.renderAuthorCards(view);
       this.#lastRenderedView = view;
-      if (resetScroll) dom.mainGrid.scrollTop = 0;
+      if (resetScroll) {
+        dom.mainGrid.scrollTop = 0;
+        noteProgrammaticScroll();
+      }
     }
     this.syncCount(view.length);
   }

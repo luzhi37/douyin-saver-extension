@@ -1,5 +1,6 @@
 // ---------- Groups ----------
 import { config, dom, state, services, store } from '../core.js';
+import { noteProgrammaticScroll } from '../grids/virtual-grid.js';
 import { batch } from './batch.js';
 import { dialog } from '../components/dialog.js';
 import { detail } from '../components/detail.js';
@@ -260,25 +261,17 @@ class Groups {
             text: "删除",
             danger: true,
             callback: async () => {
-              dialog.updateDialog("正在删除…", "");
-              state.preventDialogClose = true;
-              try {
-                const res = await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
-                if (!res || res.ok !== true) {
-                  dialog.closeDialog();
-                  dialog.showToast("删除失败: " + (res?.error || "未知错误"), "error");
-                  return;
-                }
-                item.remove();
-                store.refreshGroups();
-                dialog.closeDialog();
-                dialog.showToast(`已删除"${g.name}"`, "success");
-              } catch (err) {
-                dialog.closeDialog();
-                dialog.showToast("删除失败: " + (err.message || String(err)), "error");
-              } finally {
-                state.preventDialogClose = false;
-              }
+              await dialog.runTask({
+                progressTitle: "正在删除…",
+                task: async () => {
+                  const res = await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
+                  if (!res || res.ok !== true) throw new Error(res?.error || "未知错误");
+                  item.remove();
+                  store.refreshGroups();
+                },
+                successText: `已删除"${g.name}"`,
+                failPrefix: "删除失败: ",
+              });
             },
           },
         ]);
@@ -346,6 +339,7 @@ class Groups {
     // 滚动容器是 #mainGrid 自身（overflow-y:auto），window.scrollTo 不作用于它；
     // 清场 wipe 会 clamp 归零，这里显式复位保证语义正确
     dom.mainGrid.scrollTop = 0;
+    noteProgrammaticScroll();
     store.set("currentGroupId", groupId);
   }
 }

@@ -1,6 +1,20 @@
 // ---------- VirtualGrid（抽象基类，仅导出 class 不实例化） ----------
 import { config, dom, state } from '../core.js';
 
+// ---------- 程序化滚动标记 ----------
+// 代码写 scrollTop（锚点补偿 / 头部占位补偿 / 回顶）不是用户快滚意图，不能被快滚判定
+// 当成拖拽滚动（否则会冻结填充、并把 STORE_CHANGED 头插打到 isScrollFrozen 兜底）。
+// scroll 事件异步到达，且七个网格实例共享同一个 #mainGrid —— 一次性布尔会被第一个实例
+// 吞掉，因此记录「回写后的实际 scrollTop + 时刻」：窗口内落到同值的事件按程序化处理。
+// 超时或值被后续布局 clamp 掉时退回常规判定（有 #wakeFrozenDrain 兜底，不会卡死）
+const PROGRAMMATIC_SCROLL_WINDOW_MS = 150;
+let programmaticScroll = null; // { value, at }
+
+// 调用方在写 dom.mainGrid.scrollTop 之后调用（读回实际值，含浏览器 clamp）
+export function noteProgrammaticScroll() {
+  programmaticScroll = { value: dom.mainGrid.scrollTop, at: performance.now() };
+}
+
 // ---------- VirtualGrid ----------
 export class VirtualGrid {
   #observer = null;
@@ -543,7 +557,10 @@ export class VirtualGrid {
     // 回收区上方插入：padding-top 随 #headTrim 上抬、内容整体下移，不补偿会把视口推向
     // 头部占位空白（单条约一行跳动、同批可致整屏空白）——与 #mountInsert 的「落点在视口
     // 上方按实测位移补偿 scrollTop」同口径；#headTrim 非行对齐时 ceil 不变、Δ=0 自动 no-op
-    if (this.#headPad > padBefore) dom.mainGrid.scrollTop += this.#headPad - padBefore;
+    if (this.#headPad > padBefore) {
+      dom.mainGrid.scrollTop += this.#headPad - padBefore;
+      noteProgrammaticScroll();
+    }
     this.#syncTailReserve();
     return true;
   }
@@ -577,10 +594,12 @@ export class VirtualGrid {
     }
     // 反向逐个前插：避免 splice(...nodes) 大数组 spread 的栈上限（同 observeNewSkeletons 约定）
     for (let i = nodes.length - 1; i >= 0; i--) this.#slots.splice(index, 0, nodes[i]);
-    // 视图快照同步位插（与 #slots 同 index，键控扩容取数序随真实视图生长）；
-    // 快照短于落点（渐进态旧快照）时钳到尾部追加，保持快照内有序
+    // 视图快照同步位插：#slots 是窗口系（槽位 0 ↔ 视图下标 #headTrim），#viewItems 是
+    // 视图系全量快照——落点必须换算回视图下标，否则窗口态（#headTrim > 0）下快照会整体
+    // 错位 headTrim 条，键控扩容据此取到错误条目。快照短于落点（渐进态旧快照）时钳到
+    // 尾部追加，保持快照内有序
     if (this.#viewItems) {
-      const at = Math.min(index, this.#viewItems.length);
+      const at = Math.min(this.#headTrim + index, this.#viewItems.length);
       for (let i = items.length - 1; i >= 0; i--) this.#viewItems.splice(at, 0, items[i]);
       for (const item of items) this.#viewKeys.add(item[this.#itemKey]);
     }
@@ -598,7 +617,10 @@ export class VirtualGrid {
     this.#extendObservation();
     if (compensate) {
       const delta = anchorNode.getBoundingClientRect().top - anchorTopBefore;
-      if (delta > 0) grid.scrollTop += delta;
+      if (delta > 0) {
+        grid.scrollTop += delta;
+        noteProgrammaticScroll();
+      }
     }
     return true;
   }
@@ -673,7 +695,10 @@ export class VirtualGrid {
         // padding 收缩不触发补偿（实测 scrollTop 原样保留）；按占位差值反补，保持视口内
         // 同一批卡原位（未跨行时 Δ=0 自动 no-op）
         const padShrink = padBefore - this.#headPad;
-        if (padShrink > 0) dom.mainGrid.scrollTop = Math.max(0, dom.mainGrid.scrollTop - padShrink);
+        if (padShrink > 0) {
+          dom.mainGrid.scrollTop = Math.max(0, dom.mainGrid.scrollTop - padShrink);
+          noteProgrammaticScroll();
+        }
       }
     }
     if (idSet.size) {
@@ -813,6 +838,19 @@ export class VirtualGrid {
     cancelAnimationFrame(this.#drainRafId);
     this.#drainRafId = 0;
     this.#fillQueue = [];
+    // 快滚冻结唤醒：本方法注销了在途 drain（快滚态唯一的转出通道），渲染后若没有骨架入队
+    // （空视图、或整窗复用卡），就再没有路径调度 drain —— #scrollFast 会永久停在 true，
+    // STORE_CHANGED 头插被 isScrollFrozen() 打回整域重载（侧栏单条「存入」也变成整屏骨架
+    // 重建 + 秒级重载）。注销 drain 的路径必须补一次唤醒；快滚仍在持续时 drain 的 epoch
+    // 判定会继续顺延，冻结纪律不变
+    this.#wakeFrozenDrain();
+  }
+
+  // 快滚冻结态的唯一唤醒入口：仅在 drain 未在途时补调度（重复调用零成本）。
+  // render/abortRender/#remountWindow 都会 cancelAnimationFrame(#drainRafId)，
+  // 若此刻 #scrollFast 仍为 true，必须重新交还 drain 循环，否则冻结标志失去转出通道
+  #wakeFrozenDrain() {
+    if (this.#scrollFast && !this.#drainRafId) this.#scheduleDrain();
   }
 
   #showEmpty(msg, hint) {
@@ -951,10 +989,19 @@ export class VirtualGrid {
 
   // 快滚判定与停稳基准：判定必须在 scroll 事件时刻完成（本帧 vs 上帧 scrollTop）——
   // rAF 侧一帧内有 catchUp / drain 轮询两个读取者，若各自推进基准，第二位读者必得
-  // delta 0 而逐帧误判停稳：快滚冻结被打断、#refillBand 每帧空转、积压卡被反复丢弃
+  // delta 0 而逐帧误判停稳：快滚冻结被打断、#refillBand 每帧空转、积压卡被反复丢弃。
+  // 程序化写入（noteProgrammaticScroll 标记内）不参与判定，也不打断既有快滚态——用户
+  // 正在拖拽时的占位补偿不应释放冻结；基准 #lastScrollTop 仍照常推进
   #onGridScroll() {
     const st = dom.mainGrid.scrollTop;
-    this.#scrollFast = Math.abs(st - this.#lastScrollTop) > config.FAST_SCROLL_THRESHOLD;
+    const prog = programmaticScroll;
+    const programmatic =
+      Boolean(prog) &&
+      performance.now() - prog.at <= PROGRAMMATIC_SCROLL_WINDOW_MS &&
+      Math.abs(st - prog.value) <= 1;
+    if (!programmatic) {
+      this.#scrollFast = Math.abs(st - this.#lastScrollTop) > config.FAST_SCROLL_THRESHOLD;
+    }
     this.#lastScrollTop = st;
     this.#scrollEpoch++;
     // 快滚轮询自持：停稳检测不依赖队列非空（空队列也须转出冻结态、释放 #demote 门控）。
@@ -1112,9 +1159,9 @@ export class VirtualGrid {
   // 单调递减，可行域 w(c) ∈ [ideal×BAND_MIN, ideal×BAND_MAX]（c ∈ [lo, hi]，两端由
   // 带宽直接解出）；带内各候选均零空白，取 |w(c) − ideal| 最小者——w 恰等于 ideal 的
   // c 就是旧 floor 值，故列数相对旧值只增不减（密度不回退）。可行域外（相邻列宽差
-  // 跨过整个带宽）：零空白优先——lo 列精确填满（向下破下限），破幅 ≤ 一个带宽
-  //（fillW ≥ 2·minW − maxW）可接受；卡片明显过小才改取 hi 列钳到 maxW、收少量
-  // 空白（justify-content: center 均分，无「右缘尾巴」观感）。结果以 inline style
+  // 跨过整个带宽）：容差带按硬约束处理——取 hi 列并把卡宽钳到 maxW，余量交给
+  // justify-content: center 均分，绝不向下破下限（2026-11 定案：破下限会让侧栏
+  // 固定的「最小卡宽」反过来比网格卡更宽，两个面板尺寸对不上）。结果以 inline style
   // 写容器：gridTemplateColumns 定列（替代样式表 auto-fill 兜底）、--dy-card-actual
   // 供 .work-card 宽高联动；容器擦除不清 inline style，跨域重渲由下一次
   // #applyLayout 以当域理想卡宽覆盖（works 族 249 / followings 212，经子类传入的
@@ -1143,10 +1190,10 @@ export class VirtualGrid {
           bestDev = dev;
         }
       }
-    } else if ((W - (lo - 1) * gap) / lo >= 2 * minW - maxW) {
-      // 可行域外、破下限 ≤ 一个带宽：零空白优先，lo 列精确填满（卡片偏小可接受）
     } else {
-      // 卡片明显过小：改取 hi 列钳到 maxW，收少量空白
+      // 容差带是硬约束（2026-11 定案：破下限会让侧栏「最小卡宽」反过来比网格卡更宽）：
+      // 宁可少排一列（hi 列，卡宽钳到 maxW），把余量交给 justify-content: center 均分，
+      // 也不允许卡宽低于 ideal×sizeBandMin
       cols = hi;
     }
     // 钳上限（仅钳上限分支生效）；1/64px（LayoutUnit）向下对齐：杜绝浮点和 > W 的
@@ -1200,7 +1247,10 @@ export class VirtualGrid {
     this.#syncHeadPad();
     if (anchor) {
       const delta = anchor.getBoundingClientRect().top - before;
-      if (Math.abs(delta) > 1) dom.mainGrid.scrollTop += delta;
+      if (Math.abs(delta) > 1) {
+        dom.mainGrid.scrollTop += delta;
+        noteProgrammaticScroll();
+      }
     }
     // 改宽当帧不做扩容探测：锚点保持视口相对真实内容底不变，扩容判定留到下一次
     // 滚动/停稳；尾部占位在紧随的 rAF 里按新列数/行高重算（写操作收在帧尾）
@@ -1473,7 +1523,10 @@ export class VirtualGrid {
       // 调 scrollTop 可保持视口内同一批卡原位（像素级）——只依赖 padding 保持位置会
       // 随虚拟行数累积行高舍入误差（实测约 1600 行偏 50px），按整行重钉又会丢掉行内偏移
       const shift = this.#headPad - oldHeadPad - (row - oldRow) * rowH;
-      if (Math.abs(shift) > 0.5) dom.mainGrid.scrollTop += shift;
+      if (Math.abs(shift) > 0.5) {
+        dom.mainGrid.scrollTop += shift;
+        noteProgrammaticScroll();
+      }
       // 完整卡直接交卸载圈接管生命周期（与 populateItem 同一交接）；骨架走填充圈
       if (filledNodes.length) {
         this.#ensureUnloadObserver();
@@ -1484,6 +1537,9 @@ export class VirtualGrid {
     } finally {
       this.#remounting = false;
     }
+    // 同 #resetRenderState：本方法开头注销了在途 drain；重挂后若全程复用旧卡（无骨架入队）
+    // 就没有新的 drain 调度者，#scrollFast 会永久为真
+    this.#wakeFrozenDrain();
   }
 
   // 快滚判定已前移到 scroll 事件侧（#onGridScroll，rAF 读取者不推进基准）：

@@ -4,10 +4,11 @@
 
 import { CONFIG, DOMAIN_CONFIG } from "../core.js";
 import { storage } from "./storage.js";
+import { REVIEW_MAX_COUNT } from "../../shared/limits.js";
+import { SOURCE_DOMAINS, isAuthorDomain } from "../../shared/domains.js";
 
 const REVIEW_STORE = CONFIG.STORAGE_KEYS.REVIEW;
-const SOURCE_DOMAINS = ["works", "favorites", "collections", "followings", "candidates"];
-const MAX_BATCH = 500;
+const MAX_BATCH = REVIEW_MAX_COUNT;
 
 class ReviewHandlers {
   async #readRefs(groupId) {
@@ -77,11 +78,9 @@ class ReviewHandlers {
     }
   }
 
-  // 生成新批次：默认替换（清空旧引用、保留回顾分组），append 只追加到目标分组。
-  // 只存引用，不复制记录；追加按 sourceId 去重、受全局 500 条上限约束，
-  // 回顾域已有其它来源域时拒绝（混域批次无法按单一卡片类型渲染）。
-  // groupId 缺省/“all” 落默认「未分组」，便于在回顾域分组中继续管理
-  async saveBatch(sourceDomain, sourceIds, groupId, append, sendResponse) {
+  // 生成新批次：清空旧引用后整批替换（保留回顾分组）。
+  // 只存引用，不复制记录；groupId 缺省/“all” 落默认「未分组」，便于在回顾域分组中继续管理
+  async saveBatch(sourceDomain, sourceIds, groupId, sendResponse) {
     try {
       if (!SOURCE_DOMAINS.includes(sourceDomain)) {
         sendResponse({ error: "BAD_DOMAIN" });
@@ -93,43 +92,17 @@ class ReviewHandlers {
       const batchId = crypto.randomUUID();
       const now = Date.now();
       const targetGroupId = groupId && groupId !== "all" ? groupId : CONFIG.GROUPS.DEFAULT_ID;
-      const buildRefs = (list) =>
-        list.map((sourceId, i) => ({
-          reviewId: `${batchId}:${sourceId}`,
-          sourceDomain,
-          sourceId,
-          kind: CONFIG.AUTHOR_RECORD_DOMAINS.includes(sourceDomain) ? "authors" : "works",
-          groupId: targetGroupId,
-          addedAt: now - i,
-        }));
-
-      if (!append) {
-        const refs = buildRefs(ids);
-        await storage.clear(REVIEW_STORE);
-        if (refs.length > 0) await storage.putBatch(REVIEW_STORE, refs);
-        sendResponse({ ok: true, batchId, count: refs.length });
-        return;
-      }
-
-      const existing = await this.#readRefs("all");
-      // 回顾域任意时刻只允许单一来源域：混域批次会让 GET_REVIEW("all")/分组视图按单类型渲染失败
-      const existingDomain = existing[0]?.sourceDomain;
-      if (existingDomain && existingDomain !== sourceDomain) {
-        sendResponse({ error: "SOURCE_DOMAIN_MISMATCH", sourceDomain: existingDomain });
-        return;
-      }
-      const knownIds = new Set(existing.map((ref) => String(ref.sourceId)));
-      const freshIds = ids.filter((id) => !knownIds.has(id));
-      const room = Math.max(0, MAX_BATCH - existing.length);
-      const accepted = freshIds.slice(0, room);
-      const refs = buildRefs(accepted);
+      const refs = ids.map((sourceId, i) => ({
+        reviewId: `${batchId}:${sourceId}`,
+        sourceDomain,
+        sourceId,
+        kind: isAuthorDomain(sourceDomain) ? "authors" : "works",
+        groupId: targetGroupId,
+        addedAt: now - i,
+      }));
+      await storage.clear(REVIEW_STORE);
       if (refs.length > 0) await storage.putBatch(REVIEW_STORE, refs);
-      sendResponse({
-        ok: true,
-        batchId,
-        count: refs.length,
-        full: freshIds.length > accepted.length,
-      });
+      sendResponse({ ok: true, batchId, count: refs.length });
     } catch (err) {
       sendResponse({ error: err.message || String(err) });
     }

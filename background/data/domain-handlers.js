@@ -4,11 +4,13 @@ import { CONFIG, DOMAIN_CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
 import { authorViews } from "./author-views.js";
+import { compareSavedAtDesc } from "../../shared/author-sort.js";
+import { REVIEW_DEFAULT_COUNT, REVIEW_MAX_COUNT, REVIEW_MAX_EXCLUDE } from "../../shared/limits.js";
 
 // 随机回顾抽样上限：单次响应保持可控（作品记录可能包含多图 URL）；本轮数量由用户
 // 自定义，业务层钳制到 1–500。excludeIds 只保留最近 N 个，避免消息无界增长
-const RANDOM_MAX_COUNT = 500;
-const RANDOM_MAX_EXCLUDE = 2000;
+const RANDOM_MAX_COUNT = REVIEW_MAX_COUNT;
+const RANDOM_MAX_EXCLUDE = REVIEW_MAX_EXCLUDE;
 
 // 部分 Fisher-Yates：只洗前 count 个，无偏且不复制整池
 function pickRandomKeys(keys, count) {
@@ -61,20 +63,14 @@ class DomainHandlers {
         // 静默拿到整域载荷
         if (page === 0 || cursor) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
         // 分组筛选走索引查询，否则全量读取；两条路径同一排序/返回。
-        // savedAt 平级按 awemeId 降序，与 keyset 索引 prev 遍历、头插 viewOrderBefore
-        // 以及作者视图的簇内末级 tie-break 保持同一口径
+        // 视图序比较见 shared/author-sort.js compareSavedAtDesc——与 keyset 索引 prev 遍历、
+        // options 头插落点以及作者视图的簇内末级 tie-break 保持同一口径
         const store =
           groupId && groupId !== "all"
             ? await storage.getByIndex(this.#cfg.storeName, "groupId", groupId)
             : await storage.getAll(this.#cfg.storeName);
         const list = Object.values(store);
-        list.sort((a, b) => {
-          const d = (b.savedAt || 0) - (a.savedAt || 0);
-          if (d !== 0) return d;
-          const ai = String(a.awemeId ?? "");
-          const bi = String(b.awemeId ?? "");
-          return ai < bi ? 1 : ai > bi ? -1 : 0;
-        });
+        list.sort(compareSavedAtDesc);
         sendResponse({ [this.#cfg.itemKey]: list });
         return;
       }
@@ -211,7 +207,7 @@ class DomainHandlers {
   // 是否已无更多可回顾数据
   async pickRandom({ groupId, count, excludeIds }, sendResponse) {
     try {
-      const limit = Math.max(1, Math.min(RANDOM_MAX_COUNT, Math.floor(Number(count) || 20)));
+      const limit = Math.max(1, Math.min(RANDOM_MAX_COUNT, Math.floor(Number(count) || REVIEW_DEFAULT_COUNT)));
       const exclude = new Set(
         (Array.isArray(excludeIds) ? excludeIds : [])
           .slice(-RANDOM_MAX_EXCLUDE)

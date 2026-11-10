@@ -235,6 +235,27 @@ class ScanTasks {
     }
   }
 
+  // 作者档案统计（侧栏作者头只读查询，双模）：与候选入库/校准共用 #fetchProfileUser
+  // 取 profile/other 的权威作品数/粉丝数；不落库、不广播（作者域落库由校准链路负责）
+  async resolveAuthorStats(secUid, sendResponse) {
+    try {
+      const id = String(secUid || "").trim();
+      if (!id) return sendResponse({ ok: false, error: "BAD_PARAMS" });
+      const user = await this.#fetchProfileUser({ secUid: id });
+      if (!user.uid) throw new Error("PROFILE_FETCH_FAILED");
+      sendResponse({
+        ok: true,
+        uid: user.uid,
+        nickname: user.nickname || "",
+        avatarLarger: user.avatarLarger || "",
+        awemeCount: user.awemeCount || 0,
+        followerCount: user.followerCount || 0,
+      });
+    } catch (err) {
+      sendResponse({ ok: false, error: this.#mapProfileError(err) });
+    }
+  }
+
   // profile/other 错误归一：独立模式 err.statusCode 带业务码，Tab 模式只有 message 文本
   #mapProfileError(err) {
     const msg = err?.message || String(err);

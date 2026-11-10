@@ -14,89 +14,69 @@
 </head>
 
 <body>
-  <!-- ====== 固定顶栏（搜索框常驻；分组行在下方搜索栏；批量操作在内容区底部工具条） ====== -->
+  <!-- ====== 固定顶栏（单行工具区：分组按钮组 → 搜索控件组 → 域特定控件组 → 批量；
+       宽度不足时按序折行；批量操作在内容区底部工具条） ====== -->
   <header id="topBar" class="flex-row">
-    <div class="sb-field">
-      <input id="searchInput" type="text" placeholder="输入昵称或 UID" spellcheck="false" />
-      <button id="btnClearInBar" class="sb-input-clear" title="清除搜索内容" aria-label="清除搜索内容">✕</button>
-      <button id="btnSearchGo" class="sb-input-go" title="搜索（回车）" aria-label="搜索">
-        <svg width="16" height="16"><use href="#icon-search" /></svg>
-      </button>
-      <span id="sbCount" class="sb-count"></span>
+    <div class="group-selector">
+      <div class="group-tabs" id="groupTabs"></div>
     </div>
-    <span id="sbWorkFilters" class="sb-domain-filters flex-row">
-      <div id="sbType" class="sb-scope" role="combobox" tabindex="0" aria-label="作品类型"
-        aria-haspopup="listbox" aria-expanded="false" aria-controls="sbTypeMenu">
-        <span class="sb-scope-value">全部</span>
-        <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-        <div id="sbTypeMenu" class="sb-scope-menu hidden" role="listbox" aria-label="作品类型选项">
-          <button class="sb-scope-option active" role="option" data-type="all" aria-selected="true">全部</button>
-          <button class="sb-scope-option" role="option" data-type="video" aria-selected="false">视频</button>
-          <button class="sb-scope-option" role="option" data-type="note" aria-selected="false">图集</button>
-        </div>
+    <!-- 搜索 + 域控件 + 批量作为一个控件簇整体折行：
+         窄窗时整簇落到下一行，避免「搜索占第一行、筛选/批量被挤到第二行」的割裂布局 -->
+    <div class="topbar-controls flex-row">
+      <div class="sb-field">
+        <input id="searchInput" type="text" placeholder="输入昵称或 UID" spellcheck="false" />
+        <button id="btnClearInBar" class="sb-input-clear" title="清除搜索内容" aria-label="清除搜索内容">✕</button>
+        <button id="btnSearchGo" class="sb-input-go" title="搜索（回车）" aria-label="搜索">
+          <svg width="16" height="16"><use href="#icon-search" /></svg>
+        </button>
+        <span id="sbCount" class="sb-count"></span>
       </div>
-      <div id="sbSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
-        aria-haspopup="listbox" aria-expanded="false" aria-controls="sbSortMenu">
-        <span class="sb-scope-value">保存时间(降)</span>
-        <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-        <div id="sbSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
-          <button class="sb-scope-option active" role="option" data-sort="saved-desc" aria-selected="true">保存时间(降)</button>
-          <button class="sb-scope-option" role="option" data-sort="saved-asc" aria-selected="false">保存时间(升)</button>
-          <button class="sb-scope-option" role="option" data-sort="authorCount-desc" aria-selected="false">作品数(降)</button>
-          <button class="sb-scope-option" role="option" data-sort="authorCount-asc" aria-selected="false">作品数(升)</button>
-        </div>
+      <!-- 右侧尾部簇：域特定控件 + 批量作为一个整体，避免「批量」单独换行的孤立行 -->
+      <div class="topbar-tail flex-row">
+        <span id="sbWorkFilters" class="sb-domain-filters flex-row">
+          <div id="sbType" class="sb-scope" role="combobox" tabindex="0" aria-label="作品类型"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="sbTypeMenu">
+            <span class="sb-scope-value">全部</span>
+            <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+            <div id="sbTypeMenu" class="sb-scope-menu hidden" role="listbox" aria-label="作品类型选项">
+              <button class="sb-scope-option active" role="option" data-type="all" aria-selected="true">全部</button>
+              <button class="sb-scope-option" role="option" data-type="video" aria-selected="false">视频</button>
+              <button class="sb-scope-option" role="option" data-type="note" aria-selected="false">图集</button>
+            </div>
+          </div>
+          <div id="sbSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="sbSortMenu">
+            <span class="sb-scope-value">保存时间(降)</span>
+            <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+            <div id="sbSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
+              <button class="sb-scope-option active" role="option" data-sort="saved-desc" aria-selected="true">保存时间(降)</button>
+              <button class="sb-scope-option" role="option" data-sort="saved-asc" aria-selected="false">保存时间(升)</button>
+              <button class="sb-scope-option" role="option" data-sort="authorCount-desc" aria-selected="false">作品数(降)</button>
+              <button class="sb-scope-option" role="option" data-sort="authorCount-asc" aria-selected="false">作品数(升)</button>
+            </div>
+          </div>
+        </span>
+        <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
+          <div id="sbFollowSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="sbFollowSortMenu">
+            <span class="sb-scope-value">作品数(降)</span>
+            <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+            <div id="sbFollowSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
+              <button class="sb-scope-option active" role="option" data-fsort="works-desc" aria-selected="true">作品数(降)</button>
+              <button class="sb-scope-option" role="option" data-fsort="works-asc" aria-selected="false">作品数(升)</button>
+              <button class="sb-scope-option" role="option" data-fsort="update-desc" aria-selected="false">最近更新(降)</button>
+              <button class="sb-scope-option" role="option" data-fsort="update-asc" aria-selected="false">最近更新(升)</button>
+            </div>
+          </div>
+        </span>
       </div>
-    </span>
-    <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
-      <div id="sbFollowSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
-        aria-haspopup="listbox" aria-expanded="false" aria-controls="sbFollowSortMenu">
-        <span class="sb-scope-value">作品数(降)</span>
-        <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-        <div id="sbFollowSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
-          <button class="sb-scope-option active" role="option" data-fsort="works-desc" aria-selected="true">作品数(降)</button>
-          <button class="sb-scope-option" role="option" data-fsort="works-asc" aria-selected="false">作品数(升)</button>
-          <button class="sb-scope-option" role="option" data-fsort="update-desc" aria-selected="false">最近更新(降)</button>
-          <button class="sb-scope-option" role="option" data-fsort="update-asc" aria-selected="false">最近更新(升)</button>
-        </div>
-      </div>
-    </span>
-    <div class="topbar-right flex-row">
-      <button class="dy-btn flex-inline-center dy-btn-ghost" id="btnBatch">批量</button>
     </div>
   </header>
 
   <!-- ====== 主体内容 ====== -->
   <div id="appBody">
     <div id="mainCol" class="flex-col">
-      <!-- ====== 分组行（搜索栏常驻；搜索框已移至顶栏，见 docs/11） ====== -->
-      <div id="searchBar" class="search-bar">
-        <div class="group-selector">
-          <div class="group-tabs" id="groupTabs"></div>
-        </div>
-        <!-- 回顾域配置：来源下拉 / 抽取数量 / 随机与追加，内联在分组行右端（仅 review 域显示） -->
-        <div id="reviewBar" class="review-bar">
-          <div id="reviewSourceScope" class="sb-scope review-source-scope" role="combobox" tabindex="0"
-            aria-label="回顾来源域" aria-haspopup="listbox" aria-expanded="false" aria-controls="reviewSourceMenu">
-            <span class="sb-scope-value">作品</span>
-            <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-            <div id="reviewSourceMenu" class="sb-scope-menu hidden" role="listbox" aria-label="回顾来源域选项">
-              <button class="sb-scope-option active" role="option" data-source="works" aria-selected="true">作品</button>
-              <button class="sb-scope-option" role="option" data-source="favorites" aria-selected="false">点赞</button>
-              <button class="sb-scope-option" role="option" data-source="collections" aria-selected="false">收藏</button>
-              <button class="sb-scope-option" role="option" data-source="followings" aria-selected="false">关注</button>
-              <button class="sb-scope-option" role="option" data-source="candidates" aria-selected="false">候选</button>
-            </div>
-          </div>
-          <label class="review-bar-field">
-            <input id="reviewCountInput" class="review-count-input" type="number" inputmode="numeric" min="1" max="500" step="1" value="20" aria-label="本轮数量" title="可自定义 1–500 条">
-          </label>
-          <div class="review-bar-actions">
-            <button id="btnReviewRandom" class="dy-btn flex-inline-center dy-btn-primary">随机</button>
-            <button id="btnReviewAppend" class="dy-btn flex-inline-center" title="追加抽样，结果落「未分组」（仅限同来源域）">追加</button>
-          </div>
-        </div>
-      </div>
-      <!-- 分组行之下：网格与侧边作品栏左右并排（分组行横跨两者；右侧菜单栏仍独占全高） -->
+      <!-- 网格与侧边作品栏左右并排（右侧菜单栏仍独占全高） -->
       <div id="contentRow" class="content-row">
         <main id="mainGrid">
           <div class="empty-state state-message hidden" id="emptyState">
@@ -134,10 +114,28 @@
                 </div>
                 <div id="sidebarAuthorSub" class="sidebar-author-sub"></div>
               </div>
-              <button id="sidebarAuthorClose" class="sidebar-author-action" type="button"
-                title="收起作品栏" aria-label="收起作品栏">
-                <svg width="15" height="15"><use href="#icon-close" /></svg>
-              </button>
+              <div class="sidebar-author-actions">
+                <button id="sidebarAuthorImportWorks" class="sidebar-author-action" type="button"
+                  title="导入该作者全部作品到作品域" aria-label="导入该作者全部作品到作品域">
+                  <svg width="18" height="18"><use href="#icon-bookmark-line" /></svg>
+                </button>
+                <button id="sidebarAuthorAddCandidate" class="sidebar-author-action hidden" type="button"
+                  title="加入候选域" aria-label="将该作者加入候选域">
+                  <svg width="18" height="18"><use href="#icon-user-plus" /></svg>
+                </button>
+                <button id="sidebarAuthorRemoveCandidate" class="sidebar-author-action hidden" type="button"
+                  title="从候选域移除" aria-label="将该作者从候选域移除">
+                  <svg width="18" height="18"><use href="#icon-user-minus" /></svg>
+                </button>
+                <button id="sidebarAuthorRefresh" class="sidebar-author-action" type="button"
+                  title="刷新作品栏" aria-label="刷新作品栏">
+                  <svg width="18" height="18"><use href="#icon-sync" /></svg>
+                </button>
+                <button id="sidebarAuthorClose" class="sidebar-author-action" type="button"
+                  title="收起作品栏" aria-label="收起作品栏">
+                  <svg width="18" height="18"><use href="#icon-close" /></svg>
+                </button>
+              </div>
             </div>
             <div id="sidebarWorksGrid" class="sidebar-works-grid"></div>
             <!-- 列表终点提示：全部页取完（无更多游标）且有成列内容时驻底显示，替代「加载圈悬停」暗示 -->
@@ -154,6 +152,11 @@
   <!-- 域切换 + 功能菜单导航轨：位于最右，贯穿顶栏到页面底部（全高，固定 48px） -->
   <aside id="rightSidebar" class="right-sidebar">
     <div class="right-sidebar-inner">
+      <!-- 批量入口：位于导航轨顶部，与下方域切换以分隔线断开 -->
+      <button class="menu-item" id="btnBatch">
+        <svg class="rail-icon" width="18" height="18"><use href="#icon-select-all" /></svg><span>批量</span>
+      </button>
+      <div class="menu-divider"></div>
       <div class="domain-switch">
         <div class="ds-slider"></div>
         <button class="ds-btn active" data-domain="works">
@@ -304,7 +307,7 @@
       <span class="bar-divider"></span>
       <div class="bar-group bar-meta flex-row">
         <a id="detailAuthor" class="detail-bar-text detail-bar-author hidden" target="_blank" rel="noopener"></a>
-        <a id="detailVisit" class="detail-bar-visit" target="_blank" rel="noopener" title="在抖音打开作品页"></a>
+        <a id="detailVisit" class="detail-bar-visit" target="_blank" rel="noopener"></a>
         <span id="detailCreateTime" class="detail-bar-text detail-bar-date hidden"></span>
       </div>
       <span class="bar-divider"></span>
@@ -378,9 +381,9 @@
       </a>
       <div class="sidebar-work-info">
         <span class="sidebar-work-date"></span>
-        <button class="sidebar-presence sidebar-presence-like" type="button"><svg width="11" height="11"><use href="#icon-heart" /></svg><span class="sidebar-presence-label">点赞</span></button>
-        <button class="sidebar-presence sidebar-presence-collect" type="button"><svg width="11" height="11"><use href="#icon-star" /></svg><span class="sidebar-presence-label">收藏</span></button>
-        <button class="sidebar-work-save" type="button">存入</button>
+        <button class="sidebar-presence sidebar-presence-like" type="button"><svg width="18" height="18"><use href="#icon-heart" /></svg></button>
+        <button class="sidebar-presence sidebar-presence-collect" type="button"><svg width="18" height="18"><use href="#icon-star" /></svg></button>
+        <button class="sidebar-work-save" type="button" aria-label="存入作品域"><svg width="18" height="18"><use href="#icon-bookmark" /></svg></button>
       </div>
     </div>
   </template>
@@ -511,6 +514,27 @@
   <template id="settingsDialogTemplate">
     <div class="settings-panel">
       <div id="settingsConfigSection">
+        <div class="kv-row review-config-row">
+          <div class="review-config-item">
+            <span class="bf-label">回顾数据来源</span>
+            <div id="settingsReviewSource" class="sb-scope settings-select" role="combobox" tabindex="0"
+              aria-label="回顾数据来源" aria-haspopup="listbox" aria-expanded="false" aria-controls="settingsReviewSourceMenu">
+              <span class="sb-scope-value">作品</span>
+              <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+              <div id="settingsReviewSourceMenu" class="sb-scope-menu hidden" role="listbox" aria-label="回顾数据来源选项">
+                <button class="sb-scope-option active" role="option" data-source="works" aria-selected="true">作品</button>
+                <button class="sb-scope-option" role="option" data-source="favorites" aria-selected="false">点赞</button>
+                <button class="sb-scope-option" role="option" data-source="collections" aria-selected="false">收藏</button>
+                <button class="sb-scope-option" role="option" data-source="followings" aria-selected="false">关注</button>
+                <button class="sb-scope-option" role="option" data-source="candidates" aria-selected="false">候选</button>
+              </div>
+            </div>
+          </div>
+          <div class="review-config-item">
+            <label class="bf-label" for="settingsReviewCount">回顾抽取数量</label>
+            <input class="bf-input review-count-field" id="settingsReviewCount" type="number" inputmode="numeric" min="1" max="500" step="1" aria-label="回顾抽取数量" />
+          </div>
+        </div>
         <div class="kv-row"><label class="bf-label">请求超时 (ms)</label><input class="bf-input config-input" data-key="timeoutRequest" type="number" /></div>
         <div class="kv-row"><label class="bf-label">安全状态超时 (ms)</label><input class="bf-input config-input" data-key="timeoutSecurityStatus" type="number" /></div>
         <div class="kv-row"><label class="bf-label">同步作品 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncWorksDelayMax" type="number" style="width:80px" /></div>
@@ -776,6 +800,16 @@
         <circle cx="9" cy="8" r="3" />
         <path d="M3 20c0-3 2.7-5 6-5s6 2 6 5" />
         <path d="M18 7v6M15 10h6" />
+      </symbol>
+      <symbol id="icon-user-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="8" r="3" />
+        <path d="M3 20c0-3 2.7-5 6-5s6 2 6 5" />
+        <path d="M15 10h6" />
+      </symbol>
+      <symbol id="icon-bookmark-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 4.5h12a1 1 0 0 1 1 1V20l-7-4-7 4V5.5a1 1 0 0 1 1-1z" />
       </symbol>
       <symbol id="icon-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
         stroke-linecap="round" stroke-linejoin="round">

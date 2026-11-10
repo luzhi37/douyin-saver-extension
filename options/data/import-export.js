@@ -69,26 +69,22 @@ class ImportExport {
         text: `清空${domainName}数据`,
         danger: true,
         callback: async () => {
-          dialog.updateDialog("正在重置…", "<p>正在清空数据…</p>");
-          state.preventDialogClose = true;
-          try {
-            const res = await services.bgMsg({ type: "RESET_DOMAIN", domain });
-            if (!res || res.ok !== true) {
-              dialog.closeDialog();
-              dialog.showToast("重置失败: " + (res?.error || "未知错误"), "error");
-              return;
-            }
-            state.selectedIds.clear();
-            store.set("batchMode", false);
-            store.set(domain, []);
-            // 作者域整域清空：主键集同步清空（作品卡作者 chip 立即失效）
-            if (config.AUTHOR_RECORD_DOMAINS.includes(domain)) await this.#syncAuthorUids(domain, true);
-            await groups.renderGroupTabs();
-            dialog.closeDialog();
-            dialog.showToast(`${domainName}数据已清空`, "success");
-          } finally {
-            state.preventDialogClose = false;
-          }
+          await dialog.runTask({
+            progressTitle: "正在重置…",
+            progressHtml: "<p>正在清空数据…</p>",
+            task: async () => {
+              const res = await services.bgMsg({ type: "RESET_DOMAIN", domain });
+              if (!res || res.ok !== true) throw new Error(res?.error || "未知错误");
+              state.selectedIds.clear();
+              store.set("batchMode", false);
+              store.set(domain, []);
+              // 作者域整域清空：主键集同步清空（作品卡作者 chip 立即失效）
+              if (config.AUTHOR_RECORD_DOMAINS.includes(domain)) await this.#syncAuthorUids(domain, true);
+              await groups.renderGroupTabs();
+            },
+            successText: `${domainName}数据已清空`,
+            failPrefix: "重置失败: ",
+          });
         },
       },
     ]);

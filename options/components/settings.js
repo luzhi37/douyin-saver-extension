@@ -1,6 +1,8 @@
 // ---------- Settings ----------
-import { dom, state, runtimeConfig, services, utils } from '../core.js';
+import { config, dom, state, runtimeConfig, services, utils } from '../core.js';
 import { dialog } from './dialog.js';
+import { SelectMenu } from './select-menu.js';
+import { randomReview } from './random-review.js';
 
 // 运行参数键（面板渲染与关闭保存共用单一来源，与 runtimeConfig.DEFAULTS 键一致）
 const CONFIG_FIELDS = [
@@ -20,12 +22,17 @@ const CONFIG_FIELDS = [
 class Settings {
   #dialogBody = null;
   #pendingIndependent = null;
+  #reviewMenu = null;
+  #reviewSource = "works";
 
   #$(id) {
     return this.#dialogBody.querySelector("#" + id);
   }
 
   async openPanel() {
+    // 上一轮设置弹窗的回顾下拉实例（模板每次打开重建 DOM）：先移除其 document 监听
+    this.#reviewMenu?.destroy();
+    this.#reviewMenu = null;
     const tmpl = document.getElementById("settingsDialogTemplate");
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
@@ -42,10 +49,11 @@ class Settings {
   }
 
   async #refresh() {
-    const [ci, { independentMode }, ct] = await Promise.all([
+    const [ci, { independentMode }, ct, reviewConfig] = await Promise.all([
       services.bgMsg({ type: "GET_COOKIE_INFO" }),
       chrome.storage.local.get("independentMode"),
       services.bgMsg({ type: "GET_CACHE_TIMES" }).catch(() => ({ ok: false, times: {} })),
+      randomReview.getConfig(),
     ]);
     this.#$("settingsModeSwitch").checked = Boolean(this.#pendingIndependent ?? independentMode);
     // secUid
@@ -53,8 +61,28 @@ class Settings {
     this.#$("settingsSecUid").value = secUid || "";
     // 缓存状态
     this.#renderCacheList(ci, ct);
+    // 回顾配置（来源下拉 + 抽取数量）
+    this.#renderReviewConfig(reviewConfig);
     // 运行参数
     this.#renderConfigSection();
+  }
+
+  // 回顾配置：首次渲染创建 SelectMenu；缓存刷新重入时只同步选中值，不重复绑定监听
+  #renderReviewConfig({ sourceDomain, count }) {
+    this.#reviewSource = sourceDomain;
+    const sourceEl = this.#$("settingsReviewSource");
+    if (sourceEl && !this.#reviewMenu) {
+      this.#reviewMenu = new SelectMenu(
+        sourceEl,
+        (opt) => {
+          this.#reviewSource = opt.dataset.source;
+        },
+        { optionAttr: "data-source" },
+      );
+    }
+    this.#reviewMenu?.sync(sourceDomain, config.DOMAINS_META[sourceDomain].label);
+    const countInput = this.#$("settingsReviewCount");
+    if (countInput) countInput.value = String(count);
   }
 
   #renderConfigSection() {
@@ -202,7 +230,7 @@ class Settings {
     }
   }
 
-  // X 关闭时校验并持久化运行参数与 secUid；返回 false 表示校验未通过、保持弹窗打开
+  // X 关闭时校验并持久化运行参数、回顾配置与 secUid；返回 false 表示校验未通过、保持弹窗打开
   async saveBeforeClose() {
     if (!this.#dialogBody) return true;
     const section = this.#dialogBody.querySelector("#settingsConfigSection");
@@ -238,10 +266,24 @@ class Settings {
       dialog.showToast("批次暂停最小值不能大于最大值", "error");
       return false;
     }
+    // 回顾配置：数量必须是 1–500 的整数；来源由下拉选择保证合法
+    const reviewCountInput = this.#dialogBody.querySelector("#settingsReviewCount");
+    const rawReviewCount = reviewCountInput?.value.trim() ?? "";
+    const reviewCount = Number(rawReviewCount);
+    if (
+      !rawReviewCount ||
+      !Number.isInteger(reviewCount) ||
+      reviewCount < 1 ||
+      reviewCount > config.RANDOM_REVIEW_MAX_COUNT
+    ) {
+      dialog.showToast(`回顾抽取数量需为 1–${config.RANDOM_REVIEW_MAX_COUNT} 的整数`, "error");
+      return false;
+    }
     try {
       await runtimeConfig.save(values);
       const secUidInput = this.#dialogBody.querySelector("#settingsSecUid");
       await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
+      await randomReview.saveConfig({ sourceDomain: this.#reviewSource, count: reviewCount });
     } catch {
       dialog.showToast("保存失败", "error");
     }

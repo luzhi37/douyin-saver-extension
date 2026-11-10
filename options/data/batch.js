@@ -5,6 +5,20 @@ import { dialog } from '../components/dialog.js';
 import { detail } from '../components/detail.js';
 import { createZip } from './zip.js';
 
+// ---------- 批量文案 ----------
+// 单元名唯一口径：回顾域按 reviewKind；作者域按域；作品型三域默认「作品」，
+// labelForWork=true 时取域名 label（移动/下载等以域为单位的文案）。
+function unitName({ labelForWork = false } = {}) {
+  const domain = state.domain;
+  if (domain === config.REVIEW_DOMAIN) {
+    return state.reviewKind === "authors" ? "回顾作者" : "回顾作品";
+  }
+  if (utils.isAuthorRecordDomain(domain)) {
+    return domain === "candidates" ? "候选作者" : "关注者";
+  }
+  return labelForWork ? config.DOMAINS_META[domain].label : "作品";
+}
+
 // ---------- Batch ----------
 class Batch {
   // Shift 范围选择的锚点：上一次（非 Shift）点击的 id
@@ -311,7 +325,7 @@ class Batch {
     const count = this.selectedCount();
     // 回顾域：只从回顾批次移除引用，来源域数据保留
     if (state.domain === config.REVIEW_DOMAIN) {
-      const name = state.reviewKind === "authors" ? "回顾作者" : "回顾作品";
+      const name = unitName();
       const delBody = document.createElement("p");
       delBody.className = "confirm-delete-msg";
       delBody.textContent = `确定从回顾批次移除选中的 ${count} 个${name}？来源域数据不会被删除。`;
@@ -320,13 +334,13 @@ class Batch {
           text: "移除",
           danger: true,
           callback: async () => {
-            await this.#runWithDialogLock(
-              "正在移除…",
-              `<p>正在移除 ${count} 个${name}…</p>`,
-              () => this.deleteSelected(),
-              `已移除 ${count} 个${name}`,
-              "移除失败: ",
-            );
+            await dialog.runTask({
+              progressTitle: "正在移除…",
+              progressHtml: `<p>正在移除 ${count} 个${name}…</p>`,
+              task: () => this.deleteSelected(),
+              successText: `已移除 ${count} 个${name}`,
+              failPrefix: "移除失败: ",
+            });
           },
         },
       ]);
@@ -337,12 +351,7 @@ class Batch {
       await this.cancelAndRemoveSelected();
       return;
     }
-    const isAuthorRecord = utils.isAuthorRecordDomain(state.domain);
-    const name = isAuthorRecord
-      ? state.domain === "candidates"
-        ? "候选作者"
-        : "关注者"
-      : "作品";
+    const name = unitName();
     const delBody = document.createElement("p");
     delBody.className = "confirm-delete-msg";
     delBody.textContent = `确定移除选中的 ${count} 个${name}？此操作不可撤销。`;
@@ -351,13 +360,13 @@ class Batch {
         text: "移除",
         danger: true,
         callback: async () => {
-          await this.#runWithDialogLock(
-            "正在移除…",
-            `<p>正在移除 ${count} 个${name}…</p>`,
-            () => this.deleteSelected(),
-            `已移除 ${count} 个${name}`,
-            "移除失败: ",
-          );
+          await dialog.runTask({
+            progressTitle: "正在移除…",
+            progressHtml: `<p>正在移除 ${count} 个${name}…</p>`,
+            task: () => this.deleteSelected(),
+            successText: `已移除 ${count} 个${name}`,
+            failPrefix: "移除失败: ",
+          });
         },
       },
     ]);
@@ -389,13 +398,13 @@ class Batch {
         ghost: true,
         hotkey: "ctrl+enter",
         callback: async () => {
-          await this.#runWithDialogLock(
-            "正在移除…",
-            `<p>正在移除 ${count} 个作品…</p>`,
-            () => this.deleteSelected(),
-            `已移除 ${count} 个作品`,
-            "移除失败: ",
-          );
+          await dialog.runTask({
+            progressTitle: "正在移除…",
+            progressHtml: `<p>正在移除 ${count} 个作品…</p>`,
+            task: () => this.deleteSelected(),
+            successText: `已移除 ${count} 个作品`,
+            failPrefix: "移除失败: ",
+          });
         },
       },
       {
@@ -481,46 +490,18 @@ class Batch {
     );
   }
 
-  // 弹窗锁定执行骨架（批量删除/直接移除/批量移动共用）：更新进度 → preventDialogClose 锁定
-  // → 成功关层+success toast / 失败关层+error toast → finally 解锁。执行期弹窗已挡住 UI
-  // 变更，成功后不再要求"好的"确认
-  async #runWithDialogLock(progressTitle, progressHtml, task, successToast, failToast) {
-    dialog.updateDialog(progressTitle, progressHtml);
-    state.preventDialogClose = true;
-    try {
-      if (await task()) {
-        dialog.closeDialog();
-        dialog.showToast(successToast, "success");
-      }
-    } catch (err) {
-      dialog.closeDialog();
-      dialog.showToast(failToast + (err.message || String(err)), "error");
-    } finally {
-      state.preventDialogClose = false;
-    }
-  }
-
   async handleBatchMove() {
     if (this.selectedCount() === 0) return;
     const count = this.selectedCount();
-    const isReview = state.domain === config.REVIEW_DOMAIN;
-    const name = isReview
-      ? state.reviewKind === "authors"
-        ? "回顾作者"
-        : "回顾作品"
-      : utils.isAuthorRecordDomain(state.domain)
-        ? state.domain === "candidates"
-          ? "候选作者"
-          : "关注者"
-        : config.DOMAINS_META[state.domain].label;
+    const name = unitName({ labelForWork: true });
     dialog.showGroupSelectDialog(`移动到分组...`, await services.loadGroups(), async (groupId) => {
-      await this.#runWithDialogLock(
-        "正在移动…",
-        `<p>正在移动 ${count} 个${name}…</p>`,
-        () => this.moveSelected(groupId),
-        `已移动 ${count} 个${name}`,
-        "移动失败: ",
-      );
+      await dialog.runTask({
+        progressTitle: "正在移动…",
+        progressHtml: `<p>正在移动 ${count} 个${name}…</p>`,
+        task: () => this.moveSelected(groupId),
+        successText: `已移动 ${count} 个${name}`,
+        failPrefix: "移动失败: ",
+      });
     });
   }
 
@@ -613,7 +594,7 @@ class Batch {
     if (this.selectedCount() === 0) return;
     if (!utils.isWorkRecordDomain()) return;
     const count = this.selectedCount();
-    const label = state.domain === config.REVIEW_DOMAIN ? "回顾作品" : config.DOMAINS_META[state.domain].label;
+    const label = unitName({ labelForWork: true });
     const all = state[state.domain].filter((w) => state.selectedIds.has(w.awemeId));
     const targets = all.filter(
       (w) => (w.type === "video" && utils.getVideoUrl(w)) || (w.type === "note" && w.images?.length),

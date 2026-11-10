@@ -2,6 +2,7 @@
 import { config, dom, state, services, store } from '../core.js';
 import { worksGrid, favoritesGrid, collectionsGrid, reviewWorksGrid } from '../grids/works-grid.js';
 import { followingsGrid, candidatesGrid, reviewAuthorsGrid } from '../grids/author-grid.js';
+import { noteProgrammaticScroll } from '../grids/virtual-grid.js';
 import { batch } from '../data/batch.js';
 import { groups } from '../data/groups.js';
 import { detail } from './detail.js';
@@ -94,6 +95,7 @@ class AppShell {
     // 域切换显式归零：尾部占位（#syncTailReserve）使 wipe clamp 不再触发（重渲任务内总高
     // 即恢复终值、旧偏移合法存留）。置于 closeDetail 之后，防其滚动恢复覆盖归零
     dom.mainGrid.scrollTop = 0;
+    noteProgrammaticScroll();
     if (!dom.sidebar.classList.contains("sidebar-zero")) {
       sidebar.setSidebarWidth(0);
       sidebar.saveSidebarWidth(0);
@@ -138,6 +140,7 @@ class AppShell {
       cachedTotal != null ? { domain, groupId, total: cachedTotal } : null;
     dom.sbCount.textContent = cachedTotal != null ? "0" : "…";
     dom.mainGrid.scrollTop = 0;
+    noteProgrammaticScroll();
     await this.loadDomainDataSafe();
     store.refreshGroups();
   }

@@ -28,9 +28,34 @@ class Dialog {
 
   // 叠加一层新弹窗：当前层原地保留为父层，关闭新层后自动回到父层继续操作
   pushDialog(title, body, footerBtns, onClose, { autoFocus = true } = {}) {
+    // 无基层时（侧栏等非弹窗入口发起长任务）落回基层语义：closeDialog 收口隐藏基层遮罩，
+    // 否则会留下一个已隐藏却永不销毁的叠层实例
+    if (this.#layers.length === 0) {
+      this.#layers.push(this.#baseLayer());
+      this.#mountLayer(this.#layers[0], title, body, footerBtns, onClose, autoFocus);
+      return;
+    }
     const layer = this.#createLayer();
     this.#layers.push(layer);
     this.#mountLayer(layer, title, body, footerBtns, onClose, autoFocus);
+  }
+
+  // 长任务弹窗统一收尾：更新进度 → 锁层 → 执行 → 关层+提示 → 解锁。
+  // task 失败必须 throw（自定义文案放 Error.message），与批量操作现有语义一致；
+  // 执行期弹窗已挡住 UI 变更，成功后不再要求「好的」确认。
+  async runTask({ progressTitle, progressHtml = "", task, successText, failPrefix = "操作失败: " }) {
+    this.updateDialog(progressTitle, progressHtml);
+    state.preventDialogClose = true;
+    try {
+      await task();
+      this.closeDialog();
+      this.showToast(successText, "success");
+    } catch (err) {
+      this.closeDialog();
+      this.showToast(failPrefix + (err.message || String(err)), "error");
+    } finally {
+      state.preventDialogClose = false;
+    }
   }
 
   // 基层帧：容器即静态 #dialogOverlay，元素节点稳定（showDialog 只清空 body/footer 内部，不换节点）
@@ -269,32 +294,28 @@ class Dialog {
     this.addDialogBtn("好的", "primary", () => this.closeDialog());
   }
 
-  // 分型 toast：右下角堆叠（最多 3 条），info/success 短驻留、error 长驻留；
-  // message 可为字符串或 { title, description }，兼容全部既有调用点
+  // 分型 toast：顶部居中堆叠（最多 3 条），info/success 短驻留、error 长驻留；
+  // message 可为字符串或 { title, description }，兼容全部既有调用点。
+  // 视觉与注入侧一致：单条纯文本 pill（无图标 / 关闭钮），只靠左侧色条区分类型
   showToast(message, type = "info") {
     const stack = dom.toastStack;
     if (!stack) return;
     const tone = ["info", "success", "error"].includes(type) ? type : "info";
     const payload = typeof message === "string" ? { title: message } : message || {};
-    const iconId = tone === "success" ? "icon-toast-check" : tone === "error" ? "icon-error" : "icon-info";
 
     const toast = document.createElement("div");
     toast.className = `toast toast-${tone}`;
     // 容器已 aria-live=polite；仅错误提升为 alert，避免嵌套 live region 重复播报
     if (tone === "error") toast.setAttribute("role", "alert");
     toast.innerHTML =
-      `<span class="toast-icon"><svg width="13" height="13" aria-hidden="true"><use href="#${iconId}"></use></svg></span>` +
       '<div class="toast-body"><div class="toast-title"></div>' +
       (payload.description ? '<div class="toast-desc"></div>' : "") +
-      "</div>" +
-      '<button class="toast-close" type="button" aria-label="关闭提示">' +
-      '<svg width="12" height="12" aria-hidden="true"><use href="#icon-close"></use></svg></button>';
+      "</div>";
 
     toast.querySelector(".toast-title").textContent = String(payload.title || "");
     if (payload.description) {
       toast.querySelector(".toast-desc").textContent = String(payload.description);
     }
-    toast.querySelector(".toast-close").addEventListener("click", () => this.#dismissToast(toast));
 
     // 超出容量先移除最旧一条（连同其计时器），保证新消息不被静默丢弃
     while (stack.children.length >= 3) {
