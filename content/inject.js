@@ -130,14 +130,21 @@
   }
 
   // ---------- SignatureCapture ----------
-  // 签名缓存：从页面 fetch 请求捕获各端点签名参数，供 ApiClient 复用。
+  // 请求参数缓存：从页面 fetch 请求捕获各端点 query 参数，stripSdkKeys 剥签名键后供
+  // ApiClient 代签请求合并（签名由页面包装器注入，捕获物不复用——预塞旧签名会让包装器
+  // 不再处理导致 403，见 docs/09）。
+  // 端点 → 缓存键名表（键名同时是 GET_SECURITY_STATUS signatures 的字段名）
+  const CAPTURE_FIELDS = [
+    ["following", CONFIG.API.FOLLOWING],
+    ["profile", CONFIG.API.PROFILE_OTHER],
+    ["post", CONFIG.API.POST],
+    ["collection", CONFIG.API.COLLECTION],
+    ["favorite", CONFIG.API.FAVORITE],
+    ["detail", CONFIG.API.DETAIL],
+  ];
   class SignatureCapture {
-    #detailQuery = null;
-    #profileQuery = null;
-    #followingQuery = null;
-    #postQuery = null;
-    #collectionQuery = null;
-    #favoriteQuery = null;
+    // 六端点捕获缓存（表驱动）：key → 参数 Map。端点串互不为子串，同一 URL 至多命中一个键
+    #queries = new Map();
 
     captureFromUrl(url, parsedUrl) {
       try {
@@ -148,34 +155,12 @@
         if (typeof url !== "string" || url.indexOf("/aweme/v1/web/") === -1) return;
         const u = parsedUrl || new URL(url);
         const path = u.pathname;
-        const hit =
-          path.includes(CONFIG.API.FOLLOWING) ||
-          path.includes(CONFIG.API.PROFILE_OTHER) ||
-          path.includes(CONFIG.API.POST) ||
-          path.includes(CONFIG.API.COLLECTION) ||
-          path.includes(CONFIG.API.FAVORITE) ||
-          path.includes(CONFIG.API.DETAIL);
-        if (!hit) return;
+        if (!CAPTURE_FIELDS.some(([, api]) => path.includes(api))) return;
         const params = new Map();
         for (const entry of u.searchParams.entries()) params.set(entry[0], entry[1]);
         params.__dyCaptureTime = Date.now();
-        if (path.includes(CONFIG.API.FOLLOWING)) {
-          this.#followingQuery = params;
-        }
-        if (path.includes(CONFIG.API.PROFILE_OTHER)) {
-          this.#profileQuery = params;
-        }
-        if (path.includes(CONFIG.API.POST)) {
-          this.#postQuery = params;
-        }
-        if (path.includes(CONFIG.API.COLLECTION)) {
-          this.#collectionQuery = params;
-        }
-        if (path.includes(CONFIG.API.FAVORITE)) {
-          this.#favoriteQuery = params;
-        }
-        if (path.includes(CONFIG.API.DETAIL)) {
-          this.#detailQuery = params;
+        for (const [key, api] of CAPTURE_FIELDS) {
+          if (path.includes(api)) this.#queries.set(key, params);
         }
       } catch (_e) {}
     }
@@ -222,10 +207,11 @@
 
     // ===== 共享工具函数 =====
 
-    // 登录态 URL 为 /user/self 时无法从路径取真实 sec_uid：从已捕获的签名参数兜底解析
+    // 登录态 URL 为 /user/self 时无法从路径取真实 sec_uid：从已捕获的请求参数兜底解析
+    //（sec_user_id 是业务参数，与签名键无关）
     resolveSelfSecUid() {
-      const candidates = [this.#favoriteQuery, this.#postQuery, this.#followingQuery, this.#collectionQuery];
-      for (const q of candidates) {
+      for (const key of ["favorite", "post", "following", "collection"]) {
+        const q = this.#queries.get(key);
         if (!q) continue;
         const secUid = q.get("sec_user_id");
         if (secUid && secUid !== "self") return secUid;
@@ -237,26 +223,29 @@
     // 单一出处——EventRouter.#onFetchProfileOther 的 NO_SIGNATURE 预判与
     // ApiClient.fetchProfileOther 的实际取数共用，调整回退顺序只改这里
     profileSigSource() {
-      return this.#profileQuery || this.#followingQuery || this.#postQuery || this.#favoriteQuery || this.#collectionQuery;
+      return this.get("profile") || this.get("following") || this.get("post") || this.get("favorite") || this.get("collection");
     }
 
+    get(key) {
+      return this.#queries.get(key) || null;
+    }
     get detailQuery() {
-      return this.#detailQuery;
+      return this.get("detail");
     }
     get profileQuery() {
-      return this.#profileQuery;
+      return this.get("profile");
     }
     get followingQuery() {
-      return this.#followingQuery;
+      return this.get("following");
     }
     get postQuery() {
-      return this.#postQuery;
+      return this.get("post");
     }
     get collectionQuery() {
-      return this.#collectionQuery;
+      return this.get("collection");
     }
     get favoriteQuery() {
-      return this.#favoriteQuery;
+      return this.get("favorite");
     }
   }
   const signatureCapture = new SignatureCapture();
@@ -686,36 +675,40 @@
       }
     }
 
-    // ===== 关注列表拉取 (tools 移植) =====
+    // ===== 签名请求公共管道（关注/资料/作者作品/点赞收藏四族共用） =====
 
-    async fetchFollowingPage(secUid, offset, count, externalSignal) {
-      const url = signatureCapture.buildUrl(
-        CONFIG.API.FOLLOWING,
-        Object.assign({}, CONFIG.DEVICE_PARAMS, {
-          sec_user_id: secUid,
-          offset: String(offset),
-          count: String(count),
-        }),
-      );
+    // buildUrl(DEVICE_PARAMS) → strip×2 → mergeParams → guardedFetch → json。
+    // following/profile 返回裸 json（无业务码断言），#fetchAwemeListPage 拿到后自行
+    // assert+transform；query 传原始捕获缓存（strip 幂等，profile 的后置删除重复过一遍无害）
+    async #signedFetch(api, params, query, { timeout = CONFIG.TIMEOUT.FETCH_PAGE, signal, method, headers } = {}) {
+      const url = signatureCapture.buildUrl(api, Object.assign({}, CONFIG.DEVICE_PARAMS, params));
       const merged = signatureCapture.mergeParams(
         url,
-        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.followingQuery)),
+        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(query)),
       );
-      const resp = await this.#guardedFetch(merged.toString(), {
-        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
-        signal: externalSignal,
-      });
+      const init = { timeout, signal };
+      if (method) {
+        init.method = method;
+        init.headers = headers;
+      }
+      const resp = await this.#guardedFetch(merged.toString(), init);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       return await resp.json();
     }
 
+    // ===== 关注列表拉取 (tools 移植) =====
+
+    fetchFollowingPage(secUid, offset, count, externalSignal) {
+      return this.#signedFetch(
+        CONFIG.API.FOLLOWING,
+        { sec_user_id: secUid, offset: String(offset), count: String(count) },
+        signatureCapture.followingQuery,
+        { signal: externalSignal },
+      );
+    }
+
     async fetchProfileOther({ secUid = "", uid = "" }, externalSignal) {
       const sigSource = signatureCapture.profileSigSource();
-      const lookup = uid ? { user_id: String(uid) } : { sec_user_id: secUid };
-      const url = signatureCapture.buildUrl(
-        CONFIG.API.PROFILE_OTHER,
-        Object.assign({}, CONFIG.DEVICE_PARAMS, lookup),
-      );
       // sigSource 跨端点兜底（profileQuery || followingQuery || ...），每环都必须经
       // stripSdkKeys 剥签名键——否则旧 x-secsdk-web-signature 预塞回 URL，页面包装器
       // 不再重签，Argus 按过期签名拒绝（post/profile 已被强制 webSign 校验）。
@@ -723,111 +716,81 @@
       // 会让一次请求同时带两个标识，可能查到错误用户或被服务端拒绝。
       const captured = signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(sigSource));
       if (captured) captured.delete(uid ? "sec_user_id" : "user_id");
-      const merged = signatureCapture.mergeParams(url, captured);
-      const resp = await this.#guardedFetch(merged.toString(), {
-        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
-        signal: externalSignal,
-      });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      return await resp.json();
+      return this.#signedFetch(
+        CONFIG.API.PROFILE_OTHER,
+        uid ? { user_id: String(uid) } : { sec_user_id: secUid },
+        captured,
+        { signal: externalSignal },
+      );
     }
 
     // ===== 作者作品拉取 (tools 移植, 侧边栏用) =====
 
     async fetchAuthorWorks(secUid, startCursor, count) {
-      const url = signatureCapture.buildUrl(
+      const data = await this.#signedFetch(
         CONFIG.API.POST,
-        Object.assign({}, CONFIG.DEVICE_PARAMS, {
-          sec_user_id: secUid,
-          max_cursor: String(startCursor || 0),
-          count: String(count),
-        }),
+        { sec_user_id: secUid, max_cursor: String(startCursor || 0), count: String(count) },
+        signatureCapture.postQuery,
       );
-      const merged = signatureCapture.mergeParams(
-        url,
-        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.postQuery)),
-      );
-      const resp = await this.#guardedFetch(merged.toString(), { timeout: CONFIG.TIMEOUT.FETCH_PAGE });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const data = await resp.json();
       assertApiOk(data);
 
       const works = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
-      const hasMore = hasMoreFlag(data);
       return {
         works,
-        hasMore,
+        hasMore: hasMoreFlag(data),
         maxCursor: data.max_cursor || (startCursor || 0) + count,
       };
     }
 
     // ===== 点赞/收藏分页拉取 =====
 
-    async fetchOneFavoritesPage(secUid, cursor, count, signal) {
-      const url = signatureCapture.buildUrl(
-        CONFIG.API.FAVORITE,
-        Object.assign({}, CONFIG.DEVICE_PARAMS, {
-          sec_user_id: secUid,
-          count: String(count),
-          max_cursor: String(cursor),
-        }),
-      );
-      const merged = signatureCapture.mergeParams(
-        url,
-        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.favoriteQuery)),
-      );
-      const resp = await this.#guardedFetch(merged.toString(), {
-        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
-        signal,
-      });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const data = await resp.json();
+    // 两分页拉取的公共体：仅端点/捕获缓存源/方法头/附加参数不同（点赞 GET 带 sec_user_id、
+    // 收藏 POST urlencoded body）。签名管道见 #signedFetch；此处断言 → aweme_list 映射 →
+    // hasMore/cursor 推进，返回 { items, hasMore, cursor, total, ok }。
+    async #fetchAwemeListPage({ api, query, params, method, headers, cursor, count, signal }) {
+      const data = await this.#signedFetch(api, params, query, { method, headers, signal });
       assertApiOk(data);
       const items = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
-      const hasMore = hasMoreFlag(data);
-      const nextCursor = data.cursor || data.max_cursor || cursor + count;
       return {
         items,
-        hasMore,
-        cursor: nextCursor,
+        hasMore: hasMoreFlag(data),
+        cursor: data.cursor || data.max_cursor || cursor + count,
         total: data.total,
         ok: true,
       };
     }
 
+    async fetchOneFavoritesPage(secUid, cursor, count, signal) {
+      return this.#fetchAwemeListPage({
+        api: CONFIG.API.FAVORITE,
+        query: signatureCapture.favoriteQuery,
+        params: {
+          sec_user_id: secUid,
+          count: String(count),
+          max_cursor: String(cursor),
+        },
+        cursor,
+        count,
+        signal,
+      });
+    }
+
     async fetchOneCollectionPage(cursor, count, signal) {
-      const url = signatureCapture.buildUrl(
-        CONFIG.API.COLLECTION,
-        Object.assign({}, CONFIG.DEVICE_PARAMS, {
+      return this.#fetchAwemeListPage({
+        api: CONFIG.API.COLLECTION,
+        query: signatureCapture.collectionQuery,
+        params: {
           count: String(count),
           cursor: String(cursor),
-        }),
-      );
-      const merged = signatureCapture.mergeParams(
-        url,
-        signatureCapture.stripPageKeys(signatureCapture.stripSdkKeys(signatureCapture.collectionQuery)),
-      );
-      const resp = await this.#guardedFetch(merged.toString(), {
+        },
         method: "POST",
-        timeout: CONFIG.TIMEOUT.FETCH_PAGE,
-        signal,
         headers: {
           "content-type": CONFIG.FORM_CONTENT_TYPE,
         },
+        cursor,
+        count,
+        signal,
       });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const data = await resp.json();
-      assertApiOk(data);
-      const items = (data.aweme_list || []).map((aw) => workExtractor.transformAwemeItem(aw));
-      const hasMore = hasMoreFlag(data);
-      const nextCursor = data.cursor || data.max_cursor || cursor + count;
-      return {
-        items,
-        hasMore,
-        cursor: nextCursor,
-        total: data.total,
-        ok: true,
-      };
     }
   }
   const apiClient = new ApiClient();
@@ -920,14 +883,9 @@
       return {
         key,
         keyUpdatedAt: key ? Date.now() : 0,
-        signatures: {
-          detail: this.#sigData(signatureCapture.detailQuery),
-          following: this.#sigData(signatureCapture.followingQuery),
-          profile: this.#sigData(signatureCapture.profileQuery),
-          post: this.#sigData(signatureCapture.postQuery),
-          favorite: this.#sigData(signatureCapture.favoriteQuery),
-          collection: this.#sigData(signatureCapture.collectionQuery),
-        },
+        signatures: Object.fromEntries(
+          CAPTURE_FIELDS.map(([name]) => [name, this.#sigData(signatureCapture.get(name))]),
+        ),
         hooks: {
           fetch: !!window.__dyManagerFetchHooked,
           xhr: !!window.__dyManagerXhrHooked,
@@ -971,9 +929,8 @@
               console.warn("[DY] capture works failed:", e);
             }
           } else if (response.ok && !isInternal && url && typeof url === "string" && url.startsWith("http")) {
-            try {
-              signatureCapture.captureFromUrl(url);
-            } catch (_e) {}
+            // captureFromUrl 整体自包 try/catch（热路径防御单一出处），无需外层再兜
+            signatureCapture.captureFromUrl(url);
           }
           return response;
         });
@@ -1616,17 +1573,12 @@
 
   // ---------- 启动 ----------
   fetchHook.install();
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      document.dispatchEvent(
-        new CustomEvent(CONFIG.EVENTS.CAPTURE_BROWSER_FEATURES, { detail: apiClient.collectBrowserFeatures() }),
-      );
-      buttonInjector.start();
-    });
-  } else {
+  const start = () => {
     document.dispatchEvent(
       new CustomEvent(CONFIG.EVENTS.CAPTURE_BROWSER_FEATURES, { detail: apiClient.collectBrowserFeatures() }),
     );
     buttonInjector.start();
-  }
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
 })();

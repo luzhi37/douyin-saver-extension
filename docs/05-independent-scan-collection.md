@@ -1,5 +1,8 @@
 # 05 · 独立模式（逆向）— 扫描收藏
 
+> B6（2026-11-11）补充：本任务已接入任务队列——循环以 `waitForTurn`/`checkpoint` 两点挂起，支持「暂停（现场保留）/ 续跑（从检查点继续）」，详见 [plans/task-queue-pause-resume-2026-11-11.md](../plans/task-queue-pause-resume-2026-11-11.md)。
+
+> **任务坞迁移（2026-11-11）**：下述「进度弹窗、`COLLECTION_PROGRESS`、`sendResponse` 终态、`withCancelGuard`」均为旧机制，现已改为：`FETCH_COLLECTION { persist, taskId }` 登记 TaskRegistry（`exclusive`）→ 立即 ack → `TASK_PROGRESS` → END `persistScan`（一遍式落库 + 丢失检测，取消时整个早退零落库）+ 终态 `STORE_CHANGED` → `TASK_DONE`（`saved/lostUids`）；坞内按原弹窗文案显示「新增 X · 更新 Y · 已取消 Z 个」，`lostUids` 直接挂「移入稍后删除」。端点/webSign/盐轮换机制不变。
 > 职责边界：`FETCH_COLLECTION` 在**独立模式**下的完整链路——background 直接翻页 POST `/aweme/v1/web/aweme/listcollection/`。该端点被服务端 Argus 额外校验，必须携带 **webSign 签名**（`IndependentClient.request` 已默认开启 webSign，独立模式全端点生效）；本文同时收录该签名的逆向定案、绑定域实验结论与盐轮换处置指南。
 
 ## 概述
@@ -9,7 +12,7 @@ options「扫描收藏」→ `domainScanSync.syncDomain("collections")` 打开�
 - while 循环翻页：环境参数走 query（`credentials.buildBaseParams()`），业务分页参数 `count/cursor` 走 urlencoded body——空 body 的 POST 固定被 Argus 以 `Signature Not Found` 拒绝；
 - 每页经 `independentClient.request(..., { method:"POST", ... })` 发出，叠加 Argus webSign 三件套头（request 内默认开启）；
 - 条目经 `formatWork` 归一化；进度 `COLLECTION_PROGRESS` 仅含已收集数/是否有更多/总数；
-- 循环收尾由 background `scanTasks.persistScan` 按 `persist` 域**直接落库**（stamps 一遍式写 + 丢失检测，见 [10](./10-storage-write-and-import.md)），响应 `{ ok, requestId, works, timedOut, saved, lostUids }` 返回 options；弹窗展示「新增/更新/已取消」汇总，丢失条目（扫描期间已取消收藏）经垃圾桶按钮移入「稍后删除」分组。
+- 循环落库为 background `createScanWriter` **分块确认写**（每累计 `SCAN_CHUNK` 条单事务 upsert 静默落库、写后释放内存，见 [10](./10-storage-write-and-import.md)）；丢失检测（结论写）仅完整扫描的终态执行，`TASK_DONE` 携带 `saved { added, updated, changed }` 与 `lostUids`，丢失条目（扫描期间已取消收藏）经任务坞垃圾桶按钮移入「稍后删除」分组。中途失败/取消保留已写块、不出丢失结论。
 
 > 边界说明：**点赞扫描（FETCH_FAVORITES）无独立分支**——favorite GET 端点受 Turing 风控验证，独立模式不可用（待补充：如需支持须另行逆向 Turing 方案）。点赞扫描仅 Tab 模式，链路见 [09](./09-inject-tab-mode.md)。
 
@@ -36,8 +39,8 @@ options: domainScanSync.syncDomain("collections")
                  └─ cursor = data.cursor || data.max_cursor || cursor+20
                sendMessage(COLLECTION_PROGRESS { collected, hasMore, total, requestId })
                页间延迟 syncCollection MIN~MAX ms
-          ├─ persistScan(persist, all, cancelled)：stamps 一遍式落库 + 丢失检测（见 10）
-          └─ sendResponse({ ok:true, requestId, works: all, timedOut, saved, lostUids })
+          ├─ createScanWriter 分块确认写（每 SCAN_CHUNK 条单事务 upsert 静默落库，见 10）
+          └─ 终态：冲刷余块 + 完整扫描才做丢失检测 → TASK_DONE { saved, lostUids }
 
 options: 弹窗收尾「新增 X · 更新 Y · 已取消 Z」；lostUids 非空挂垃圾桶按钮（移入「稍后删除」分组）
 ```
@@ -95,7 +98,7 @@ SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"                // CONFIG.WEB_SIGN_SALT
 ```js
 // background/tasks/independent-tasks.js
 async function independentTasks.fetchCollection(persist, sendResponse)
-// 入参：persist = "favorites" | "collections"（persistScan 直写落库域）
+// 入参：persist = "favorites" | "collections"（createScanWriter 分块确认写落库域）
 // 出参：{ ok:true, requestId, works: Work[], timedOut, saved, lostUids }
 //     | { ok:false, error }
 // 进度：COLLECTION_PROGRESS { collected, hasMore, total, requestId }
@@ -104,7 +107,7 @@ credentials.getMsToken() -> Promise<string>              // 五级来源，结�
 credentials.mintMsToken() -> Promise<string>             // mssdk 兑换，失败返回 ""（getMsToken 内部步骤）
 credentials.getClockSkew() -> Promise<number>            // HEAD douyin.com 取 Date 头，缓存 5 分钟
 credentials.getWebId() / credentials.refreshWebIdChain() // webid 三级获取 / 强制重取并回写 cookie
-scanTasks.persistScan(persist, all, cancelled)           // stamps 一遍式落库 + 丢失检测（见 10）
+createScanWriter(persist)                                // 分块确认写落库器 + 终态丢失检测（见 10）
 ```
 
 ```js
@@ -112,7 +115,7 @@ scanTasks.persistScan(persist, all, cancelled)           // stamps 一遍式落�
 export class Crypto { ... static md5Hex(...) -> string }   // 标准 MD5 → 32 位小写 hex（SW 无 node crypto，纯 JS 实现）
 
 // options/ —— 下游消费
-domainScanSync.syncDomain("collections")   // 进度弹窗驱动；落库由 background persistScan 直写
+domainScanSync.syncDomain("collections")   // 任务坞登记驱动；落库由 background createScanWriter 分块直写
 lostUids 非空 → dialog.addTrashButton → moveLostToTrash（移入「稍后删除」分组）
 ```
 
@@ -327,7 +330,7 @@ CryptoJS.MD5 = (msg, ...rest) => {
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | chrome.storage.local 凭据缓存键表、DomainScanSync 下游 |
 | 02 | [02-independent-sync-works.md](./02-independent-sync-works.md) | independentClient.request 非 webSign 主路径、buildBaseParams 会话敏感项 |
 | 06 | [06-independent-cancel-collection.md](./06-independent-cancel-collection.md) | 批量取消收藏的独立模式实现 |
-| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | persistScan 直写进入的合并路径（mergeWork 去重保护） |
+| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | createScanWriter 分块确认写进入的合并路径（mergeWork 去重保护） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 4（本端点专用 priority 2 规则）与 rule 7（mssdk 兑换头） |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式 fetchOneCollectionPage 的"包装器代签"方案对照 |
 | — | [TIKTOK_REFERENCE.md](./TIKTOK_REFERENCE.md) | `/aweme/listcollection/` 端点表、msToken 模块对照 |

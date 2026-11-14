@@ -160,6 +160,14 @@
   }
   const toast = new Toast();
 
+  // LRU 裁剪（CaptureCache/RecordStatus 共用）：超上限时从最旧端删至 trimTo
+  function trimLru(map, max, trimTo) {
+    if (map.size <= max) return;
+    let toDelete = map.size - trimTo;
+    const iter = map.keys();
+    while (toDelete-- > 0) map.delete(iter.next().value);
+  }
+
   // ---------- CaptureCache ----------
   // 作品捕获缓存：inject 捕获的作品暂存于此，保存时按 LRU 命中补全信息。
   class CaptureCache {
@@ -195,17 +203,21 @@
       for (const w of works) {
         if (w && w.awemeId) this.#map.set(w.awemeId, w);
       }
-      if (this.#map.size > this.#MAX) {
-        let toDelete = this.#map.size - this.#TRIM_TO;
-        const iter = this.#map.keys();
-        while (toDelete-- > 0) this.#map.delete(iter.next().value);
-      }
+      trimLru(this.#map, this.#MAX, this.#TRIM_TO);
     }
 
     #onCaptureFeatures(e) {
       const features = e.detail;
       if (!features) return;
-      chrome.runtime.sendMessage({ type: "CAPTURE_BROWSER_FEATURES", features }).catch(() => {});
+      // 特征采集失败 = 独立模式指纹未落库，不能无痕；扩展重载时 sendMessage 会同步 throw，
+      // 仅 .catch 接不住（对齐 RecordStatus/CandidateSaver 的 try/catch 处理）
+      try {
+        chrome.runtime
+          .sendMessage({ type: "CAPTURE_BROWSER_FEATURES", features })
+          .catch((err) => console.warn("[DY] capture features failed:", err));
+      } catch (err) {
+        console.warn("[DY] capture features failed:", err);
+      }
     }
   }
   const captureCache = new CaptureCache();
@@ -309,11 +321,7 @@
     #remember(key, status) {
       this.#cache.delete(key);
       this.#cache.set(key, { at: Date.now(), status });
-      if (this.#cache.size > RECORD_STATUS.MAX) {
-        let toDelete = this.#cache.size - RECORD_STATUS.TRIM_TO;
-        const iter = this.#cache.keys();
-        while (toDelete-- > 0) this.#cache.delete(iter.next().value);
-      }
+      trimLru(this.#cache, RECORD_STATUS.MAX, RECORD_STATUS.TRIM_TO);
     }
   }
   const recordStatus = new RecordStatus();

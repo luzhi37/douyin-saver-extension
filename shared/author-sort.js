@@ -19,9 +19,24 @@ export function authorKeyOf(work) {
   return String(work?.uid || work?.nickname || "");
 }
 
+// 作者作品数排序唯一口径：count 降序；同 count 按 authorKey 升序。
+// background 的作者簇切页与 options 的本地 rank 必须共用本比较器，否则分页边界会漂移。
+export function compareAuthorCount(aKey, aCount, bKey, bCount) {
+  return (bCount || 0) - (aCount || 0) || compareText(aKey, bKey);
+}
+
+// counts: Map<authorKey, count> → Map<authorKey, rank>（rank 0 = 作品数最多）
+export function buildAuthorRank(counts) {
+  return new Map(
+    [...(counts || new Map()).entries()]
+      .sort((a, b) => compareAuthorCount(a[0], a[1], b[0], b[1]))
+      .map(([key], i) => [key, i]),
+  );
+}
+
 // 作者簇：count 降序；同 count 按 authorKey 升序
 export function compareAuthorCluster(a, b) {
-  return b.ids.length - a.ids.length || compareText(a.key, b.key);
+  return compareAuthorCount(a.key, a.ids.length, b.key, b.ids.length);
 }
 
 // 簇内：createTime 降 → savedAt 降 → awemeId 降（全显式 tie-break，不依赖稳定排序）

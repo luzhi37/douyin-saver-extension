@@ -4,6 +4,16 @@
 
 import { sortSavedAtDesc, mergeSavedAtDesc, authorKeyOf } from "../shared/author-sort.js";
 import { RUNTIME_DEFAULTS } from "../shared/runtime-defaults.js";
+import {
+  GRID_MOUNT_MAX,
+  REVIEW_DEFAULT_COUNT,
+  REVIEW_MAX_COUNT,
+  REVIEW_MAX_EXCLUDE,
+  IMPORT_TRANSFER_THRESHOLD,
+  IMPORT_TRANSFER_CHUNK,
+} from "../shared/limits.js";
+import { URL_BASE, URL_USER_SELF, TAB_QUERY } from "../shared/douyin-urls.js";
+import { DOMAINS, WORK_RECORD_DOMAINS, AUTHOR_RECORD_DOMAINS, SOURCE_DOMAINS, REVIEW_DOMAIN, isKnownDomain, isWorkDomain, isAuthorDomain } from "../shared/domains.js";
 
 // ---------- config ----------
 export const config = {
@@ -25,20 +35,23 @@ export const config = {
   HOVER_PREVIEW_DELAY: 200,
   BLOB_REVOKE_DELAY: 10000,
   NOTE_AUTO_PLAY_INTERVAL: 3000,
-  // 侧边栏档位：N 列 × 固定卡宽（wN = N×CARD_SIZE + (N-1)*GAP + 2*PADDING）与收起(0)，
+  // 侧边栏档位：N 列 × 固定卡宽（wN = N×CARD_SIZE + (N-1)*GAP + 2*PADDING + 滚动条槽宽）与收起(0)，
   // 无连续宽度、无容差带；N 从 1 起由可用宽度上限决定（展开默认 3 列，见 Sidebar.DEFAULT_COLS）。
   // CARD_SIZE 为固定卡宽，经 Sidebar.initSidebar 注入 CSS 变量
   // --sb-card-size/--sb-grid-gap/--sb-grid-padding（options.css 的 var() 兜底值须与这里一致），
-  // 网格列数由 Sidebar.#applyColumns 以 inline gridTemplateColumns 落笔
-  SIDEBAR_CARD_SIZE: 210,
+  // 面板宽度档位与侧栏列轨宽都用此值（auto-fill 排出 N 列恰好铺满档位宽度）
+  // 取作品域网格卡基础宽的 80%（--dy-card-size 249 × 0.8 ≈ 199，向下取整），
+  // 侧栏卡片恒小于主网格卡（网格卡最窄也有 249×0.9 ≈ 224），两个面板不会尺寸打架
+  SIDEBAR_CARD_SIZE: 199,
   SIDEBAR_GRID_GAP: 6,
   SIDEBAR_GRID_PADDING: 8,
-  // 可用上限：availableMax = appBody - 右栏 - 分割条 - MAIN_GRID_MIN；超上限的档位从
-  // 候选剔除，全部档位放不下（非拖拽路径）被动收起归 0
+  // 可用上限：availableMax = appBody - 分割条 - MAIN_GRID_MIN（appBody 是 body 网格第 1 列，
+  // 已不含右侧导航轨，不得再减 --right-sidebar-width）；超上限的档位从候选剔除，
+  // 全部档位放不下（非拖拽路径）被动收起归 0，窗口回宽自动恢复
   // 主网格保底宽度：关注域单列卡宽带内下限（212×CARD_SIZE_BAND_MIN≈199）附近取 195
   // 作最小可读宽——侧栏在场时主网格至少呈现一列关注卡，appBody 再窄
-  //（< 195+62+226 = 483px）才允许被动收起侧栏
-  //（侧栏最小宽 226 = 其作品卡宽 210 + 2*padding）
+  //（< 195 + 分割条 6 + 侧栏最小宽 231 = 432px）才允许被动收起侧栏
+  //（侧栏最小宽 231 = 其作品卡宽 199 + 2*padding + 滚动条槽）
   SIDEBAR_MAIN_GRID_MIN: 195,
   SIDEBAR_SCROLL_THRESHOLD: 100,
   SIDEBAR_FILL_THRESHOLD: 50,
@@ -52,15 +65,17 @@ export const config = {
   CARD_HEIGHT_OFFSET: 30,
   // 自适应卡宽容差带（占理想卡宽比例，上下限对称 ±6%）：VirtualGrid #applyLayout
   // 带内卡宽钳在 [MIN, MAX]×ideal——上限防「为填满而把卡片拉得过胖」，下限防
-  // 「卡片过小不可读」；无可行解（相邻列宽差跨过整个带宽）时向下破下限 ≤ 一个
-  // 带宽换零空白，卡片明显过小才钳到上限、收少量空白
+  // 「卡片过小不可读」；无可行解（相邻列宽差跨过整个带宽）时改取较少列、钳到上限，
+  // 余量由 justify-content 均分——容差带是硬约束，不向下破下限
   CARD_SIZE_BAND_MIN: 0.94,
   CARD_SIZE_BAND_MAX: 1.06,
-  // 作品卡（works/favorites/collections 三域，WorksGrid）专用宽容差带（±10%）：比作者域
-  // 沿用的全局默认（±6%）更宽，卡片在填满列宽时的可伸缩档位更大（经 VirtualGrid 构造参数
-  // sizeBandMin/sizeBandMax 按实例覆盖；作者域仍用上面的全局默认）
-  WORK_CARD_SIZE_BAND_MIN: 0.9,
-  WORK_CARD_SIZE_BAND_MAX: 1.1,
+  // 作品卡（works/favorites/collections 三域，WorksGrid）专用宽容差带（-15%/+5%）：下限比
+  // 作者域沿用的全局默认（±6%）更宽（可缩档位更大），上限比全局默认更窄——填满列宽时的
+  // 放大档位受控，避免卡片被拉得过胖（经 VirtualGrid 构造参数 sizeBandMin/sizeBandMax
+  // 按实例覆盖；作者域仍用上面的全局默认；侧栏 #mainGridMin 的作品域保底宽度按此下限
+  // 计算，改值自动跟随）
+  WORK_CARD_SIZE_BAND_MIN: 0.85,
+  WORK_CARD_SIZE_BAND_MAX: 1.05,
 
   // 详情页
   TOAST_DURATION: 2000,
@@ -92,7 +107,7 @@ export const config = {
   // 活动 DOM 硬上限（预铺与自动翻页追加共用）：改一次卡宽要对每张已挂载卡重排其内部
   // 子树，实测约 60µs/张——2000 张时折叠侧栏 = 120ms+，600 张约 20ms。自动翻页把
   // 整域条目全挂进 DOM 是卡顿根因（数据仍在 #viewItems/#itemMap，滚近键控扩容铺卡）
-  GRID_MOUNT_MAX: 600,
+  GRID_MOUNT_MAX,
   GRID_EXTEND_THRESHOLD: 1.5,
   // 扩容单步新增槽位上限：深域（十万级 totalSlots）倍增到后段时单步会是数千上万张
   // 占位卡克隆 + 整容器布局的长任务——超出部分留待后续滚动 rAF 继续扩，小槽位段
@@ -115,37 +130,34 @@ export const config = {
   GROUP_NAME_MAX_LEN: 20,
   STORAGE_MAX_BYTES: 10 * 1024 * 1024,
   TRASH_GROUP_NAME: "稍后删除",
+  // 导入文件分块上行：单条 chrome.runtime 消息硬上限 64MiB——文件超过阈值时按块大小切片
+  // 分条发送，background 缓冲拼回后走既有 import()（值与 background CONFIG 同源于 shared/limits.js）
+  IMPORT_TRANSFER_THRESHOLD,
+  IMPORT_TRANSFER_CHUNK,
 
   // 随机回顾（真实回顾域）：本轮数量可自定义（1–500），批次引用最多 500 条
-  RANDOM_REVIEW_DEFAULT_COUNT: 20,
-  RANDOM_REVIEW_MAX_COUNT: 500,
-  RANDOM_REVIEW_MAX_EXCLUDE: 2000,
+  RANDOM_REVIEW_DEFAULT_COUNT: REVIEW_DEFAULT_COUNT,
+  RANDOM_REVIEW_MAX_COUNT: REVIEW_MAX_COUNT,
+  RANDOM_REVIEW_MAX_EXCLUDE: REVIEW_MAX_EXCLUDE,
 
   // 作品数排序后台权威分页（方案 B）：关闭后 options 不再发送 sort=authorCount，
   // 立即回到 saved 分页 + 完成态本地整渲（回滚开关，无需降级数据库）
   AUTHOR_COUNT_PAGING: true,
 
   // URL
-  URL_BASE: "https://www.douyin.com",
-  URL_USER_SELF: "https://www.douyin.com/user/self",
-  URL_FAVORITE_TAB: "?showTab=like",
-  URL_COLLECTION_TAB: "?showTab=favorite_collection",
-  URL_FOLLOWING_TAB: "?showTab=following",
+  URL_BASE,
+  URL_USER_SELF,
+  URL_FAVORITE_TAB: TAB_QUERY.favorites,
+  URL_COLLECTION_TAB: TAB_QUERY.collections,
+  URL_FOLLOWING_TAB: TAB_QUERY.followings,
 
-  // 域元数据：作品型三域（works/favorites/collections）同构 Work 记录；作者档案型两域
-  //（followings 原生关注镜像 / candidates 扩展自建候选池）同构 7 字段记录
-  WORK_RECORD_DOMAINS: ["works", "favorites", "collections"],
-  AUTHOR_RECORD_DOMAINS: ["followings", "candidates"],
-  REVIEW_DOMAIN: "review",
-  SOURCE_DOMAINS: ["works", "favorites", "collections", "followings", "candidates"],
-  DOMAINS_META: {
-    works: { label: "作品", itemKey: "works", idKey: "awemeId", isAuthorRecord: false },
-    followings: { label: "关注", itemKey: "followings", idKey: "uid", isAuthorRecord: true },
-    favorites: { label: "点赞", itemKey: "favorites", idKey: "awemeId", isAuthorRecord: false },
-    collections: { label: "收藏", itemKey: "collections", idKey: "awemeId", isAuthorRecord: false },
-    candidates: { label: "候选", itemKey: "candidates", idKey: "uid", isAuthorRecord: true },
-    review: { label: "回顾", itemKey: "reviewItems", idKey: "sourceId", isAuthorRecord: false, canImportExport: false },
-  },
+  // 域元数据唯一来源 shared/domains.js：作品型三域（works/favorites/collections）同构 Work
+  // 记录；作者档案型两域（followings 原生关注镜像 / candidates 扩展自建候选池）同构 7 字段记录
+  WORK_RECORD_DOMAINS,
+  AUTHOR_RECORD_DOMAINS,
+  REVIEW_DOMAIN,
+  SOURCE_DOMAINS,
+  DOMAINS_META: DOMAINS,
 
   // 正则
   SEC_UID_REGEX: /^\/user\/([^/?]+)/,
@@ -207,6 +219,11 @@ export const dom = {
   btnDataTools: document.querySelector("#btnDataTools"),
   btnStatus: document.querySelector("#btnStatus"),
   btnSync: document.querySelector("#btnSync"),
+  btnReviewRandom: document.querySelector("#btnReviewRandom"),
+  taskDock: document.querySelector("#taskDock"),
+  taskDockTitle: document.querySelector("#taskDockTitle"),
+  taskDockToggle: document.querySelector("#taskDockToggle"),
+  taskDockBody: document.querySelector("#taskDockBody"),
   btnBatch: document.querySelector("#btnBatch"),
   btnGroupManage: document.querySelector("#btnGroupManage"),
   mainGrid: document.querySelector("#mainGrid"),
@@ -215,15 +232,16 @@ export const dom = {
   btnAuthorImport: document.querySelector("#btnAuthorImport"),
   btnSettings: document.querySelector("#btnSettings"),
   menuStorage: document.querySelector("#menuStorage"),
-  rightSidebar: document.querySelector("#rightSidebar"),
   sidebar: document.querySelector("#sidebar"),
   sidebarBody: document.querySelector("#sidebarBody"),
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
-  sidebarAuthorHead: document.querySelector("#sidebarAuthorHead"),
   sidebarAuthorAvatar: document.querySelector("#sidebarAuthorAvatar"),
   sidebarAuthorName: document.querySelector("#sidebarAuthorName"),
   sidebarAuthorStatus: document.querySelector("#sidebarAuthorStatus"),
   sidebarAuthorSub: document.querySelector("#sidebarAuthorSub"),
+  sidebarAuthorToggleCandidate: document.querySelector("#sidebarAuthorToggleCandidate"),
+  sidebarAuthorImportWorks: document.querySelector("#sidebarAuthorImportWorks"),
+  sidebarAuthorRefresh: document.querySelector("#sidebarAuthorRefresh"),
   sidebarAuthorClose: document.querySelector("#sidebarAuthorClose"),
   sidebarLoader: document.querySelector("#sidebarLoader"),
   sidebarEndNotice: document.querySelector("#sidebarEndNotice"),
@@ -241,16 +259,11 @@ export const dom = {
   sbType: document.querySelector("#sbType"),
   sbFollowFilters: document.querySelector("#sbFollowFilters"),
   sbFollowSort: document.querySelector("#sbFollowSort"),
+  sbReviewSource: document.querySelector("#sbReviewSource"),
+  sbReviewCount: document.querySelector("#sbReviewCount"),
   btnClearInBar: document.querySelector("#btnClearInBar"),
   btnSearchGo: document.querySelector("#btnSearchGo"),
-  // 回顾页签 / 回顾顶栏配置
-  btnReviewTab: document.querySelector('.ds-btn[data-domain="review"]'),
-  reviewBar: document.querySelector("#reviewBar"),
-  reviewSourceScope: document.querySelector("#reviewSourceScope"),
-  reviewCountInput: document.querySelector("#reviewCountInput"),
-  btnReviewRandom: document.querySelector("#btnReviewRandom"),
-  btnReviewAppend: document.querySelector("#btnReviewAppend"),
-  // 全局 Toast 容器（右下角堆叠；Dialog.showToast 按条创建）
+  // 全局 Toast 容器（顶部居中堆叠；Dialog.showToast 按条创建）
   toastStack: document.querySelector("#toastStack"),
 };
 
@@ -332,16 +345,12 @@ export const store = {
     state[key] = val;
     if (old !== val) {
       // 域数据替换计入数据版本（domain/currentGroupId/batchMode 等非数据键不计）
-      if (
-        config.AUTHOR_RECORD_DOMAINS.includes(key) ||
-        config.WORK_RECORD_DOMAINS.includes(key) ||
-        key === config.REVIEW_DOMAIN
-      ) {
+      if (isKnownDomain(key)) {
         state.dataVersion++;
       }
       // 作者视图按 (domain, groupId, direction) 绑定当前数据：域数据整体替换即失效；
       // authorCount page0 会在 store.set 之后同步重建（rAF 渲染前）
-      if (config.WORK_RECORD_DOMAINS.includes(key) || key === config.REVIEW_DOMAIN) {
+      if (isWorkDomain(key) || key === config.REVIEW_DOMAIN) {
         state.authorViewOrder = null;
       }
       this.notify(key, val, old);
@@ -480,7 +489,6 @@ export const store = {
   removeReviewItemsSilent(idSet, idKey) {
     state.review = state.review.filter((item) => !idSet.has(String(item[idKey])));
     state.dataVersion++;
-    this.notify("review-meta");
   },
 
 };
@@ -490,13 +498,13 @@ export const utils = {
   // 域类型判定：回顾域按 state.reviewKind 动态归入作品型或作者型
   isWorkRecordDomain(domain = state.domain) {
     return (
-      config.WORK_RECORD_DOMAINS.includes(domain) ||
+      isWorkDomain(domain) ||
       (domain === config.REVIEW_DOMAIN && state.reviewKind === "works")
     );
   },
   isAuthorRecordDomain(domain = state.domain) {
     return (
-      config.AUTHOR_RECORD_DOMAINS.includes(domain) ||
+      isAuthorDomain(domain) ||
       (domain === config.REVIEW_DOMAIN && state.reviewKind === "authors")
     );
   },
@@ -515,16 +523,6 @@ export const utils = {
     if (!cover || !still) return cover || still;
     const m = still.match(/~tplv-[^/:]+:(\d+):/);
     return m && Number(m[1]) < 2000 ? still : cover;
-  },
-  // 进度弹窗装配（syncDialogBodyTemplate 单一来源，三个 sync 类共用）：克隆 + 取三元素，
-  // 状态位预置 SYNCING，计数/摘要文案由调用方按域填写
-  buildSyncProgressBody() {
-    const body = document.getElementById("syncDialogBodyTemplate").content.cloneNode(true);
-    const countEl = body.querySelector(".sync-count");
-    const summaryEl = body.querySelector(".sync-summary");
-    const statusEl = body.querySelector(".sync-status");
-    statusEl.textContent = "SYNCING";
-    return { body, countEl, summaryEl, statusEl };
   },
   formatCount(num) {
     if (num == null || Number.isNaN(Number(num))) return "0";
@@ -676,8 +674,8 @@ export const services = {
     return { items: res.reviewItems || [], total: res.total || 0 };
   },
 
-  async saveReviewBatch({ sourceDomain, sourceIds, groupId, append = false }) {
-    return this.bgMsg({ type: "SAVE_REVIEW_BATCH", sourceDomain, sourceIds, groupId, append });
+  async saveReviewBatch({ sourceDomain, sourceIds, groupId }) {
+    return this.bgMsg({ type: "SAVE_REVIEW_BATCH", sourceDomain, sourceIds, groupId });
   },
 
   async deleteReviewItems(sourceDomain, sourceIds) {
@@ -708,6 +706,14 @@ export const services = {
     const res = await this.bgMsg({ type: "GET_AUTHOR_BY_UID", uid: String(uid) }).catch(() => null);
     if (!res || res.error) return null;
     return { followings: res.followings || null, candidates: res.candidates || null };
+  },
+
+  // 侧栏作者头：按 secUid 取平台精准作品数/粉丝数（background 双模只读查询，不落库）。
+  // 失败返回 null，头部保留已存储摘要
+  async loadAuthorStats(secUid) {
+    const res = await this.bgMsg({ type: "RESOLVE_AUTHOR_STATS", secUid }).catch(() => null);
+    if (!res || res.ok !== true) return null;
+    return res;
   },
 
   // 作者域成员资格主键集（作品卡作者状态 chip）：作者域主键即 uid，background 用
@@ -823,7 +829,7 @@ export const services = {
   // （即视图序），首页落库前反转回域数组的 savedAt 降序；余页前插（prependWorkRecord）。
   // authorCount：页序即作者视图序，首页落库前按 savedAt 排序守 state[domain] 不变量，
   // 续页走 appendAuthorViewRecord（归并 + 维护 trusted 视图）
-  async loadDomainData(paging = state.pagingMode) {
+  async loadDomainData(paging) {
     const mode = paging || state.pagingMode;
     const { sort = "saved", direction = "desc", ascending = false } = mode;
     const groupId = state.currentGroupId;
@@ -880,7 +886,7 @@ export const services = {
       state.gridTotal = { domain, groupId, total };
       state.gridPending = false; // 首页已到：K 开始按已加载条数计数
       state.gridSlots = { domain, groupId, total };
-      // 立即校正当前分组 tab 数字（与搜索栏 0/Total 同源），不必等延后的 GET_STATS
+      // 立即校正当前分组 tab 数字（与搜索栏 0/Total 同源）
       store.notify("grid-total", { domain, groupId, total });
       const first = (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
       // 域数组不变量 = savedAt 降序：saved 升序块反转；authorCount 页序是作者视图序，
@@ -944,6 +950,8 @@ export const services = {
       );
     } finally {
       this._gridLoadCount--;
+      // 全局无在途分页：通知增量收口管线补应用加载期间排队的变化（见 main.js applyStoreUpserts）
+      if (this._gridLoadCount === 0) store.notify("grid-load-idle");
     }
   },
 

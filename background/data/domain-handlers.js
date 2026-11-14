@@ -4,11 +4,13 @@ import { CONFIG, DOMAIN_CONFIG, utils } from "../core.js";
 import { storage } from "./storage.js";
 import { domainStore } from "./domain-store.js";
 import { authorViews } from "./author-views.js";
+import { compareSavedAtDesc } from "../../shared/author-sort.js";
+import { REVIEW_DEFAULT_COUNT, REVIEW_MAX_COUNT, REVIEW_MAX_EXCLUDE } from "../../shared/limits.js";
 
 // 随机回顾抽样上限：单次响应保持可控（作品记录可能包含多图 URL）；本轮数量由用户
 // 自定义，业务层钳制到 1–500。excludeIds 只保留最近 N 个，避免消息无界增长
-const RANDOM_MAX_COUNT = 500;
-const RANDOM_MAX_EXCLUDE = 2000;
+const RANDOM_MAX_COUNT = REVIEW_MAX_COUNT;
+const RANDOM_MAX_EXCLUDE = REVIEW_MAX_EXCLUDE;
 
 // 部分 Fisher-Yates：只洗前 count 个，无偏且不复制整池
 function pickRandomKeys(keys, count) {
@@ -41,49 +43,39 @@ class DomainHandlers {
   // savedAt_id / groupId_savedAt_id），不再全量读取+排序——万级分组的首页响应从数百毫秒
   // 降到几十毫秒
   async get({ groupId, page, cursor, ascending, sort, direction }, sendResponse) {
-    try {
-      if (sort === "authorCount") {
-        if (CONFIG.AUTHOR_RECORD_DOMAINS.includes(this.#domain)) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
-        const payload = await authorViews.readPage({ domain: this.#domain, groupId, page, cursor, direction });
-        sendResponse({
-          [this.#cfg.itemKey]: payload.items,
-          total: payload.total,
-          hasMore: payload.hasMore,
-          nextCursor: payload.nextCursor,
-          ...(payload.authorMeta ? { authorMeta: payload.authorMeta } : {}),
-        });
-        return;
-      }
-      if (sort && sort !== "saved") throw new Error("BAD_SORT");
-      const isAuthorDomain = CONFIG.AUTHOR_RECORD_DOMAINS.includes(this.#domain);
-      if (isAuthorDomain) {
-        // 作者域单发全量（无分页索引）：带分页参数显式报错，防止调用方误用后
-        // 静默拿到整域载荷
-        if (page === 0 || cursor) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
-        // 分组筛选走索引查询，否则全量读取；两条路径同一排序/返回。
-        // savedAt 平级按 awemeId 降序，与 keyset 索引 prev 遍历、头插 viewOrderBefore
-        // 以及作者视图的簇内末级 tie-break 保持同一口径
-        const store =
-          groupId && groupId !== "all"
-            ? await storage.getByIndex(this.#cfg.storeName, "groupId", groupId)
-            : await storage.getAll(this.#cfg.storeName);
-        const list = Object.values(store);
-        list.sort((a, b) => {
-          const d = (b.savedAt || 0) - (a.savedAt || 0);
-          if (d !== 0) return d;
-          const ai = String(a.awemeId ?? "");
-          const bi = String(b.awemeId ?? "");
-          return ai < bi ? 1 : ai > bi ? -1 : 0;
-        });
-        sendResponse({ [this.#cfg.itemKey]: list });
-        return;
-      }
-      // 作品型三域必须分页：首页 page:0、续页 cursor 二选一
-      if (!(page === 0 || cursor)) throw new Error("BAD_PARAMS");
-      sendResponse(await this.#readPaged(groupId, cursor || null, ascending === true));
-    } catch (err) {
-      sendResponse({ error: err.message, ...(err.code ? { code: err.code } : {}) });
+    if (sort === "authorCount") {
+      if (CONFIG.AUTHOR_RECORD_DOMAINS.includes(this.#domain)) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
+      const payload = await authorViews.readPage({ domain: this.#domain, groupId, page, cursor, direction });
+      sendResponse({
+        [this.#cfg.itemKey]: payload.items,
+        total: payload.total,
+        hasMore: payload.hasMore,
+        nextCursor: payload.nextCursor,
+        ...(payload.authorMeta ? { authorMeta: payload.authorMeta } : {}),
+      });
+      return;
     }
+    if (sort && sort !== "saved") throw new Error("BAD_SORT");
+    const isAuthorDomain = CONFIG.AUTHOR_RECORD_DOMAINS.includes(this.#domain);
+    if (isAuthorDomain) {
+      // 作者域单发全量（无分页索引）：带分页参数显式报错，防止调用方误用后
+      // 静默拿到整域载荷
+      if (page === 0 || cursor) throw new Error("AUTHOR_PAGING_UNSUPPORTED");
+      // 分组筛选走索引查询，否则全量读取；两条路径同一排序/返回。
+      // 视图序比较见 shared/author-sort.js compareSavedAtDesc——与 keyset 索引 prev 遍历、
+      // options 头插落点以及作者视图的簇内末级 tie-break 保持同一口径
+      const store =
+        groupId && groupId !== "all"
+          ? await storage.getByIndex(this.#cfg.storeName, "groupId", groupId)
+          : await storage.getAll(this.#cfg.storeName);
+      const list = Object.values(store);
+      list.sort(compareSavedAtDesc);
+      sendResponse({ [this.#cfg.itemKey]: list });
+      return;
+    }
+    // 作品型三域必须分页：首页 page:0、续页 cursor 二选一
+    if (!(page === 0 || cursor)) throw new Error("BAD_PARAMS");
+    sendResponse(await this.#readPaged(groupId, cursor || null, ascending === true));
   }
 
   // keyset 翻页：组内走 groupId_savedAt_id（键 = [groupId, savedAt, awemeId]）、
@@ -134,25 +126,22 @@ class DomainHandlers {
   }
 
   async delete(ids, sendResponse) {
-    try {
-      const keys = ids.map((id) => domainStore.toStorageId(this.#domain, id));
-      await storage.deleteBatch(this.#cfg.storeName, keys);
-      sendResponse({ ok: true });
-    } catch (err) {
-      sendResponse({ error: err.message });
-    }
+    const keys = ids.map((id) => domainStore.toStorageId(this.#domain, id));
+    await storage.deleteBatch(this.#cfg.storeName, keys);
+    sendResponse({ ok: true });
   }
 
   async move(ids, targetGroupId, sendResponse) {
-    try {
-      const keys = ids.map((id) => domainStore.toStorageId(this.#domain, id));
-      const items = await storage.getBatch(this.#cfg.storeName, keys);
-      const toWrite = items.filter(Boolean).map((item) => ({ ...item, groupId: targetGroupId }));
-      if (toWrite.length > 0) await storage.putBatch(this.#cfg.storeName, toWrite);
-      sendResponse({ ok: true });
-    } catch (err) {
-      sendResponse({ error: err.message });
-    }
+    // 字段级单事务补丁：只写 groupId。禁止改回 getBatch + putBatch——后者会用移动前的
+    // 旧快照整条覆盖，吞掉并发同步刚写入的直链（同理也会把用户刚删的记录写回）
+    const patches = ids.map((id) => ({
+      [this.#cfg.idField]: domainStore.toStorageId(this.#domain, id),
+      groupId: targetGroupId,
+    }));
+    await storage.patchBatch(this.#cfg.storeName, patches, (old) =>
+      old ? { ...old, groupId: targetGroupId } : null,
+    );
+    sendResponse({ ok: true });
   }
 
   // save 必须域驱动：works/favorites/collections → domainStore.mergeAndSave；作者域 → #saveAuthorRecords
@@ -210,44 +199,36 @@ class DomainHandlers {
   // 已出现过的记录，避免「换一批」重复。返回 poolSize/eligible/remaining 供 options 判断
   // 是否已无更多可回顾数据
   async pickRandom({ groupId, count, excludeIds }, sendResponse) {
-    try {
-      const limit = Math.max(1, Math.min(RANDOM_MAX_COUNT, Math.floor(Number(count) || 20)));
-      const exclude = new Set(
-        (Array.isArray(excludeIds) ? excludeIds : [])
-          .slice(-RANDOM_MAX_EXCLUDE)
-          .map((id) => String(domainStore.toStorageId(this.#domain, id))),
-      );
-      const byGroup = Boolean(groupId && groupId !== "all");
-      const keys = byGroup
-        ? await storage.getAllKeysByIndex(this.#cfg.storeName, "groupId", IDBKeyRange.only(groupId))
-        : await storage.getAllKeys(this.#cfg.storeName);
-      const eligibleKeys = keys.filter((key) => !exclude.has(String(key)));
-      const picks = pickRandomKeys(eligibleKeys, limit);
-      const records = await storage.getBatch(this.#cfg.storeName, picks);
-      const items = records.filter(Boolean);
-      sendResponse({
-        ok: true,
-        items,
-        poolSize: keys.length,
-        eligible: eligibleKeys.length,
-        remaining: Math.max(0, eligibleKeys.length - items.length),
-      });
-    } catch (err) {
-      sendResponse({ error: err.message || String(err) });
-    }
+    const limit = Math.max(1, Math.min(RANDOM_MAX_COUNT, Math.floor(Number(count) || REVIEW_DEFAULT_COUNT)));
+    const exclude = new Set(
+      (Array.isArray(excludeIds) ? excludeIds : [])
+        .slice(-RANDOM_MAX_EXCLUDE)
+        .map((id) => String(domainStore.toStorageId(this.#domain, id))),
+    );
+    const byGroup = Boolean(groupId && groupId !== "all");
+    const keys = byGroup
+      ? await storage.getAllKeysByIndex(this.#cfg.storeName, "groupId", IDBKeyRange.only(groupId))
+      : await storage.getAllKeys(this.#cfg.storeName);
+    const eligibleKeys = keys.filter((key) => !exclude.has(String(key)));
+    const picks = pickRandomKeys(eligibleKeys, limit);
+    const records = await storage.getBatch(this.#cfg.storeName, picks);
+    const items = records.filter(Boolean);
+    sendResponse({
+      ok: true,
+      items,
+      poolSize: keys.length,
+      eligible: eligibleKeys.length,
+      remaining: Math.max(0, eligibleKeys.length - items.length),
+    });
   }
 
   // 按 id 集合直取记录（IDB 主键 getBatch 单事务批量读）：bulk STORE_CHANGED 收口的补拉通道——
   // 广播只携带轻量 id 列表（万级 ≈ 几十 KB，规避全记录消息膨胀），options 据此拉取
   // 合并后记录，走与点载荷相同的局部应用管线，替代整域重载
   async getByIds(ids, sendResponse) {
-    try {
-      const keys = (ids || []).map((id) => domainStore.toStorageId(this.#domain, id));
-      const items = await storage.getBatch(this.#cfg.storeName, keys);
-      sendResponse({ items: items.filter(Boolean) });
-    } catch (err) {
-      sendResponse({ error: err.message });
-    }
+    const keys = (ids || []).map((id) => domainStore.toStorageId(this.#domain, id));
+    const items = await storage.getBatch(this.#cfg.storeName, keys);
+    sendResponse({ items: items.filter(Boolean) });
   }
 }
 const worksHandlers = new DomainHandlers(CONFIG.STORAGE_KEYS.WORKS);

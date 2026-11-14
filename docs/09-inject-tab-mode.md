@@ -8,7 +8,7 @@ Tab模式的本质是**借页面环境发请求**：inject.js 运行在抖音页
 
 - 能力一：抖音页面覆盖了 `window.fetch`（secsdk 包装器），对"未签名"URL 自动注入新鲜签名（a_bogus/msToken/verifyFp/fp/uifid/timestamp 等）；
 - 能力二：页面自身的 API 流量持续产生**可捕获复用的签名参数**；
-- 能力三：XHR 原型链被 a_bogus 签名深度绑定——取消点赞/收藏必须用 XHR 而非 fetch。
+- 能力三：XHR 原型链被 a_bogus 签名深度绑定——取消点赞/收藏/关注必须用 XHR 而非 fetch。
 - 矛盾：扩展自己的请求走完 Hook 后会被 `captureFromUrl` 回写缓存，污染后续请求的签名（自污染）。
 
 解决方案是 `_dyInternal` 标志（见下）。content.js（隔离世界）负责加载 inject.js 并把 chrome 消息翻译成 CustomEvent。
@@ -178,7 +178,7 @@ window.__dyManagerFetchHooked = true;        // 安全状态面板读取的标�
 
 补充 rationale：六个 API 函数必须走 `window.fetch` 而非 `origFetch.call(window, …)`——抖音可能通过覆盖 `window.fetch` 注入签名参数，走 `origFetch` 绕过 Hook 的同时也绕过了页面包装器，会错过注入。`_dyInternal` 是"经 Hook 但不被 Hook 捕获"的正规通道。
 
-### 点赞/收藏状态 XHR（签名绑定的唯一例外路径）
+### 点赞/收藏/关注状态 XHR（签名绑定的唯一例外路径）
 
 ```js
 const xhr = new XMLHttpRequest();
@@ -192,6 +192,7 @@ xhr.onload = () => xhr.status < 300 ? resolve()
   : reject(new Error("HTTP_" + xhr.status));
 xhr.send(`aweme_id=${id}&item_type=0&type=0`);      // active=true 点赞改 type=1
 // 收藏版 body: active=false `action=0&aweme_id=…&aweme_type=0`，true 改 action=1
+// 取关版 body: `user_id=<uid>&type=0`（active=true 换 type=1，仅预留；当前只用取关方向）
 ```
 
 `ReactionHandler` 统一承载四个方向（`CANCEL_ONE_*` 走 cancelOne*、`SET_ONE_*` 走 setOne*），
@@ -302,7 +303,7 @@ Tab 模式下 inject 回 `NO_SIGNATURE` 后，options 弹 `showNoSignatureDialog
 |------|------|------|
 | 冷启动无签名缓存 | following/favorite/collection/profile 事件层直接回 `NO_SIGNATURE` | options 弹 `showNoSignatureDialog` 引导先打开对应抖音页面（触发条件见上文）；detail/post 无此前置检查（见 07 待补充项） |
 | 用户在 `/user/self` 页触发扫描 | secUid === "self" | `resolveSelfSecUid()` 从缓存签名解析真实 sec_uid；解析不出仍报 NO_SIGNATURE |
-| detail 返回空 body | 抛 `RATE_LIMITED` | 属致命错误码，终止整个同步批次（01 文档分类表） |
+| detail 返回空 body | 抛 `RATE_LIMITED` | 背压信号：syncWorks 退避重试同一条（立即上报 `rateLimited:true`），连续 3 次熔断才按致命收尾（01 文档分类表） |
 | 预塞旧签名（误改 stripSdkKeys） | argus `web_id_sign_invalid` 403 | 保持"剥离全部 SDK 键再裸发"的形态不变 |
 | AbortError | fetch/XHR 被 abort | 统一转译为 `CANCELLED`（ReactionHandler XHR）/由外层 catch 上抛（fetch 路径） |
 | Hook 未生效（页面 CSP 变更等） | `__dyManagerFetchHooked/__dyManagerXhrHooked` 为 false | 安全状态面板 hooks 字段可见；GET_SECURITY_STATUS 是唯一恒走 Tab 的诊断入口（01 文档路由表） |

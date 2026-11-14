@@ -4,46 +4,44 @@
 
 ## 概述
 
-同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端发出 `SYNC_WORKS { awemeIds }`，入口唯一：`sync.syncCurrentGroup()`（当前分组全量刷新，经 `syncAwemeIds` → `startSync` 发出；详情页直链失效走 `FETCH_DETAIL`/`FETCH_WORK_DETAIL` 族，不经本消息）。background 按 `independentClient.loadMode()` 分流到 `independentTasks.syncWorks`。该 handler：
+同步作品的语义是"对扩展库里已有的一组 awemeId 逐条重新拉详情"。options 端生成 `taskId`、先连控制端口（`BIND_TASK`），再发出 `SYNC_WORKS { awemeIds, taskId }`；入口唯一：`sync.syncCurrentGroup()`（当前分组全量刷新；详情页直链失效走 `FETCH_DETAIL`/`FETCH_WORK_DETAIL` 族，不经本消息）。background 按 `independentClient.loadMode()` 分流到 `independentTasks.syncWorks(awemeIds, sendResponse, taskId)` 或 `scanTasks.syncWorks(...)`。两种模式共用以下契约：
 
-- 先**立即 ack** `{ ok: true, requestId, total }`（长任务协议：结果经进度消息异步回报）；
-- 循环逐条 `independentClient.request(CONFIG.API.DETAIL)`（GET `/aweme/v1/web/aweme/detail/`，a_bogus + webSign，后者由 request 默认叠加）；
-- 每条经 `formatWork` 归一化后暂存，全部完成后一次性 `domainStore.mergeAndSave(allWorks)` 落库；
-- 失败条目记入 errors 不中断批次。
+- `TaskRegistry.start({ taskId, domain:"works" })` 做同域单飞（重复启动回 `{ ok:false, error:"BUSY" }`）；ack `{ ok:true, requestId: taskId, taskId, total }`；
+- 每条请求经全局 `RequestGate` 串行（任务并行 ≠ 请求并行）；`RATE_LIMITED` / HTTP 429 退避重试同一条，连续 3 次才熔断；每次退避立即上报 `TASK_PROGRESS { rateLimited:true }`（坞行显示 RATE_LIMITED / 退避重试中），熔断或致命错误收尾时在途条目与剩余条目一并计入 `skipped`（不计失败）；
+- 每 `CONFIG.SYNC.SCAN_CHUNK`（默认 200，设置面板可调 50~2000，四族统一块大小）条调用 `domainStore.patchWorks`：单事务、update-only、字段级补丁。用户删除的记录不会被复活，移动/分组删除不会被旧快照覆盖；补丁不改分页键时不 bump rev，避免作者视图 `VIEW_EXPIRED`；
+- 进度逐条上报 `TASK_PROGRESS`（与取消族同节奏），终态 `TASK_DONE`；不再发送 `SYNC_PROGRESS` / `SYNC_DONE`；
+- 关页/刷新由控制端口断线触发取消，已写入数据保留，不续跑。
 
 ## 核心流程图（文字描述）
 
 ```
-options: services.bgMsg({ type:"SYNC_WORKS", awemeIds })
-  → background switch "SYNC_WORKS"
-    → independentClient.loadMode() === true
-      → independentTasks.syncWorks(awemeIds, sendResponse)
-        ├─ 校验 awemeIds 非空数组（否则 { ok:false, error:"EMPTY" }）
-        ├─ credentials.ensureABogus()                     // 从 browserFeatures 构造 ABogus 实例
-        ├─ requestId = crypto.randomUUID()
-        ├─ 注册 cancelHandler（收到 CANCEL_ACTIVE_TASK → cancelled = true）
-        ├─ sendResponse({ ok:true, requestId, total })   // 立即 ack，sendResponse 到此终结
-        │
-        └─ for i in awemeIds（&& !cancelled）:
-             params = credentials.buildBaseParams({ aweme_id, request_source:"600", origin_type:"video_page" })
-             重试环（最多 CONFIG.SYNC.RETRY_MAX 次）:
-                 data = independentClient.request("/aweme/v1/web/aweme/detail/", params)   // GET + a_bogus
-                 w = data.aweme_detail ? formatWork(data.aweme_detail) : null
-                 w 为空且非末次尝试 → 页间延迟后重试；成功 → break
-             w ? allWorks.push(w) : errors.push({ awemeId, error:"DELETED"|errMsg })
-             致命错误（RATE_LIMITED / HTTP 401 / HTTP 429 / 超时 abort→CANCELLED；NO_COOKIE 不在 FATAL_ERRORS、非致命）
-               → 早退 + 剩余条目记 BATCH_TERMINATED（与 tab 模式 scanTasks.syncWorks 同款分类）
-             chrome.runtime.sendMessage(SYNC_PROGRESS { index, total, status, awemeId })
-             延迟：
-               (i+1)%BATCH_SIZE==0 且非末条 → 批间暂停 10–20s（KEEPALIVE_INTERVAL 分段保活 SW）
-               否则               → syncWorks 延迟 MIN~MAX ms
-        │
-        ├─ allWorks 非空 → domainStore.mergeAndSave(allWorks)
-        │                   → sendMessage(SYNC_DONE { ok:true, refreshed: added+updated, failed, failedAwemeIds })
-        └─ 否则           → sendMessage(SYNC_DONE { ok:false, error: errors[0]?.error || "NO_WORKS_COLLECTED" })
-        └─ 外层 catch（ack 之后）→ sendMessage(SYNC_DONE { ok:false, error: e.message })  // sendResponse 通道已关，保证弹窗必收尾
+options: taskId = randomUUID(); port = connect("task-control"); port.postMessage(BIND_TASK)
+options: services.bgMsg({ type:"SYNC_WORKS", awemeIds, taskId })
+  → background switch "SYNC_WORKS" → #byMode
+    → syncWorks(awemeIds, sendResponse, taskId)   // independent / tab 同结构
+      ├─ 校验 awemeIds（否则 EMPTY）
+      ├─ taskRegistry.start({ taskId, domain:"works" }) → null 则 BUSY
+      ├─ credentials.ensureABogus()
+      ├─ sendResponse({ ok:true, requestId:taskId, taskId, total })   // ack 后通道终结
+      └─ for i in awemeIds（&& !isCancelled(taskId)）:
+           params = buildBaseParams(...)
+           重试环（RETRY_MAX）:
+             data = independentClient.request(API.DETAIL, params, {
+               gatePriority:1, gateInterval:randomDelay("syncWorks"), isCancelled })
+             w = data.aweme_detail ? formatWork(...) : null
+           w → pending.push(w); ok++；否则 failed++ 记 id
+           RATE_LIMITED / HTTP 429 → 立即上报 TASK_PROGRESS{rateLimited:true}；
+                                     sleepWithKeepalive(5–30s) 后 i-- 重试同一条；连续 3 次 → fatal
+           熔断/其他致命（HTTP 401 / NO_DOUYIN_TAB 等）→ 早退，在途+剩余条目均 skipped（不计失败）
+           超时 abort → TIMEOUT（非致命，记一条失败继续）
+           pending ≥ SYNC.SCAN_CHUNK → flushSyncWorks → patchWorks（静默，不广播）
+           逐条 → TASK_PROGRESS
+           非末条 → pauseWithKeepalive({ pace:false })（条间节奏由 RequestGate 统一施加）
+      ├─ flush 剩余 → STORE_CHANGED 裸载荷（仅 changed>0，三族统一）→ taskRegistry.finish(status: done|cancelled|failed)
+      └─ finishSyncWorks → TASK_DONE { taskId, ok, cancelled, processed(=ok+failed，取消/熔断时 < total), total,
+                                      refreshed, failed, failedAwemeIds, skipped, changed, error }
 
-options: 监听 SYNC_PROGRESS / SYNC_DONE（按 requestId 匹配）更新弹窗进度与结果
+options: TASK_PROGRESS / TASK_DONE → taskDock 更新；STORE_CHANGED 仅终态一次裸载荷 → 整域重载收口
 ```
 
 ### 视频直链三级取链（formatWork，本模式的取链点）
@@ -66,16 +64,18 @@ options: 监听 SYNC_PROGRESS / SYNC_DONE（按 requestId 匹配）更新弹窗�
 
 ```js
 // background/tasks/independent-tasks.js
-async function independentTasks.syncWorks(awemeIds, sendResponse)
-// 入参：awemeIds: string[]（非空）；立即 sendResponse({ok,requestId,total}) 后不再使用 sendResponse
-// 出参（ack）：{ ok: true, requestId: string, total: number }
-// 进度：SYNC_PROGRESS*N → SYNC_DONE
+async function independentTasks.syncWorks(awemeIds, sendResponse, taskId = null)
+// 入参：awemeIds: string[]（非空）；taskId 由发起页生成（同域已有任务 → { ok:false, error:"BUSY" }）
+// 出参（ack）：{ ok:true, requestId: taskId, taskId, total }；之后 sendResponse 通道终结
+// 进度：TASK_PROGRESS（每 10 条或 1s，绝对值）→ TASK_DONE（含 cancelled/processed/total/refreshed/failed/skipped/changed）
 
 credentials.ensureABogus()          // background/identity/credentials.js：读 browserFeatures → new ABogus(ua, platform, features)
 credentials.buildBaseParams(extra)  // background/identity/credentials.js：环境参数全集（见下），返回普通对象供 URLSearchParams 序列化
 independentClient.request(apiPath, params, options?) -> Promise<object>  // background/identity/independent-client.js，见通用请求骨架
 formatters.formatWork(aw) -> Work|null   // background/core.js：无 aweme_id 返回 null
-domainStore.mergeAndSave(domain, works) -> Promise<{ added, updated, changed, total, written, addedIds }>
+domainStore.patchWorks(domain, works) -> Promise<{ patched, skipped, keysChanged, ids }>
+// 单事务 get→mergeFn→put；old 缺失跳过（update-only）、内容无变化跳过；
+// 分组计数按 groupId 差量维护；仅分页键变化时 bumpRevision
 domainStore.mergeWork(w, old) -> Work    // 保留旧 groupId/savedAt；长效链不被短效链覆盖降级
 ```
 
@@ -114,13 +114,18 @@ const params = await credentials.buildBaseParams({
 });
 let data, w;
 for (let attempt = 0; attempt < CONFIG.SYNC.RETRY_MAX; attempt++) {
-  data = await independentClient.request(CONFIG.API.DETAIL, params);
+  data = await independentClient.request(CONFIG.API.DETAIL, params, {
+    gatePriority: 1, // 1=后台任务；2=交互式单条插队
+    gateInterval: runtimeConfig.randomDelay("syncWorks"),
+    isCancelled: cancelled, // 排队期间取消 → 请求放弃
+  });
   w = data.aweme_detail ? formatWork(data.aweme_detail) : null;
   if (w) break;
   if (attempt === 0) { /* syncWorks 延迟后重试一次 */ }
 }
-if (w) allWorks.push(w);
-else { errors.push({ awemeId: awemeIds[i], error: "DELETED" }); currentOk = false; }
+if (w) { pending.push(w); ok++; }
+else { failed++; failedAwemeIds.push(awemeIds[i]); }
+          if (pending.length >= CONFIG.SYNC.SCAN_CHUNK) await flush(); // flushSyncWorks → patchWorks
 ```
 
 ### buildBaseParams 的会话敏感项
@@ -261,26 +266,32 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | `awemeIds` 为空/非数组 | 同步返回 `{ ok:false, error:"EMPTY" }` | options 侧提示 |
 | `savedCookie` 缺失 | 每条请求抛 `NO_COOKIE` | 非致命（不在 `FATAL_ERRORS`）：逐条记入 `errors` 继续，无成功条目即整批为空；状态行显示 `NO_COOKIE`，引导刷新 Cookie |
 | 作品已被删除/不可见 | `data.aweme_detail` 缺失，重试耗尽 | 记 `DELETED`，继续下一批（非致命） |
-| 限流（空 body） | `independentClient.request` 抛 `RATE_LIMITED`（与 tab 模式 inject 同语义） | 致命：早退 + 剩余 `BATCH_TERMINATED`，状态行显示 `RATE_LIMITED` |
-| a_bogus 被拒（`web_id_sign_invalid` 403） | independentClient.request 内部识别 | 自动 `credentials.refreshWebIdChain()` 换新 webid 重试一次 |
-| HTTP 401/429 | 抛 `HTTP 401` / `HTTP 429` | 致命：早退 + 剩余 `BATCH_TERMINATED` |
-| HTTP 403（其他文案）/5xx/超时 | 抛 `HTTP <code>` / 请求超时 abort | abort 归一 `CANCELLED`（致命）；其余记入 errors 跳过继续（非致命） |
+| 限流（空 body） | `independentClient.request` 抛 `RATE_LIMITED`（与 tab 模式 inject 同语义） | **不再终止整批**：立即上报 `TASK_PROGRESS { rateLimited:true }`（坞行徽标 RATE_LIMITED、摘要「退避重试中」），`sleepWithKeepalive(5s→10s→20s)` 后重试同一条；连续 3 次熔断（`RATE_LIMIT_RETRY_MAX`）才按致命收尾——在途条目从未判定，与剩余条目一并计 `skipped`，不计失败 |
+| a_bogus 被拒（`web_id_sign_invalid` 403） | independentClient.request 内部识别 | 自动 `credentials.refreshWebIdChain()` 换新 webid 重试一次；刷新本身单飞，任务并发时不会互相刷旧 |
+| HTTP 401 | 抛 `HTTP 401` | 致命：早退，在途与剩余条目计入 skipped |
+| HTTP 429 | 抛 `HTTP 429` | 与 `RATE_LIMITED` 同款退避/熔断 |
+| HTTP 403（其他文案）/5xx/超时 | 抛 `HTTP <code>` / 请求超时 abort | abort 归一 `TIMEOUT`（非致命，记一条失败继续）；其余非 401/429 记入失败继续 |
 | `status_code !== 0` | 抛 `API_ERROR(<code>)`，`err.statusCode` 保留 | 非致命，记入 errors 跳过继续（仅整批全失败时状态行显示首错） |
 | 响应非 JSON | 抛 `INVALID_JSON` | 非致命，记入 errors |
-| 用户关闭弹窗 | options 发 `CANCEL_ACTIVE_TASK` | cancelled 置位，循环退出，已收集部分照常落库并发 SYNC_DONE |
-| ack 之后发生未捕获异常 | — | 外层 catch 改发 `SYNC_DONE { ok:false, error }` 收尾，弹窗不卡 SYNCING（sendResponse 通道已关闭不可复用） |
-| SW 中途被回收 | 批次静默中断（无恢复机制） | **待补充**：可考虑把断点游标写入 storage 实现续跑；当前依赖批间保活降低概率 |
+| 用户点任务坞「取消」 | options 发 `CANCEL_TASK { taskId }` | TaskRegistry 置 cancelled，循环在下一边界退出（含批间暂停），已 checkpoint 数据保留，发 `TASK_DONE { cancelled:true }` |
+| 用户关闭扩展页 / 刷新 | 控制端口断开 | 后台自动 `cancel(taskId, "PAGE_CLOSED")`；任务寿命 = 页面寿命，不续跑 |
+| 同域已有任务 | `taskRegistry.start` 返回 null | ack `{ ok:false, error:"BUSY" }`；发起页坞内显示失败，不触碰正在跑的任务 |
+| ack 之后发生未捕获异常 | — | 外层 catch 发 `TASK_DONE { ok:false, error }` 收尾；若尚未 ack 则补一次 sendResponse |
+| SW 中途被回收 | 任务结束，已 checkpoint 数据保留 | 不续跑；重开扩展页显示「上次任务中断」，手动重跑（update-only 天然幂等） |
 
 ## 配置项说明
 
 | 配置 | 默认 | 作用 |
 |------|------|------|
 | `runtimeConfig.timeoutRequest` → `CONFIG.TIMEOUT.REQUEST` | 30000ms | independentClient.request 单请求超时（AbortController） |
-| `runtimeConfig.syncWorksDelayMin/Max` → `CONFIG.DELAY.syncWorks` | 500/1000ms | 条间随机延迟 |
+| `runtimeConfig.syncWorksDelayMin/Max` → `CONFIG.DELAY.syncWorks` | 500/1000ms | 条间随机延迟；作为 `RequestGate` 的 `interval` 传入，跨任务共享同一车道 |
 | `runtimeConfig.syncBatchSize` → `CONFIG.SYNC.BATCH_SIZE` | 40 | 每 N 条触发批间暂停（末条边界不触发） |
-| `runtimeConfig.syncBatchPauseMin/Max` | 10000/20000ms | 批间暂停时长区间 |
+| `runtimeConfig.syncBatchPauseMin/Max` | 10000/20000ms | 批间暂停时长区间（暂停中响应取消） |
 | `runtimeConfig.syncKeepaliveInterval` | 2000ms | 保活分段粒度 |
 | `runtimeConfig.syncRetryMax` | 2 | 单条 detail 重试上限 |
+| `CONFIG.SYNC.SCAN_CHUNK` | 200（默认） | 四族统一分块确认写块大小，设置面板 `scanChunkSize` 可调 50~2000 |
+| `CONFIG.SYNC.RATE_LIMIT_RETRY_MAX` | 3 | 连续限速重试上限，达到即熔断 |
+| `CONFIG.SYNC.RATE_LIMIT_BACKOFF` / `MAX` | 5000 / 30000ms | 指数退避基值与上限 |
 | `CONFIG.PAGE.*` | — | 本流程不分页，不适用 |
 
 ## 相关文档
@@ -288,7 +299,7 @@ music:        https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/724191691826390
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、六域存储模型、FATAL_ERRORS 分类 |
-| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / domainStore.mergeAndSave 的合并语义（本册只讲调用时序） |
+| 10 | [10-storage-write-and-import.md](./10-storage-write-and-import.md) | mergeWork / patchWorks / mergeAndSave 的合并语义（本册只讲调用时序） |
 | 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | independentClient.request 的 webSign 分支（默认开启，本流程随之生效） |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 3 为本流程所有 GET 请求注入 Referer、剥离 Sec-Fetch-* |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式同款链路（FETCH_WORK_DETAIL → fetchOneDetail）；extractVideo 双实现同步约束 |

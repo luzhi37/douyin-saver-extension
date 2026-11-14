@@ -1,6 +1,6 @@
 // ---------- SelectMenu ----------
 // 自绘下拉（.sb-scope）统一交互：鼠标 + 键盘 + ARIA。
-// 搜索栏（类型/排序/关注排序）与回顾来源下拉同构复用；DOM 仍由 options.html 静态提供。
+// 搜索栏（类型/排序/关注排序）与顶栏回顾来源下拉同构复用；DOM 由 options.html 提供。
 const FOCUS_CLASS = "is-focus";
 const HIDDEN_CLASS = "hidden";
 
@@ -13,6 +13,9 @@ export class SelectMenu {
   #onSelect;
   #activeIndex = 0;
   #isOpen = false;
+  #onDocumentClick = (e) => {
+    if (this.#isOpen && !this.#el.contains(e.target)) this.close();
+  };
 
   constructor(el, onSelect, { optionAttr = "data-value" } = {}) {
     this.#el = el;
@@ -105,9 +108,7 @@ export class SelectMenu {
   #bindEvents() {
     this.#el.addEventListener("click", (e) => this.#onClick(e));
     this.#el.addEventListener("keydown", (e) => this.#onKeydown(e));
-    document.addEventListener("click", (e) => {
-      if (this.#isOpen && !this.#el.contains(e.target)) this.close();
-    });
+    document.addEventListener("click", this.#onDocumentClick);
   }
 
   #onClick(e) {

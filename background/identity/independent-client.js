@@ -3,6 +3,7 @@
 import { CONFIG } from "../core.js";
 import { credentials } from "./credentials.js";
 import { Crypto } from "./crypto.js";
+import { requestGate } from "../tasks/request-gate.js";
 
 // ---------- IndependentClient ----------
 // 独立模式开关与签名直连客户端；持有 2 个模式开关字段。
@@ -33,7 +34,9 @@ class IndependentClient {
   // 注意：msToken / uifid / odin_tt 等 SDK 注入键也参与签名（实测真实 a_bogus
   // 的 pa 段与"含这些键的完整查询串"逐字节吻合），绝不能剔除。
   async request(apiPath, params, options = {}) {
-    const { savedCookie } = await chrome.storage.local.get("savedCookie");
+    // 凭据读取走 credentials 内存镜像（NO_COOKIE 门禁；请求本体 Cookie 由
+    // credentials:"include" 实时附带，不依赖 savedCookie 快照的新鲜度）
+    const savedCookie = await credentials.getSavedCookie();
     if (!savedCookie) throw new Error("NO_COOKIE");
     params.msToken = await credentials.getMsToken();
     const method = options.method || "GET";
@@ -62,10 +65,20 @@ class IndependentClient {
       }
     }
     const url = CONFIG.URL_BASE + apiPath + "?" + urlQuery;
+    // 全局请求闸门：所有独立模式请求共用一条车道。优先级 2=交互式单条（默认）、1=后台任务；
+    // interval 为距上一次请求开始的全局最小间隔，由任务按运行时配置传入。闸门只包住网络
+    // 往返本身——403 重试递归会重新排队，不会持槽等待自己。排队期间被取消则放弃本次请求
+    const release = await requestGate.acquire({
+      priority: options.gatePriority ?? 2,
+      interval: options.gateInterval ?? 0,
+      isCancelled: typeof options.isCancelled === "function" ? options.isCancelled : null,
+    });
+    if (!release) throw new Error("CANCELLED");
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), options.timeout || CONFIG.TIMEOUT.REQUEST);
+    let resp, raw;
     try {
-      const resp = await fetch(url, {
+      resp = await fetch(url, {
         credentials: "include",
         referrer: options.referrer || "https://www.douyin.com/",
         referrerPolicy: "unsafe-url",
@@ -80,40 +93,39 @@ class IndependentClient {
         body: options.body,
         signal: controller.signal,
       });
+      raw = await resp.text();
+    } finally {
       clearTimeout(tid);
-      const argusCode = resp.headers.get("argus_security_code") || "";
-      const raw = await resp.text();
-      // 空 body 对齐 tab 模式 inject 的 RATE_LIMITED 语义（限流/风控典型响应），避免抛不可读的 SyntaxError
-      if (!raw || !raw.trim()) throw new Error("RATE_LIMITED");
-      if (!resp.ok) {
-        const bodyPreview = raw.trim().slice(0, 160);
-        const signInvalid = argusCode === "web_id_sign_invalid" || (resp.status === 403 && /sign invalid/i.test(bodyPreview));
-        if (signInvalid && !options._webIdRetried) {
-          console.warn("[DY] a_bogus rejected (web_id_sign_invalid), refreshing webid and retrying", apiPath);
-          const freshWebId = await credentials.refreshWebIdChain();
-          if (freshWebId) params.webid = freshWebId;
-          return this.request(apiPath, params, { ...options, _webIdRetried: true });
-        }
-        throw new Error(bodyPreview ? `HTTP ${resp.status}: ${bodyPreview}` : `HTTP ${resp.status}`);
-      }
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch (_e) {
-        throw new Error("INVALID_JSON");
-      }
-      if (data.status_code !== undefined && data.status_code !== 0) {
-        console.warn("[DY] API_ERROR status_code=%s url=%s", data.status_code, apiPath);
-        // 真实状态码拼进 message（tab 模式同款 status_code=X 形态）；err.statusCode 保留供 2096 等业务判断
-        const err = new Error("API_ERROR(" + data.status_code + ")");
-        err.statusCode = data.status_code;
-        throw err;
-      }
-      return data;
-    } catch (e) {
-      clearTimeout(tid);
-      throw e;
+      release();
     }
+    const argusCode = resp.headers.get("argus_security_code") || "";
+    // 空 body 对齐 tab 模式 inject 的 RATE_LIMITED 语义（限流/风控典型响应），避免抛不可读的 SyntaxError
+    if (!raw || !raw.trim()) throw new Error("RATE_LIMITED");
+    if (!resp.ok) {
+      const bodyPreview = raw.trim().slice(0, 160);
+      const signInvalid = argusCode === "web_id_sign_invalid" || (resp.status === 403 && /sign invalid/i.test(bodyPreview));
+      if (signInvalid && !options._webIdRetried) {
+        console.warn("[DY] a_bogus rejected (web_id_sign_invalid), refreshing webid and retrying", apiPath);
+        const freshWebId = await credentials.refreshWebIdChain();
+        if (freshWebId) params.webid = freshWebId;
+        return this.request(apiPath, params, { ...options, _webIdRetried: true });
+      }
+      throw new Error(bodyPreview ? `HTTP ${resp.status}: ${bodyPreview}` : `HTTP ${resp.status}`);
+    }
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (_e) {
+      throw new Error("INVALID_JSON");
+    }
+    if (data.status_code !== undefined && data.status_code !== 0) {
+      console.warn("[DY] API_ERROR status_code=%s url=%s", data.status_code, apiPath);
+      // 真实状态码拼进 message（tab 模式同款 status_code=X 形态）；err.statusCode 保留供 2096 等业务判断
+      const err = new Error("API_ERROR(" + data.status_code + ")");
+      err.statusCode = data.status_code;
+      throw err;
+    }
+    return data;
   }
 
   // im/user/info 兑换 sec_uid：入参传 uid（本人场景）或 sec_uid 端点均可接受。
@@ -146,7 +158,7 @@ class IndependentClient {
     } catch {}
 
     if (!uid) {
-      const { savedCookie } = await chrome.storage.local.get("savedCookie");
+      const savedCookie = await credentials.getSavedCookie();
       if (savedCookie) {
         uid = Crypto.parseCookieToPairs(savedCookie).find((p) => p.key.toLowerCase() === "uid")?.value || "";
       }

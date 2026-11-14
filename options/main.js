@@ -10,10 +10,12 @@ import { batch } from './data/batch.js';
 import { importExport } from './data/import-export.js';
 import { sidebar } from './components/sidebar.js';
 import { sync } from './sync/sync.js';
+import { taskDock } from './components/task-dock.js';
 import { domainScanSync } from './sync/domain-scan-sync.js';
 import { authorImport } from './sync/author-import.js';
 import { settings } from './components/settings.js';
 import { status } from './components/status.js';
+import { compareSavedAtDesc } from '../shared/author-sort.js';
 import { detail } from './components/detail.js';
 import { appShell } from './components/app-shell.js';
 import { randomReview } from './components/random-review.js';
@@ -70,11 +72,36 @@ const storeChangedBulkDomains = new Set();
 // 经 GET_WORKS_BY_IDS 补拉合并后记录，走与点载荷相同的局部应用管线
 const storeChangedBulkIds = new Map();
 const storeChangedUpserts = new Map(); // domain -> Map<awemeId, { work, added }>，同 id 后到覆盖先到
+// 分页在途期间到达的点变化（域 -> Map<awemeId, { work, added }>）：排队到本轮加载收尾再增量
+// 应用。兜底整域重载会把整屏卡推回骨架重建（封面全量重探，视口黑屏），且重载本身重启整轮
+// 分页——连续「存入」会反复命中在途守卫、反复黑屏
+let deferredUpserts = new Map();
+// 排队期间是否全部为纯数据补丁：全部是则收尾时仍可走 authorCount 原地替换，不整刷
+let deferredDataOnly = new Set();
+// 排队起点（仅诊断日志用：区分「增量即时应用」与「等整轮分页收尾」两种延迟）
+let deferredSince = 0;
 
 function scheduleStoreChangedFlush() {
   if (document.hidden) return;
   clearTimeout(storeChangedTimer);
   storeChangedTimer = setTimeout(flushStoreChanged, 300);
+}
+
+// 作者主键集刷新尾部（三处共用）：到达后仅当仍在作品型三域时原地 patch 挂载卡作者 chip
+//（不整刷；失败降级为不显示 chip——作者域删除/移动不广播，切域刷新即兜底）
+function applyAuthorUidSets(ok) {
+  if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+    search.activeWorkRecordGrid().syncAuthorFlags();
+  }
+}
+
+// 进入作品型三域时等首屏渲染落笔后再取作者主键集（getAllKeys 与 page-0 游标并发会抢
+// IDB，实测首页往返被拖到 ~1s）：域切换与首屏初始化两处共用
+function refreshUidSetsAfterFirstScreen(uidDomain, uidGroupId) {
+  return services
+    .whenFirstScreen(uidDomain, uidGroupId)
+    .then(() => services.loadAuthorUidSets())
+    .then(applyAuthorUidSets);
 }
 
 function flushStoreChanged() {
@@ -89,18 +116,15 @@ function flushStoreChanged() {
   for (const domain of upsertsByDomain.keys()) {
     if (bulkDomains.has(domain)) upsertsByDomain.delete(domain);
   }
-  if (bulkDomains.size > 0) store.refreshGroups();
+  if (bulkDomains.has(state.domain)) store.refreshGroups();
   // 作者域变更（无点载荷）：作品型三域可见时刷新作者主键集并原地 patch 卡片作者 chip
-  //（不整刷；若同批还有当前域整刷，重载后仍用更新后的集合渲染）
+  //（不整刷；若同批还有当前域整刷，重载后仍用更新后的集合渲染）——此时首屏必已过，
+  // 无需 whenFirstScreen 错峰
   if (
     config.WORK_RECORD_DOMAINS.includes(state.domain) &&
     (bulkDomains.has("followings") || bulkDomains.has("candidates"))
   ) {
-    services.loadAuthorUidSets().then((ok) => {
-      if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
-        search.activeWorkRecordGrid().syncAuthorFlags();
-      }
-    });
+    services.loadAuthorUidSets().then(applyAuthorUidSets);
   }
   for (const domain of bulkDomains) {
     if (domain !== state.domain) continue;
@@ -110,6 +134,7 @@ function flushStoreChanged() {
       applyBulkChanged(domain, bulkIdsByDomain.get(domain));
       continue;
     }
+    console.debug(`[DDM] store-changed reload: bulk without ids (${domain})`);
     appShell.loadDomainDataSafe();
   }
   for (const [domain, entries] of upsertsByDomain) {
@@ -123,7 +148,10 @@ function flushStoreChanged() {
 async function applyBulkChanged(domain, ids) {
   // authorCount 视图序/计数依赖全组数据：bulk 补拉的记录也只会被随后的整域重载覆盖，
   // 直接重载，省掉一次可能达到 MB 级的 GET_WORKS_BY_IDS 往返
-  if (search.isAuthorOrderActive()) {
+  // 纯数据补丁（同步 checkpoint）不改 uid/createTime/savedAt/groupId，作者视图序与计数
+  // 都保持有效，原地替换即可；其余 bulk（新增/移动）仍整刷
+  if (search.isAuthorOrderActive() && !(ids.dataOnly && ids.addedIds.size === 0)) {
+    console.debug("[DDM] store-changed reload: bulk under authorCount");
     store.refreshGroups();
     appShell.loadDomainDataSafe();
     return;
@@ -131,15 +159,21 @@ async function applyBulkChanged(domain, ids) {
   // 补拉规模守卫：响应是全记录过消息通道（千条 ≈ MB 级 structured clone），且超大新增
   // 本就会撞 tryHeadInsert 的预铺容量守卫打回整刷——超限直接整刷兜底，省一次巨型往返
   if (ids.changedIds.size > config.GRID_PREMOUNT_CAP) {
+    console.debug(`[DDM] store-changed reload: bulk size ${ids.changedIds.size}`);
     appShell.loadDomainDataSafe();
     return;
   }
   const res = await services.bgMsg({ type: "GET_WORKS_BY_IDS", domain, ids: [...ids.changedIds] }).catch(() => null);
   if (!res || res.error || !Array.isArray(res.items) || res.items.length === 0) {
+    console.debug("[DDM] store-changed reload: bulk refetch failed", res && (res.error || "empty"));
     appShell.loadDomainDataSafe();
     return;
   }
-  applyStoreUpserts(domain, res.items.map((w) => ({ work: w, added: ids.addedIds.has(String(w.awemeId)) })));
+  applyStoreUpserts(
+    domain,
+    res.items.map((w) => ({ work: w, added: ids.addedIds.has(String(w.awemeId)) })),
+    { dataOnly: ids.dataOnly },
+  );
 }
 
 // 点/bulk 变化局部应用：逐条按「state 内已存在 / 新增落点」分流。已存在 → 原地替换 +
@@ -148,7 +182,7 @@ async function applyBulkChanged(domain, ids) {
 //（网格不受当前视图影响）。整刷守卫只对「触及当前视图」的变化生效——全部落在视图外时，
 // 筛选/批量/详情/作者数排序都不构成整刷理由（当前网格、选区、详情快照均未变）；
 // 任一条视图内变化需整刷则整域整刷——部分应用会让 state/网格口径不一
-function applyStoreUpserts(domain, entries) {
+function applyStoreUpserts(domain, entries, { dataOnly = false } = {}) {
   if (domain !== state.domain || !config.WORK_RECORD_DOMAINS.includes(domain)) return;
   let needCounts = false; // 当前视图外的新增：分组数字变了
   let needReload = false; // 头插守卫不过：整刷兜底
@@ -178,14 +212,31 @@ function applyStoreUpserts(domain, entries) {
   }
   // authorCount 的视图序与计数依赖全组数据：视图内任何新增/更新都必须整域重载，不能走
   // 头插/原地替换（isFilterActive 已能兜住，此处显式写出防止未来筛选语义调整后失效）
-  if (search.isAuthorOrderActive()) {
+  if (search.isAuthorOrderActive() && !dataOnly) {
+    console.debug(`[DDM] store-changed reload: authorCount (${domain}, +${viewAdds.length})`);
     store.refreshGroups();
     appShell.loadDomainDataSafe();
     return;
   }
-  if (search.isFilterActive() || state.batchMode || !dom.detailOverlay.classList.contains("hidden")) {
+  // 纯数据补丁不改变分组/排序，也不新增记录：筛选/批量/详情下可原地替换。
+  // 若昵称恰好变化，卡片可能短暂不符合筛选词，下一次搜索自会重算——远优于每 200 条整刷
+  if (
+    !dataOnly &&
+    (search.isFilterActive() || state.batchMode || !dom.detailOverlay.classList.contains("hidden"))
+  ) {
+    console.debug(
+      `[DDM] store-changed reload: filter/batch/detail (${domain}, +${viewAdds.length}, ~${domUpdates.length}, filter=${search.isFilterActive()}, batch=${state.batchMode}, detail=${!dom.detailOverlay.classList.contains("hidden")})`,
+    );
     store.refreshGroups();
     appShell.loadDomainDataSafe();
+    return;
+  }
+  // 分页在途：头插与 fillSlots 落点会交错（不得绕过守卫），但也不整域重载——重载会把整屏
+  // 卡推回骨架重建并重启整轮分页，连续保存会反复黑屏。变化按 id 合并排队，本轮加载收尾
+  // （grid-load-idle）后再走同一增量管线
+  if (services.isGridLoading()) {
+    console.debug(`[DDM] store-changed deferred: grid loading (${domain}, +${viewAdds.length})`);
+    queueDeferredUpserts(domain, entries, dataOnly);
     return;
   }
   // 守卫通过后才改写 state：整刷路径由 loadDomainData 全量替换接管，避免旧记录已被
@@ -205,6 +256,7 @@ function applyStoreUpserts(domain, entries) {
     }
   }
   if (needReload) {
+    console.debug(`[DDM] store-changed reload: head-insert fallback (${domain}, +${viewAdds.length})`);
     store.refreshGroups();
     appShell.loadDomainDataSafe();
     return;
@@ -214,23 +266,46 @@ function applyStoreUpserts(domain, entries) {
   search.activeWorkRecordGrid().updateCardsDOM(domUpdates);
 }
 
-// ---------- 头插收口：守卫 + 落点计算 ----------
-// 视图序比较：savedAt 降序、平级按 awemeId 降序——与 savedAt_id / groupId_savedAt_id
-// 索引的 prev 遍历同序（IDB 字符串键为码元序，与 JS 关系比较一致）
-function viewOrderBefore(a, b) {
-  const sa = a.savedAt || 0;
-  const sb = b.savedAt || 0;
-  if (sa !== sb) return sa > sb;
-  return String(a.awemeId) > String(b.awemeId);
+// 分页在途期间的点变化按 id 合并排队（同 id 后到覆盖先到）：同一作品多次保存、同批多作品都
+// 收敛为一次收尾应用；记录对象由调用方持有，排队期间不改动 store
+function queueDeferredUpserts(domain, entries, dataOnly = false) {
+  const pending = deferredUpserts.get(domain);
+  if (!pending) {
+    deferredUpserts.set(domain, new Map());
+    if (dataOnly) deferredDataOnly.add(domain);
+  } else if (!dataOnly) {
+    deferredDataOnly.delete(domain);
+  }
+  const map = deferredUpserts.get(domain);
+  for (const entry of entries) map.set(String(entry.work.awemeId), entry);
+  if (!deferredSince) deferredSince = performance.now();
 }
 
+// 分页收尾（grid-load-idle）补应用：逐域重走增量管线。若收尾瞬间又起了新加载，applyStoreUpserts
+// 会再次排队；切域/切组导致的域不匹配由该函数的域校验丢弃（重载自会取到最新记录）
+function flushDeferredUpserts() {
+  if (deferredUpserts.size === 0) return;
+  const pending = deferredUpserts;
+  const dataOnlySet = deferredDataOnly;
+  deferredUpserts = new Map();
+  deferredDataOnly = new Set();
+  console.debug(`[DDM] store-changed deferred flushed after ${Math.round(performance.now() - deferredSince)}ms`);
+  deferredSince = 0;
+  for (const [domain, entries] of pending) {
+    applyStoreUpserts(domain, [...entries.values()], { dataOnly: dataOnlySet.has(domain) });
+  }
+}
+
+// ---------- 头插收口：守卫 + 落点计算 ----------
+// 视图序比较见 shared/author-sort.js compareSavedAtDesc（savedAt 降序 → awemeId 降序），
+// 与 savedAt_id / groupId_savedAt_id 索引的 prev 遍历同序
 // 新条目落点 = 首个「严格排在新条目之后」的下标（等价元素不存在：id 全库唯一）
 function headInsertPosition(list, work) {
   let lo = 0;
   let hi = list.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (viewOrderBefore(work, list[mid])) hi = mid;
+    if (compareSavedAtDesc(work, list[mid]) < 0) hi = mid;
     else lo = mid + 1;
   }
   return lo;
@@ -244,14 +319,20 @@ function tryHeadInsert(domain, works) {
   const grid = search.activeWorkRecordGrid();
   // 在途分页循环：头插与其 fillSlots 落点锚定会在 rAF 窗口内交错（start 基准过期会
   // 整页写偏）；整刷重载本就会作废在途循环，口径最稳
-  if (services.isGridLoading()) return "fallback";
+  if (services.isGridLoading()) {
+    console.debug("[DDM] head-insert fallback: grid loading");
+    return "fallback";
+  }
   // 快滚冻结期禁止一切 DOM 变更（与填充/降级同一纪律）
-  if (grid.isScrollFrozen()) return "fallback";
+  if (grid.isScrollFrozen()) {
+    console.debug("[DDM] head-insert fallback: scroll frozen");
+    return "fallback";
+  }
   // 输入规模由调用方有界（applyStoreUpserts 的两条来源：点载荷 ≤ UPSERTS_MAX=8；
   // bulk 补拉在 applyBulkChanged 入口经 GRID_PREMOUNT_CAP 上限拦截后 ≤ 1500）——本函数
   // 不重复设防，超大新增的整刷兜底在补拉入口发生（省一次无谓的补拉往返）
   const list = state[domain];
-  const sorted = [...works].sort((a, b) => (viewOrderBefore(a, b) ? -1 : 1));
+  const sorted = [...works].sort(compareSavedAtDesc);
   // 落点计算与落库分离：全部在原始 list 上二分。sorted 与 list 同为视图序，落点单调
   // 不减；runs 按「同原始落点」分组，与旧实现「当前列表中紧接上一条才并 run」等价
   //（前序已插 k 条时当前列表落点 = p + k，连续条件两边同加 k）。逐条边插边 splice 的
@@ -277,7 +358,10 @@ function tryHeadInsert(domain, works) {
   // 靠前 run 后插不改变已插区段的相对位置）；待观察队列经 #mountInsert 的 unshift 逆序
   // 累积后恰为文档序，与旧实现的升序插入结果一致
   for (let ri = runs.length - 1; ri >= 0; ri--) {
-    if (!grid.insertItems(runs[ri].start, runs[ri].items)) return "fallback";
+    if (!grid.insertItems(runs[ri].start, runs[ri].items)) {
+      console.debug(`[DDM] head-insert fallback: mismatch at ${runs[ri].start}`);
+      return "fallback";
+    }
   }
   return "applied";
 }
@@ -286,25 +370,14 @@ function tryHeadInsert(domain, works) {
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || !message.type) return;
   switch (message.type) {
-    case "SYNC_PROGRESS":
-      sync.onSyncProgress(message);
+    case "TASK_PROGRESS":
+      taskDock.onProgress(message);
       break;
-    case "SYNC_DONE":
-      sync.onSyncDone(message);
+    case "TASK_QUEUE_CHANGED":
+      taskDock.applyQueue(message.tasks);
       break;
-    case "FOLLOWING_PROGRESS":
-      sync.onFollowingProgress(message);
-      break;
-    case "FAVORITES_PROGRESS":
-    case "COLLECTION_PROGRESS":
-      domainScanSync.onScanProgress(message);
-      break;
-    case "IMPORT_WORKS_PROGRESS":
-    case "CALIBRATE_PROGRESS":
-      authorImport.onProgress(message);
-      break;
-    case "IMPORT_PROGRESS":
-      importExport.onProgress(message);
+    case "TASK_DONE":
+      taskDock.onDone(message);
       break;
     case "STORE_CHANGED":
       // 抖音标签页等外部上下文落库后的广播（options 不在其请求链路上）。
@@ -322,15 +395,21 @@ chrome.runtime.onMessage.addListener((message) => {
         // bulk 轻量 id 载荷（changedIds = 实际写入记录 id，addedIds 为新增子集）：
         // flush 时按 id 补拉记录走增量管线；无载荷维持整刷收口
         if (Array.isArray(message.changedIds) && message.changedIds.length > 0) {
-          const cur = storeChangedBulkIds.get(message.domain) || { changedIds: new Set(), addedIds: new Set() };
+          const cur = storeChangedBulkIds.get(message.domain) || {
+            changedIds: new Set(),
+            addedIds: new Set(),
+            dataOnly: true,
+          };
           for (const id of message.changedIds) cur.changedIds.add(String(id));
           for (const id of message.addedIds || []) cur.addedIds.add(String(id));
+          // 同一域多次广播合并：只要有一次不是纯数据补丁，就按普通 bulk 处理
+          cur.dataOnly = cur.dataOnly && message.dataOnly === true;
           storeChangedBulkIds.set(message.domain, cur);
         }
       }
       scheduleStoreChangedFlush();
       break;
-    // 批量「取消并移除」由 Batch 内挂 requestId 专属 listener 消化，全局不处理
+    // 批量「取消并移除」由 Batch 经 taskDock.begin 的 onDone（#onCancelDone）收口，全局不处理
   }
 });
 
@@ -339,6 +418,27 @@ document.addEventListener("visibilitychange", () => {
     flushStoreChanged();
   }
 });
+
+// ---------- 导航轨入口可用态：按域禁用不可用动作 ----------
+// 回顾域禁用「分组」（顶栏分组按钮组同时隐藏）、候选域禁用「同步」（无账号同步源）；
+// 保留占位并 disabled 阻断点击，方法层的域守卫仍保留兜底
+function setRailAction(btn, disabled, title) {
+  if (!btn) return;
+  btn.disabled = disabled;
+  if (disabled) btn.title = title;
+  else btn.removeAttribute("title");
+}
+
+function syncRailActions() {
+  const review = state.domain === config.REVIEW_DOMAIN;
+  setRailAction(dom.btnGroupManage, review, "回顾域不支持分组");
+  // 回顾域的随机入口在顶栏（#btnReviewRandom），右栏「同步」在该域同样不可用
+  setRailAction(
+    dom.btnSync,
+    review || state.domain === "candidates",
+    review ? "回顾域请使用顶栏「随机」" : "候选域不支持同步",
+  );
+}
 
 // ---------- DOM 事件绑定 ----------
 // X 关闭按钮：多层弹窗每层各有 ✕，document 级委托统一走关闭入口（作用于顶层）
@@ -371,6 +471,11 @@ document.addEventListener("keydown", (e) => {
 // ?/B/Ctrl+A/Delete/I/M/D，避免与弹窗交互重叠
 const isTypingTarget = (el) =>
   el instanceof HTMLElement && !!el.closest("input, textarea, select, [contenteditable]");
+// 输入中或任一覆盖层开启时，批量快捷键让位
+const overlayBlocked = (typing) =>
+  typing ||
+  !dom.dialogOverlay.classList.contains("hidden") ||
+  !dom.detailOverlay.classList.contains("hidden");
 document.addEventListener("keydown", (e) => {
   const typing = isTypingTarget(e.target);
   if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
@@ -388,13 +493,7 @@ document.addEventListener("keydown", (e) => {
   // Enter 随后命中 danger 主按钮）。详情层的 Delete/Backspace（移除当前作品）让位——
   // 详情打开时本分支跳过，不叠加两套确认
   if (state.batchMode && e.key === "Delete") {
-    if (
-      typing ||
-      !dom.dialogOverlay.classList.contains("hidden") ||
-      !dom.detailOverlay.classList.contains("hidden")
-    ) {
-      return;
-    }
+    if (overlayBlocked(typing)) return;
     if (state.selectedIds.size === 0) return;
     e.preventDefault();
     batch.handleBatchDelete();
@@ -405,13 +504,7 @@ document.addEventListener("keydown", (e) => {
   if (state.batchMode && !e.ctrlKey && !e.metaKey && !e.altKey) {
     const actionKey = e.key.toLowerCase();
     if (actionKey === "i" || actionKey === "m" || actionKey === "d") {
-      if (
-        typing ||
-        !dom.dialogOverlay.classList.contains("hidden") ||
-        !dom.detailOverlay.classList.contains("hidden")
-      ) {
-        return;
-      }
+      if (overlayBlocked(typing)) return;
       e.preventDefault();
       if (actionKey === "i") batch.handleBatchSave();
       else if (actionKey === "m") batch.handleBatchMove();
@@ -422,13 +515,7 @@ document.addEventListener("keydown", (e) => {
   // B 进入/退出批量模式（与「批量」按钮同入口，退出时同按钮语义清空选区）；弹窗/详情
   // 打开时不切换——避免在覆盖层背后改变底层网格的交互模式
   if ((e.key === "b" || e.key === "B") && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (
-      typing ||
-      !dom.dialogOverlay.classList.contains("hidden") ||
-      !dom.detailOverlay.classList.contains("hidden")
-    ) {
-      return;
-    }
+    if (overlayBlocked(typing)) return;
     e.preventDefault();
     batch.handleBatchToggle();
   }
@@ -462,17 +549,17 @@ dom.fileInput.addEventListener("change", (e) => importExport.handleImport(e));
 
 dom.btnSettings.addEventListener("click", () => settings.openPanel());
 
+// 回顾域的随机入口为顶栏「随机」按钮；右栏「同步」在回顾域置灰（见 syncRailActions）
+dom.btnReviewRandom.addEventListener("click", () => randomReview.randomize());
+
 dom.btnSync.addEventListener("click", async () => {
-  if (state.domain === config.REVIEW_DOMAIN) {
-    dialog.showToast("回顾域不支持同步", "info");
-    return;
-  }
   // 候选域无账号同步数据源：相关操作已迁至「工具」弹窗，同步按钮只做指引
   if (state.domain === "candidates") {
     dialog.showToast("候选域不支持同步", "info");
     return;
   }
-  // 各链路互斥由入口自守卫（syncFollowings/syncCurrentGroup/syncDomain 均检查 isRunning）
+  // 入口防重入各自守卫：syncFollowings/syncDomain 按域 isDomainBusy（跨域任务可入队），
+  // syncCurrentGroup 按 kind isKindBusy（同 kind 去重）
   if (state.domain === "followings") {
     await sync.syncFollowings();
   } else if (state.domain === "works") {
@@ -483,15 +570,6 @@ dom.btnSync.addEventListener("click", async () => {
 });
 
 dom.btnAuthorImport.addEventListener("click", () => authorImport.openDialog());
-
-// 回顾分组行内联配置：单一「随机」入口 + 追加（落未分组，仅同来源域）
-dom.btnReviewRandom?.addEventListener("click", () => randomReview.randomize());
-dom.btnReviewAppend?.addEventListener("click", () => randomReview.append());
-dom.reviewCountInput?.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
-  e.preventDefault();
-  randomReview.randomize();
-});
 
 // 整域重载入口（排序切换 / 批量兜底 / 详情兜底）：SearchBar 不反向 import app-shell，
 // 避免模块图新增环。默认先关闭详情防止 #currentId 悬空；详情删除的兜底重载传
@@ -518,6 +596,8 @@ search.setReloadHandler((opts = {}) => {
   sidebar.initSidebar();
   detail.initDetailEvents();
   tooltip.initTooltip();
+  // 回顾域顶栏控件（来源 + 抽取数量）：回顾域下取代分组按钮组，变更即持久化
+  randomReview.initTopBarControls();
 
   // 离开扩展页面（切标签/最小化，页面转为隐藏）即暂停全部播放：
   // 卡片悬浮预览（含播放按钮直启）走 WorksGrid.stopAllMedia、侧栏悬停预览走
@@ -558,6 +638,7 @@ search.setReloadHandler((opts = {}) => {
   store.on("domain", async () => {
     // 旧域的分组名/顺序/计数立即作废；新域快照到达后由 renderGroupTabs 一次落正确值
     groups.clearForDomainSwitch();
+    syncRailActions();
     batch.syncSaveToWorksBtn();
     batch.syncSaveToCandidatesBtn();
     // 分组快照先发：GET_DOMAIN_GROUPS 用原生 count，通常在 page-0 的 600 条记录读取前
@@ -565,7 +646,7 @@ search.setReloadHandler((opts = {}) => {
     const groupsLoad = groups.renderGroupTabs();
     const dataLoad = appShell.loadDomainDataSafe();
     // 搜索栏域联动是纯 UI 同步，无数据依赖
-    search.onDomainChanged();
+    search.syncForDomain();
     // 作品型三域的作品卡按作者域成员资格显示 chip：主键集延后到首屏渲染之后再取
     //（getAllKeys 与 page-0 游标并发会抢 IDB，实测首页往返被拖到 ~1s），到达后经
     // syncAuthorFlags 原地 patch 已挂载卡；失败降级为不显示 chip（作者域删除/移动
@@ -573,30 +654,18 @@ search.setReloadHandler((opts = {}) => {
     const uidDomain = state.domain;
     const uidGroupId = state.currentGroupId;
     const uidSets = config.WORK_RECORD_DOMAINS.includes(uidDomain)
-      ? services
-          .whenFirstScreen(uidDomain, uidGroupId)
-          .then(() => services.loadAuthorUidSets())
-          .then((ok) => {
-            if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
-              search.activeWorkRecordGrid().syncAuthorFlags();
-            }
-          })
+      ? refreshUidSetsAfterFirstScreen(uidDomain, uidGroupId)
       : Promise.resolve();
     await Promise.all([groupsLoad, uidSets, dataLoad]);
     // 滚动已在 switchDomain 显式归零（尾部占位使 wipe clamp 不再触发）
   });
 
-  for (const domain of config.WORK_RECORD_DOMAINS) {
+  // 五个数据域的订阅回调同构（review 回顾域单独分支：数据到达需同步域相关控件）
+  for (const domain of [...config.WORK_RECORD_DOMAINS, ...config.AUTHOR_RECORD_DOMAINS]) {
     store.on(domain, () => {
       if (state.domain === domain) search.refreshGridView();
     });
   }
-  store.on("followings", () => {
-    if (state.domain === "followings") search.refreshGridView();
-  });
-  store.on("candidates", () => {
-    if (state.domain === "candidates") search.refreshGridView();
-  });
   store.on("review", () => {
     if (state.domain !== config.REVIEW_DOMAIN) return;
     // 回顾批次来源可能是作品或作者：数据到达后同步搜索栏的域相关控件，再重渲视图
@@ -612,11 +681,7 @@ search.setReloadHandler((opts = {}) => {
   store.on("currentGroupId", async () => {
     appShell.clearActiveGrid();
     // 计数占位：K 恒 0（有同源分组缓存显示 0，无缓存显示「…」，见 SearchBar.syncCount）
-    const groupId = state.currentGroupId;
-    const cachedTotal = state.gridTotals[`${state.domain}|${groupId}`];
-    state.gridPending = true;
-    state.gridTotal = cachedTotal != null ? { domain: state.domain, groupId, total: cachedTotal } : null;
-    dom.sbCount.textContent = cachedTotal != null ? "0" : "…";
+    appShell.markGridPending(state.domain, state.currentGroupId);
     // tab 集合未变，仅同步激活态 + 滑块动画（renderGroupTabs 会重建 tab、毁掉滑动起点）
     groups.syncActiveTabs();
     await appShell.loadDomainDataSafe();
@@ -659,21 +724,28 @@ search.setReloadHandler((opts = {}) => {
     document.body.classList.toggle("batch-mode", v);
     batch.syncSelectionUI();
   });
+  // 分页收尾：补应用加载期间排队的点变化（见 applyStoreUpserts 的在途守卫）
+  store.on("grid-load-idle", () => flushDeferredUpserts());
 
   document.body.dataset.domain = "works";
+  syncRailActions();
   appShell.updateDomainSlider("works");
   // 首屏同样并行：首页数据请求先发，分组 tab 与作者主键集不挡首帧；chip 主键集等首屏
   // 渲染后再取（避免与 page-0 抢 IDB），到达后原地 patch 已挂载卡
   const dataLoad = appShell.loadDomainDataSafe();
-  const uidSets = services
-    .whenFirstScreen("works", state.currentGroupId)
-    .then(() => services.loadAuthorUidSets())
-    .then((ok) => {
-      if (ok && config.WORK_RECORD_DOMAINS.includes(state.domain)) {
-        search.activeWorkRecordGrid().syncAuthorFlags();
-      }
-    });
+  const uidSets = refreshUidSetsAfterFirstScreen("works", state.currentGroupId);
   await Promise.all([groups.renderGroupTabs(), uidSets, dataLoad]);
+  // 任务寿命 = 发起页寿命：关页/刷新由控制端口断线触发取消，这里只提示，避免误关
+  window.addEventListener("beforeunload", (e) => {
+    if (!taskDock.hasOwnPending()) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+  // 另一个 options 页可能在跑任务：只读接管进度展示（不绑端口、不显示取消）
+  services
+    .bgMsg({ type: "GET_TASK_STATE" })
+    .then((res) => taskDock.applyQueue(res?.tasks || []))
+    .catch(() => {});
   // 清理历史版本搜索态 hash 残留：旧版 URL 持久化已移除（读取方已删，URL 不再承载
   // 任何状态），旧标签页 URL 上残留的 #search?... 会随刷新永久保留，一次性剥掉即可。
   // 放在 init 尾部不影响首屏；此后全仓无任何 hash 读写方

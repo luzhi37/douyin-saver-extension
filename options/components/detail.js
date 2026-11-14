@@ -280,6 +280,22 @@ class Detail {
     this.#renderNoteSegs(this.#noteCycleTime(), this.#noteTotal());
   }
 
+  // 周期收尾公共段（timeupdate/ended/virtual tick 三个 handler 的 nextOnEnd 分发同构）：
+  // group=下一作品整渲；off=停播+按钮复位。返回 true 表示已收尾（调用方直接 return），
+  // false = single，由调用方各自重置重播
+  #noteCycleEnd(end) {
+    if (end === "group") {
+      this.renderDetail();
+      return true;
+    }
+    if (end !== "single") {
+      this.#noteStopAutoPlay();
+      this.#noteUpdatePlayBtn();
+      return true;
+    }
+    return false;
+  }
+
   // 音乐 timeupdate（initDetailEvents 绑定一次）：按重定基后的周期时间渐进填充 + 段满切图。
   // 手动切图后由偏移量保证不回弹（音乐不跳段）
   #onNoteAudioTimeUpdate() {
@@ -292,19 +308,10 @@ class Detail {
     const cycle = audio.currentTime - this.#noteSegOffset;
     if (cycle >= total) {
       // 周期走完（含手动前跳提前耗尽剩余音乐）：按循环模式收尾
-      const end = this.nextOnEnd();
-      if (end === "single") {
-        this.#noteSegOffset = audio.currentTime;
-        this.#noteShowImage(0);
-        this.#renderNoteSegs(0, total);
-        return;
-      }
-      if (end === "group") {
-        this.renderDetail();
-        return;
-      }
-      this.#noteStopAutoPlay();
-      this.#noteUpdatePlayBtn();
+      if (this.#noteCycleEnd(this.nextOnEnd())) return;
+      this.#noteSegOffset = audio.currentTime;
+      this.#noteShowImage(0);
+      this.#renderNoteSegs(0, total);
       return;
     }
     const clamped = Math.max(cycle, 0);
@@ -316,21 +323,12 @@ class Detail {
   // 手动后跳会使周期未走完音乐先结束，故重播时同时清零偏移量
   #onNoteAudioEnded() {
     if (this.#noteMode !== "music") return;
-    const end = this.nextOnEnd();
-    if (end === "single") {
-      this.#noteSegOffset = 0;
-      dom.detailAudio.currentTime = 0;
-      dom.detailAudio.play().catch(() => {});
-      this.#noteShowImage(0);
-      this.#renderNoteSegs(0, this.#noteTotal());
-      return;
-    }
-    if (end === "group") {
-      this.renderDetail();
-      return;
-    }
-    this.#noteStopAutoPlay();
-    this.#noteUpdatePlayBtn();
+    if (this.#noteCycleEnd(this.nextOnEnd())) return;
+    this.#noteSegOffset = 0;
+    dom.detailAudio.currentTime = 0;
+    dom.detailAudio.play().catch(() => {});
+    this.#noteShowImage(0);
+    this.#renderNoteSegs(0, this.#noteTotal());
   }
   // 无音乐兜底 tick：虚拟时钟推进，收尾语义与旧定时轮播一致
   #onNoteVirtualTick() {
@@ -340,19 +338,10 @@ class Detail {
     const total = work.images.length * interval;
     this.#noteVirtualElapsed += 250;
     if (this.#noteVirtualElapsed >= total) {
-      const end = this.nextOnEnd();
-      if (end === "single") {
-        this.#noteVirtualElapsed = 0;
-        this.#noteShowImage(0);
-        this.#renderNoteSegs(0, total);
-        return;
-      }
-      if (end === "group") {
-        this.renderDetail();
-        return;
-      }
-      this.#noteStopAutoPlay();
-      this.#noteUpdatePlayBtn();
+      if (this.#noteCycleEnd(this.nextOnEnd())) return;
+      this.#noteVirtualElapsed = 0;
+      this.#noteShowImage(0);
+      this.#renderNoteSegs(0, total);
       return;
     }
     this.#renderNoteSegs(this.#noteVirtualElapsed, total);
@@ -572,6 +561,10 @@ class Detail {
             // 成功终态不再要求"好的"确认
             dialog.closeDialog();
             dialog.showToast("已移除该作品", "success");
+          } catch (err) {
+            // 失败收口（对齐 runTask 失败语义）：解锁 + 关层 + 错误提示，防止弹窗卡死在进度态
+            dialog.closeDialog();
+            dialog.showToast("移除失败: " + (err.message || String(err)), "error");
           } finally {
             state.preventDialogClose = false;
           }
@@ -1098,7 +1091,7 @@ class Detail {
       // 播放控制快捷键：焦点在控件上时不拦截——Space 应触发聚焦按钮的原生点击、
       // 滑块应保留原生步进，避免与详情层交互冲突
       if (!this.#isInteractiveTarget(e.target) && work) {
-        if (e.key === " " || e.code === "Space") {
+        if (e.key === " ") {
           e.preventDefault();
           if (work.type === "note" && work.images?.length > 0) this.#toggleNoteAutoPlay();
           else this.toggleDetailVideoPlay();

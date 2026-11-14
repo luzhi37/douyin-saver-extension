@@ -1,6 +1,7 @@
 // ---------- AuthorGrid ----------
 import { config, dom, state, utils } from '../core.js';
 import { VirtualGrid } from './virtual-grid.js';
+import { createProbeQueue } from './probe-queue.js';
 import { search } from '../components/search-bar.js';
 import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
@@ -12,9 +13,23 @@ import { sidebar } from '../components/sidebar.js';
 // 与 search-bar/batch/detail/sidebar 存在循环 import（它们各自反向引用本模块）：单例引用全部
 // 发生在方法体内、模块图完全求值之后才被触达，靠 ES live binding 安全消解（AGENTS.md 设计例外）
 class AuthorGrid extends VirtualGrid {
-  // 头像分帧队列，避免同步赋 src 触发批量网络/解码调度
-  #avatarQueue = [];
-  #avatarDrainRafId = 0;
+  // 头像分帧探针队列（probe-queue 共用壳），避免同步赋 src 触发批量网络/解码调度；
+  // 失败走首字回退，出队预检跳过已降级/重填条目
+  #probeQueue = createProbeQueue({
+    budget: config.GRID_IMG_PER_FRAME,
+    dequeueCheck: (t) => this.#avatarTargetAlive(t.img, t.gen),
+    alive: (t) => this.#avatarTargetAlive(t.img, t.gen),
+    commit: (t) => {
+      t.img.style.backgroundImage = utils.cssUrl(t.url);
+      t.img.classList.remove("media-loading");
+      detail.markMediaOk();
+    },
+    fail: (t) => {
+      detail.markMediaFail();
+      const card = t.img.closest(".following-card");
+      this.#showAvatarFallback(t.img, card?.querySelector(".following-avatar-fallback"), t.nickname);
+    },
+  });
   #domain = "";
   #filteredEmptyMsg = "";
   #checkboxLabel = "选择作者";
@@ -123,35 +138,7 @@ class AuthorGrid extends VirtualGrid {
   // 头像分帧预载：离屏探针先行请求，只有成功的 URL 才提交给头像节点。
   // 头像是 div+background-image：背景图失败时浏览器不绘制任何占位图标，断裂图在元素层面失去载体
   #enqueueAvatar(img, url, nickname, gen) {
-    this.#avatarQueue.push({ img, url, nickname, gen });
-    this.#scheduleAvatarDrain();
-  }
-  #scheduleAvatarDrain() {
-    if (this.#avatarDrainRafId) return;
-    this.#avatarDrainRafId = requestAnimationFrame(() => {
-      this.#avatarDrainRafId = 0;
-      let n = 0;
-      while (this.#avatarQueue.length && n < config.GRID_IMG_PER_FRAME) {
-        const { img, url, nickname, gen } = this.#avatarQueue.shift();
-        if (!this.#avatarTargetAlive(img, gen)) continue;
-        const probe = new Image();
-        probe.onload = () => {
-          if (!this.#avatarTargetAlive(img, gen)) return; // 已重填/降级，结果作废
-          img.style.backgroundImage = utils.cssUrl(url);
-          img.classList.remove("media-loading");
-          detail.markMediaOk();
-        };
-        probe.onerror = () => {
-          if (!this.#avatarTargetAlive(img, gen)) return;
-          detail.markMediaFail();
-          const card = img.closest(".following-card");
-          this.#showAvatarFallback(img, card?.querySelector(".following-avatar-fallback"), nickname);
-        };
-        probe.src = url;
-        n++;
-      }
-      if (this.#avatarQueue.length) this.#scheduleAvatarDrain();
-    });
+    this.#probeQueue.enqueue({ img, url, nickname, gen });
   }
 
   handleClick(event, author, el) {
