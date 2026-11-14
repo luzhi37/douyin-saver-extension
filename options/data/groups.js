@@ -37,6 +37,12 @@ class Groups {
   // 清空旧域 tab，快照到达后直接落正确名称/顺序/数字
   async renderGroupTabs() {
     const gen = ++this.#renderGen;
+    // 回顾域顶栏不出现分组按钮组：不加载分组快照（仍刷新存储指示器），右栏「分组」入口另行置灰
+    if (state.domain === config.REVIEW_DOMAIN) {
+      dom.groupTabs.innerHTML = "";
+      this.#refreshStorageIndicator();
+      return;
+    }
     // 先发分组快照，再发存储指示器字节查询，避免 bytesOnly 抢后台消息队列
     const pending = services.loadDomainGroups(state.domain);
     this.#refreshStorageIndicator();
@@ -121,7 +127,7 @@ class Groups {
   onGridTotal({ domain, groupId, total } = {}) {
     if (!domain || domain !== state.domain || total == null) return;
     const tab = dom.groupTabs.querySelector(`.group-tab[data-group-id="${groupId}"]`);
-    if (!tab || !tab.isConnected) return;
+    if (!tab) return;
     this.#setTabContent(tab, tab.dataset.groupName || "", total);
     this.updateGroupSlider(false); // 数字改变了 tab 宽度：滑块重定
     this.updateTabMask();
@@ -169,6 +175,11 @@ class Groups {
   }
 
   async showGroupManage() {
+    // 回顾域禁用分组：不接受分组管理（顶栏无入口切换分组，新建分组不可达）
+    if (state.domain === config.REVIEW_DOMAIN) {
+      dialog.showToast("回顾域不支持分组", "info");
+      return;
+    }
     const tmpl = document.getElementById("groupManageTemplate");
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("分组管理", body, null, null, { autoFocus: false });
@@ -256,25 +267,21 @@ class Groups {
         const delBody = delTmpl.content.cloneNode(true);
         delBody.querySelector(".confirm-delete-group-name").textContent = g.name;
         // pushDialog 叠于分组管理之上：确认/删除后回到管理列表（父层原地保留，item 保持连接、移除即生效）
-        dialog.pushDialog("确认删除", delBody, [
-          {
-            text: "删除",
-            danger: true,
-            callback: async () => {
-              await dialog.runTask({
-                progressTitle: "正在删除…",
-                task: async () => {
-                  const res = await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
-                  if (!res || res.ok !== true) throw new Error(res?.error || "未知错误");
-                  item.remove();
-                  store.refreshGroups();
-                },
-                successText: `已删除"${g.name}"`,
-                failPrefix: "删除失败: ",
-              });
-            },
+        dialog.confirmTask({
+          title: "确认删除",
+          message: delBody,
+          actionText: "删除",
+          push: true,
+          progressTitle: "正在删除…",
+          task: async () => {
+            const res = await services.bgMsg({ type: "DELETE_GROUP", domain: state.domain, groupId: g.id });
+            if (!res || res.ok !== true) throw new Error(res?.error || "未知错误");
+            item.remove();
+            store.refreshGroups();
           },
-        ]);
+          successText: `已删除"${g.name}"`,
+          failPrefix: "删除失败: ",
+        });
       });
       list.appendChild(item);
     }
@@ -332,6 +339,8 @@ class Groups {
   }
 
   #switchGroup(groupId) {
+    // 回顾域禁用分组：tab 已置 disabled，这里兜底拦截键盘/程序化触发
+    if (state.domain === config.REVIEW_DOMAIN) return;
     // 分组切换保留批量模式（批量栏与勾选框随新分组继续可用）：只清空选区与 Shift
     // 锚点（旧分组条目不在新视图）；域切换仍退出批量（AppShell.switchDomain）
     batch.resetSelection();

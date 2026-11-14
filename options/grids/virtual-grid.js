@@ -1,5 +1,5 @@
 // ---------- VirtualGrid（抽象基类，仅导出 class 不实例化） ----------
-import { config, dom, state } from '../core.js';
+import { config, dom } from '../core.js';
 
 // ---------- 程序化滚动标记 ----------
 // 代码写 scrollTop（锚点补偿 / 头部占位补偿 / 回顶）不是用户快滚意图，不能被快滚判定
@@ -581,10 +581,16 @@ export class VirtualGrid {
     let anchorTopBefore = 0;
     if (useAnchor) anchorTopBefore = anchorNode.getBoundingClientRect().top;
     const compensate = useAnchor && anchorTopBefore < grid.getBoundingClientRect().top;
-    // 空网格首条：接管 emptyState 显隐（#showEmpty 的对偶）
+    // 空网格首条：接管 emptyState 显隐（#showEmpty 的对偶）。挂卡前补一次布局落笔：
+    // 空视图（render([]) 在 #ensureFillObserver 前早退）与 abortRender 后 #observer 为
+    // null，#onContainerResize/syncContainerWidth 的活跃链门控会把此间的容器变宽整条
+    // 丢弃，容器上残留按旧宽度落笔的轨宽——新卡挂进过期轨宽会被样式表
+    // justify-content:center 居中出大段左空白（实测路径：抖音标签页保存 → STORE_CHANGED
+    // 头插进空的「未分组」）。#applyLayout 自带 W<=0 早退与列数/卡宽未变 no-op 守卫
     if (!this.#slots.length) {
       dom.emptyState.classList.add("hidden");
       this.#container.classList.remove("hidden");
+      this.#applyLayout();
     }
     const nodes = [];
     for (const item of items) {
@@ -961,7 +967,6 @@ export class VirtualGrid {
   }
 
   // 分圈观察的入队端（分圈推进机制与全量 observe 的成本依据见 #ensureFillObserver）：
-  // 逐个 push：余量骨架可能上万，spread 实参（push(...nodes)）在大数组下有栈上限
   #observeNewSkeletons(nodes) {
     this.#ensureFillObserver();
     // 逐个 push：余量骨架可能上万，spread 实参（push(...nodes)）在大数组下有栈上限
@@ -1548,6 +1553,31 @@ export class VirtualGrid {
   // 可脱离主线程滚动显示灰骨架瓦片。快滚态下无新 scroll 事件即停稳（drain 轮询
   // epoch 检测）：清空沿路积压的填充队列、对落点带区强制补填
 
+  // 带区几何 + 二分定位带区起点 + 线性扫描到带区底（卡片等高成行、纵向位置单调，
+  // 全程只读探测 gBCR）；对带区内每个骨架卡回调，非骨架卡跳过——停稳补填与视口追赶
+  // 两条路径的扫描段同构，收口于此
+  #scanBand(onCard) {
+    const children = this.#container.children;
+    const count = children.length;
+    if (!count) return;
+    const margin = parseFloat(config.OBSERVER_ROOT_MARGIN) || 0;
+    const gridRect = dom.mainGrid.getBoundingClientRect();
+    const bandTop = gridRect.top - margin;
+    const bandBottom = gridRect.bottom + margin;
+    let lo = 0;
+    let hi = count;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (children[mid].getBoundingClientRect().bottom < bandTop) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let i = lo; i < count; i++) {
+      const card = children[i];
+      if (card.getBoundingClientRect().top > bandBottom) break;
+      if (card.classList.contains(this.#skeletonClass)) onCard(card);
+    }
+  }
+
   // 停稳补填：丢弃沿路积压的填充队列（为滚过去的卡补布局只会拖慢落点；丢弃前重新
   // observe，见实现内注释），对当前视口带区的带键骨架无视 observed 标记直接补填
   //（二分定位带区后线性扫描）
@@ -1563,30 +1593,14 @@ export class VirtualGrid {
         this.#observer.observe(card);
       }
     }
-    const children = this.#container.children;
-    const count = children.length;
-    if (!count) return;
-    const margin = parseFloat(config.OBSERVER_ROOT_MARGIN) || 0;
-    const gridRect = dom.mainGrid.getBoundingClientRect();
-    const bandTop = gridRect.top - margin;
-    const bandBottom = gridRect.bottom + margin;
-    let lo = 0;
-    let hi = count;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (children[mid].getBoundingClientRect().bottom < bandTop) lo = mid + 1;
-      else hi = mid;
-    }
     let refilled = 0;
-    for (let i = lo; i < count; i++) {
-      const card = children[i];
-      if (card.getBoundingClientRect().top > bandBottom) break;
-      if (!card.classList.contains(this.#skeletonClass) || !card.dataset[this.#itemKey]) continue;
+    this.#scanBand((card) => {
+      if (!card.dataset[this.#itemKey]) return;
       // 入口处的 observer 判空已保证非空（同步循环内无失效点）
       this.#observer.unobserve(card);
       this.#enqueueFill(card);
       refilled++;
-    }
+    });
     if (refilled) console.debug(`[DDM] settle refill: ${refilled} cards`);
   }
 
@@ -1595,31 +1609,12 @@ export class VirtualGrid {
     if (!this.#observer) return;
     // 未标记的骨架必然仍在待观察队列里；队列与哨兵双空 = 无需追赶
     if (!this.#sentinelCard && !this.#pendingSkeletons.length) return;
-    const children = this.#container.children;
-    const count = children.length;
-    if (!count) return;
-    const margin = parseFloat(config.OBSERVER_ROOT_MARGIN) || 0;
-    const gridRect = dom.mainGrid.getBoundingClientRect();
-    const bandTop = gridRect.top - margin;
-    const bandBottom = gridRect.bottom + margin;
-    // 卡片等高成行、纵向位置单调，二分定位带区起点后线性扫描到带区底；
     // 全程只读探测（gBCR），收集完再统一标记 observe，避免读写交错引发布局抖动
-    let lo = 0;
-    let hi = count;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      const rect = children[mid].getBoundingClientRect();
-      if (rect.bottom < bandTop) lo = mid + 1;
-      else hi = mid;
-    }
     const caught = [];
-    for (let i = lo; i < count; i++) {
-      const card = children[i];
-      if (card.getBoundingClientRect().top > bandBottom) break;
-      if (!card.classList.contains(this.#skeletonClass)) continue;
-      if (card.dataset.observed === "1") continue; // 圈内/降级重观察路径已覆盖
+    this.#scanBand((card) => {
+      if (card.dataset.observed === "1") return; // 圈内/降级重观察路径已覆盖
       caught.push(card);
-    }
+    });
     for (const card of caught) {
       card.dataset.observed = "1";
       this.#observer.observe(card);
@@ -1628,7 +1623,7 @@ export class VirtualGrid {
 
   #finishRender() {
     // 原位整刷收尾的视口追赶：wipe 与重挂同任务同步完成、重渲前后内容等高时（典型：批量
-    // 同步 SYNC_DONE 全量刷新），滚动位置原样保留、全程无 scroll 事件——分圈哨兵停在网格
+    // 导入后的整域刷新），滚动位置原样保留、全程无 scroll 事件——分圈哨兵停在网格
     // 顶部、向下链推进够不着中部视口，而 #catchUpToViewport 只由 scroll 事件调度，视口
     // 带区骨架无人观察、永久停在灰卡态（手动滚一下才出封面）。整渲完成统一补一次追赶
     // （rAF 下一帧测量，届时全量挂载已完成），与 scroll 触发共用同一机制

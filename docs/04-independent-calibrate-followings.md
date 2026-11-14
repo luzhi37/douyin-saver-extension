@@ -1,13 +1,16 @@
 # 04 · 独立模式（逆向）— 作者域校准（关注 / 候选）
 
+> B6（2026-11-11）补充：本任务已接入任务队列——循环以 `waitForTurn`/`checkpoint` 两点挂起，支持「暂停（现场保留）/ 续跑（从检查点继续）」，详见 [plans/task-queue-pause-resume-2026-11-11.md](../plans/task-queue-pause-resume-2026-11-11.md)。
+
+> **任务坞迁移（2026-11-11）**：批量校准（`CALIBRATE_FOLLOWINGS` / `CALIBRATE_CANDIDATES`）下述「进度层弹窗、`CALIBRATE_PROGRESS`、`withCancelGuard`、`sendResponse` 终态」均为旧机制，现已改为：带 `taskId` 登记 TaskRegistry（开头 `loadMode()` 一次决定 `mode`）→ 立即 ack → `TASK_PROGRESS`（`phase:"calibrate"`）→ `patchAuthors`（单事务字段补丁，update-only）+ STORE_CHANGED → `TASK_DONE`（`updated/changed`）；取消走 `CANCEL_TASK`，已校准部分照常落库。单用户校准 `calibrateOne` 同为短操作，落库同样走 `patchAuthors`。
 > 职责边界：作者域（关注 `followings` / 候选 `candidates`）的计数（`awemeCount`/`followerCount`）、**档案字段**（`nickname`/`avatarLarger`）与**最近更新日期**（`lastUpdateAt`）的**校准写入机制**——批量校准（工具弹窗手动触发，逐用户请求 profile/other + 作品第一页）与单用户校准（打开作者侧边栏触发）。两流程均按模式分支取数，本文以独立模式为主线、Tab 模式对照。列表采集阶段为何占位 0 见 [03](./03-independent-sync-followings.md)。**同步关注列表与校准已彻底分离**：`FETCH_FOLLOWING` 收集完成后不再自动校准，校准只能手动发起；候选域无账号同步源，校准消息为 `CALIBRATE_CANDIDATE` / `CALIBRATE_CANDIDATES`。
 
 ## 概述
 
 关注列表接口返回的粉丝/作品计数是**滞后快照**（与主页展示差异大），因此全仓约定：列表采集一律占位 0，权威计数只从 `GET /aweme/v1/web/user/profile/other/?sec_user_id=…` 的 `user.aweme_count / user.follower_count` 获取。同名接口的 `user.nickname / user.avatar_larger` 同样是**档案权威值**——列表接口下发的昵称/头像是列表快照，**改名只能靠校准收口**（同步链路不逐个拉 profile，故同步后昵称仍可能是旧名）；校准取到非空值即覆盖 `nickname`/`avatarLarger`，空值保留旧值（取数失败不破坏档案）。`lastUpdateAt`（最近更新日期，毫秒时间戳）由校准阶段写入（导入快照 >0 时也按快照写入，见 [10](./10-storage-write-and-import.md)）——来源为**该关注者作品列表第一页全部作品 `create_time` 的最大值**（`GET /aweme/v1/web/aweme/post/`，`max_cursor=0`，秒 → 毫秒换算），未校准占位 0。校准有两条入口：
 
-1. **批量校准**（`scanTasks.calibrateAll(domain)`）：options「工具」弹窗两个按钮手动发起，关注域消息 `CALIBRATE_FOLLOWINGS`、候选域消息 `CALIBRATE_CANDIDATES`；对**该域全部已存作者**逐个重取权威计数；进度以 `CALIBRATE_PROGRESS { domain, phase:"calibrate" }` 透传；收尾整批 `mergeAndSaveAuthors` 落库（0 值保护）。
-2. **单用户校准**（`scanTasks.calibrateOne(uid, secUid, domain)`）：options 打开作者侧边栏时按当前域发 `CALIBRATE_FOLLOWING` / `CALIBRATE_CANDIDATE { uid, secUid }`；background 取到计数后**直接落库**并返回，options 更新对应域 state 与可见卡片 DOM。
+1. **批量校准**（`scanTasks.calibrateAll(domain)`）：options「工具」弹窗两个按钮手动发起，关注域消息 `CALIBRATE_FOLLOWINGS`、候选域消息 `CALIBRATE_CANDIDATES`；对**该域全部已存作者**逐个重取权威计数；进度以 `TASK_PROGRESS` 透传；收尾对已处理前缀走 `patchAuthors` 字段补丁（单事务、update-only、0 值保护；任务期间被删除的记录不复活，`groupId` 不参与写回）。
+2. **单用户校准**（`scanTasks.calibrateOne(uid, secUid, domain)`）：options 打开作者侧边栏时按当前域发 `CALIBRATE_FOLLOWING` / `CALIBRATE_CANDIDATE { uid, secUid }`；background **先取数、再走 `patchAuthors` 单事务字段补丁**并返回（网络等待期间用户的分组移动/删除不会被整条旧快照覆盖），options 更新对应域 state 与可见卡片 DOM。
 
 两条入口的 `fetchStats` 都按模式注入：
 
@@ -19,7 +22,7 @@
 ### 批量校准（工具弹窗手动触发）
 
 ```
-options AuthorImport.startCalibrate（三链路互斥守卫 → CANCEL_ACTIVE_TASK 清残留 → 进度层）
+options AuthorImport.startCalibrate（三链路互斥守卫 → 进度层）
   → bgMsg({ type: domain === "candidates" ? "CALIBRATE_CANDIDATES" : "CALIBRATE_FOLLOWINGS" })
     → background scanTasks.calibrateAll(domain, sendResponse)
         all ← Object.values(storage.getAll(domain))   // getAll 返回 { uid: record } 映射
@@ -42,8 +45,8 @@ options AuthorImport.startCalibrate（三链路互斥守卫 → CANCEL_ACTIVE_TA
               条目间延迟 syncFollowings MIN~MAX ms
             返回 processed（取消时 < list.length）
         guard.dispose()
-        → mergeAndSaveAuthors(domain, all)   // 0 值保护：取数失败保留旧计数、分组保留
-        changed > 0 → 广播 STORE_CHANGED { domain }
+        → patchAuthors(domain, all.slice(0, processed))   // 单事务 update-only：0 值保护、分组不参与写回、已删记录不复活
+        patched > 0 → 广播 STORE_CHANGED { domain }
         → sendResponse({ ok:true, requestId, cancelled, total, processed, updated, changed })
 
 fetchStats 注入（scanTasks 私有 #fetchProfileUser，双模自治）：
@@ -73,10 +76,9 @@ options Sidebar.openSidebar(following)
         │   │        data.user 缺失 → throw PROFILE_FETCH_FAILED
         │   └─ false：tabBridge.sendAsync("FETCH_PROFILE_OTHER", { secUid })
         ├─ ds.get(String(uid)) 无记录 → { ok:false, error:"NOT_FOUND" }
-        ├─ record.awemeCount/followerCount ← stats
-        ├─ record.nickname/avatarLarger ← stats（非空才覆盖，空值保留旧值）
-        ├─ record.lastUpdateAt ← fetchLatestWorkTime(secUid) || record.lastUpdateAt || 0   // 失败保留旧值
-        ├─ ds.putBatch([record])   // 直接落库
+        ├─ 网络取数（profile/other + 作品第一页）——期间不持有记录快照
+        ├─ patchAuthors(domain, [{ uid }], fields)   // 单事务 get→合并白名单字段→put
+        │     update-only：记录已被删除则跳过；groupId/savedAt/uid 不参与写回
         └─ sendResponse({ ok:true, awemeCount, followerCount, nickname, avatarLarger, lastUpdateAt })
   → options：更新 state.followings 对应条目（含 nickname/avatarLarger）
     命中 [data-uid] 卡片时走当前域 AuthorGrid.fillCard 整体重填
@@ -97,7 +99,7 @@ async function scanTasks.calibrateStats(list, fetchStats, isCancelled, requestId
 //      载荷 { phase:"calibrate", collected, total, hasMore:false, requestId }
 
 async function scanTasks.calibrateAll(domain, sendResponse)
-// 工具弹窗批量校准：getAll(domain) → calibrateStats → mergeAndSaveAuthors（0 值保护）→ changed>0 广播 STORE_CHANGED
+// 工具弹窗批量校准：getAll(domain) → calibrateStats → patchAuthors（单事务 update-only、0 值保护）→ patched>0 广播 STORE_CHANGED
 // 出参：{ ok:true, requestId, cancelled, total, processed, updated, changed }
 //     | { ok:false, error:"EMPTY"|其他 }
 
@@ -221,7 +223,7 @@ Tab 模式对照：同一 URL 由 inject `fetchProfileOther` 以 DEVICE_PARAMS +
 | 作品第一页获取失败（网络/403/无作品/全 0 create_time） | #fetchLatestWorkTime 抛错或返回 0 | 批量：catch 静默跳过保留旧值；单用户：`record.lastUpdateAt` 保留旧值，响应仍返回当前值 |
 | profileUrl 缺失或无 sec_uid 段 | 正则不匹配 | 跳过该条（不发请求），进度照常推进 |
 | uid 不在库中（侧边栏场景数据已变） | `{ ok:false, error:"NOT_FOUND" }` | options 忽略 |
-| 校准期间用户取消/关进度层 | `CANCEL_ACTIVE_TASK` | isCancelled() 在条目边界生效；在途请求由各自模式的取消链路中止；已校准部分随 mergeAndSaveAuthors 落库 |
+| 校准期间用户取消/关进度层 | `CANCEL_TASK` | isCancelled() 在条目边界生效；在途请求由各自模式的取消链路中止；已校准前缀随 patchAuthors 落库 |
 | 关注域为空 | `{ ok:false, error:"EMPTY" }` | 工具弹窗 toast 报错 |
 
 ## 配置项说明

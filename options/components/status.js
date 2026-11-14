@@ -3,6 +3,32 @@
 import { dom, state, services } from '../core.js';
 import { dialog } from './dialog.js';
 
+// 状态面板六组签名捕获行同构（label + Status 值 + 可展开复制 Value + Hint）：模板只留
+// 容器、此处按表生成——id 命名规则与旧静态标记逐字一致（水合/截断/复制语义零改动）
+const SIG_ROWS = [
+  ["Detail", "详情捕获"],
+  ["Following", "关注捕获"],
+  ["Profile", "资料捕获"],
+  ["Post", "作品捕获"],
+  ["Favorite", "点赞捕获"],
+  ["Collection", "收藏捕获"],
+];
+
+function buildStatusSigRows() {
+  const root = document.getElementById("statusSigRows");
+  if (!root || root.childElementCount > 0) return;
+  root.innerHTML = SIG_ROWS.map(
+    ([key, label]) => `
+      <div class="sec-item"><span class="sec-label">${label}</span><span class="sec-value" id="secSig${key}Status"></span></div>
+      <div class="sec-item sec-clickable" id="secSig${key}">
+        <span class="sec-value sec-truncate" id="secSig${key}Value"></span>
+        <span class="sec-expand-hint hidden">[展开]</span>
+        <button class="sec-copy-btn hidden" data-copy="secSig${key}Value">复制</button>
+      </div>
+      <div class="sec-hint hidden" id="secSig${key}Hint"></div>`,
+  ).join("");
+}
+
 class Status {
   #dialogBody = null;
 
@@ -252,3 +278,8 @@ class Status {
 }
 
 export const status = new Status();
+
+// ---------- 模板占位填充 ----------
+// 模块载入即填充（options.html 脚本在 DOM 解析后执行）；面板 openDialog 时惰性 clone
+// 模板，生成时机只需早于首次打开
+buildStatusSigRows();

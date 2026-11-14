@@ -1,5 +1,8 @@
 # 07 · 独立模式（逆向）— 获取用户作品列表
 
+> B6（2026-11-11）补充：本任务已接入任务队列——循环以 `waitForTurn`/`checkpoint` 两点挂起，支持「暂停（现场保留）/ 续跑（从检查点继续）」，详见 [plans/task-queue-pause-resume-2026-11-11.md](../plans/task-queue-pause-resume-2026-11-11.md)。
+
+> **任务坞迁移（2026-11-11）**：`FETCH_WORKS_PAGE` 单次请求（侧边栏滚动）机制不变；但同端点的 **循环形态 `IMPORT_USER_WORKS`** 已迁到任务坞：`runAuthorWorksImport` 登记 TaskRegistry（`exclusive`）→ 立即 ack → `TASK_PROGRESS`（`collected/savedCount`）→ 分块确认写（满 `SYNC.SCAN_CHUNK` 条单事务 `mergeAndSave`）+ 终态一次 `STORE_CHANGED` 裸载荷 → `TASK_DONE`（`collected/added/updated`）；`IMPORT_WORKS_PROGRESS`、`withCancelGuard` 已退役。
 > 职责边界：`FETCH_WORKS_PAGE` 的双模实现——作者主页作品分页（`/aweme/v1/web/aweme/post/`），供管理页作者侧边栏滚动加载。独立模式为 background 单次直连；Tab 模式为 `tabBridge.fetchWorksPage` → inject `fetchAuthorWorks`。侧边栏的渲染与虚拟化不在本文范围（见 [12-class-map](./12-class-map.md) `Sidebar` 条目与 AGENTS.md 渲染红线）。
 
 ## 概述
@@ -172,8 +175,8 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 | 差异点 | 原因 |
 |--------|------|
 | 响应字段 `works`/`maxCursor`（非 `items`/`cursor`） | aweme/post 响应形状；不能直接复用 `#paginate` |
-| **无丢失检测**（不走 `persistScan`） | 导入的是他人作品列表，不是本域全集；丢失检测会把存量全部误判 lost |
-| **每页即落库**（每页一次 `mergeAndSave(WORKS, page)`） | 取消/异常保留已扫部分；进度弹窗可实时显示「已入库 N」 |
+| **无丢失检测**（不做扫描式丢失结论） | 导入的是他人作品列表，不是本域全集；丢失检测会把存量全部误判 lost |
+| **分块确认写**（页结果进缓冲，满 `SYNC.SCAN_CHUNK` 条单事务 `mergeAndSave`；暂停/终态/异常冲刷余块） | 与三族长任务同节奏：取消/异常保留已落块；`savedCount` 按块边界跳变 |
 | 重叠页去重（`seen` Set，空页即终止） | 服务端偶发返回重叠页；cursor 不前进时防死循环 |
 | 延迟档独立 `importWorks`（曾错用 `syncCollection`，域词对齐后独立成键） | 运行参数面板「作者入库 延迟」可调 |
 
@@ -183,16 +186,16 @@ Tab 模式对照：inject `fetchAuthorWorks` 以 DEVICE_PARAMS + 业务键建 UR
 
 ### 消息与进度
 
-- `IMPORT_USER_WORKS { secUid }` → 循环期间逐页发 `IMPORT_WORKS_PROGRESS { requestId, collected, saved, total, hasMore }`，终态 `sendResponse { ok, collected, added, updated, timedOut, error? }`（`added`/`updated` 即「新增入未分组/更新保留原分组」计数；首页即失败才 `ok:false`）。
-- **UI 刷新时机**：循环内**不发** `STORE_CHANGED`（进度弹窗数字由 `IMPORT_WORKS_PROGRESS` 驱动）；全部批次落库完成后统一广播一次 `STORE_CHANGED { domain: works, changedIds, addedIds }`——载荷为轻量 id 集（实际写入记录 id + 其中的新增子集，万级 ≈ 几十 KB，禁全量记录防消息膨胀），options flush 时经 `GET_WORKS_BY_IDS` 补拉合并后记录，走与点载荷相同的增量收口管线（视图内新增头插、已有记录原地更新，**零整刷**）+ `refreshGroups()` 重算分组数字。取消/部分失败同样补发（已落库部分收口），一页未落（`collected=0`）或 `changed=0`（全部为无变化重复入库）不发。`AuthorImport.#showDone` 不再手动 `loadDomainData`（避免与广播双重收口）。
-- 取消：进度弹窗 X/Esc → `requestDialogClose` → `CANCEL_ACTIVE_TASK` → `withCancelGuard` 置位 → 下一页前退出。
-- 错误映射（options `AuthorImport`）：`NO_SIGNATURE` → 关进度弹窗改弹签名引导（URL 指向作者主页）；错误串含 `2096` → 「账号作品因隐私设置不可见」。
+- `IMPORT_USER_WORKS { secUid, taskId }` → 登记 `TaskRegistry`（kind `importWorks`），循环期间逐页发 `TASK_PROGRESS`（公共 `processed/total` + `collected/savedCount/hasMore`），终态 `TASK_DONE { collected, added, updated, timedOut, error? }`（`added`/`updated` 即「新增入未分组/更新保留原分组」计数；首页即失败才 `ok:false`）。`IMPORT_WORKS_PROGRESS` 与 sendResponse 终态已退役（见册首 B6 注）。
+- **UI 刷新时机**：循环内**不发** `STORE_CHANGED`（坞行数字由 `TASK_PROGRESS` 驱动，`savedCount` 按块边界更新）；全部批次落库完成后统一广播一次 `STORE_CHANGED { domain: works }` **裸载荷**（`changed>0` 才发，三族统一口径——扫描/取消/同步作品同款，不带 id 集），options 整域重载收口。取消/部分失败同样补发（已落库部分收口），`changed=0`（一页未落或全部为无变化重复入库）不发。`AuthorImport.#showDone` 不再手动 `loadDomainData`（避免与广播双重收口）。
+- 取消：坞行「取消」→ `CANCEL_TASK { taskId }` → `isCancelled` 在下一页前退出（进度弹窗 / `CANCEL_ACTIVE_TASK` / `withCancelGuard` 已退役）。
+- 错误映射（options `AuthorImport`）：`NO_SIGNATURE` → 终态后经 `#onImportDone` 弹签名引导层（URL 指向作者主页，坞行不承载）；错误串含 `2096` → 「账号作品因隐私设置不可见」。
 
 ### 姊妹消息
 
 | 消息 | 语义 | 实现位置 |
 |------|------|----------|
-| `IMPORT_CANDIDATE { secUid }` | profile/other 单请求收录作者档案入候选域；`formatAuthorFromProfile` + `#fetchLatestWorkTime` 补 lastUpdateAt；`mergeAndSaveAuthors` 非 import 分支（已在域保组/新作者落未分组）；响应回传 `candidate`、`added`（0=作者已存在）与 `groupName`（落库 groupId 解析的分组名，toast 提示所在组） | `scanTasks.importCandidate`（双模分支内联，与 `calibrateOne` 共用 `#fetchProfileUser`） |
+| `IMPORT_CANDIDATE { secUid }` | profile/other 单请求收录作者档案入候选域（交互式短操作：不登记 TaskRegistry，请求链显式走交互车道 `priority/gatePriority=2`，只等当前在途请求）；`formatAuthorFromProfile` + `#fetchLatestWorkTime` 补 lastUpdateAt；`mergeAndSaveAuthors` 非 import 分支（已在域保组/新作者落未分组）；响应回传 `candidate`、`added`（0=作者已存在）与 `groupName`（落库 groupId 解析的分组名，toast 提示所在组） | `scanTasks.importCandidate`（双模分支内联，与 `calibrateOne` 共用 `#fetchProfileUser`） |
 
 ## 相关文档
 

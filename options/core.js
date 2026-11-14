@@ -4,7 +4,14 @@
 
 import { sortSavedAtDesc, mergeSavedAtDesc, authorKeyOf } from "../shared/author-sort.js";
 import { RUNTIME_DEFAULTS } from "../shared/runtime-defaults.js";
-import { GRID_MOUNT_MAX, REVIEW_DEFAULT_COUNT, REVIEW_MAX_COUNT, REVIEW_MAX_EXCLUDE } from "../shared/limits.js";
+import {
+  GRID_MOUNT_MAX,
+  REVIEW_DEFAULT_COUNT,
+  REVIEW_MAX_COUNT,
+  REVIEW_MAX_EXCLUDE,
+  IMPORT_TRANSFER_THRESHOLD,
+  IMPORT_TRANSFER_CHUNK,
+} from "../shared/limits.js";
 import { URL_BASE, URL_USER_SELF, TAB_QUERY } from "../shared/douyin-urls.js";
 import { DOMAINS, WORK_RECORD_DOMAINS, AUTHOR_RECORD_DOMAINS, SOURCE_DOMAINS, REVIEW_DOMAIN, isKnownDomain, isWorkDomain, isAuthorDomain } from "../shared/domains.js";
 
@@ -62,11 +69,13 @@ export const config = {
   // 余量由 justify-content 均分——容差带是硬约束，不向下破下限
   CARD_SIZE_BAND_MIN: 0.94,
   CARD_SIZE_BAND_MAX: 1.06,
-  // 作品卡（works/favorites/collections 三域，WorksGrid）专用宽容差带（±10%）：比作者域
-  // 沿用的全局默认（±6%）更宽，卡片在填满列宽时的可伸缩档位更大（经 VirtualGrid 构造参数
-  // sizeBandMin/sizeBandMax 按实例覆盖；作者域仍用上面的全局默认）
-  WORK_CARD_SIZE_BAND_MIN: 0.9,
-  WORK_CARD_SIZE_BAND_MAX: 1.1,
+  // 作品卡（works/favorites/collections 三域，WorksGrid）专用宽容差带（-15%/+5%）：下限比
+  // 作者域沿用的全局默认（±6%）更宽（可缩档位更大），上限比全局默认更窄——填满列宽时的
+  // 放大档位受控，避免卡片被拉得过胖（经 VirtualGrid 构造参数 sizeBandMin/sizeBandMax
+  // 按实例覆盖；作者域仍用上面的全局默认；侧栏 #mainGridMin 的作品域保底宽度按此下限
+  // 计算，改值自动跟随）
+  WORK_CARD_SIZE_BAND_MIN: 0.85,
+  WORK_CARD_SIZE_BAND_MAX: 1.05,
 
   // 详情页
   TOAST_DURATION: 2000,
@@ -121,6 +130,10 @@ export const config = {
   GROUP_NAME_MAX_LEN: 20,
   STORAGE_MAX_BYTES: 10 * 1024 * 1024,
   TRASH_GROUP_NAME: "稍后删除",
+  // 导入文件分块上行：单条 chrome.runtime 消息硬上限 64MiB——文件超过阈值时按块大小切片
+  // 分条发送，background 缓冲拼回后走既有 import()（值与 background CONFIG 同源于 shared/limits.js）
+  IMPORT_TRANSFER_THRESHOLD,
+  IMPORT_TRANSFER_CHUNK,
 
   // 随机回顾（真实回顾域）：本轮数量可自定义（1–500），批次引用最多 500 条
   RANDOM_REVIEW_DEFAULT_COUNT: REVIEW_DEFAULT_COUNT,
@@ -206,6 +219,11 @@ export const dom = {
   btnDataTools: document.querySelector("#btnDataTools"),
   btnStatus: document.querySelector("#btnStatus"),
   btnSync: document.querySelector("#btnSync"),
+  btnReviewRandom: document.querySelector("#btnReviewRandom"),
+  taskDock: document.querySelector("#taskDock"),
+  taskDockTitle: document.querySelector("#taskDockTitle"),
+  taskDockToggle: document.querySelector("#taskDockToggle"),
+  taskDockBody: document.querySelector("#taskDockBody"),
   btnBatch: document.querySelector("#btnBatch"),
   btnGroupManage: document.querySelector("#btnGroupManage"),
   mainGrid: document.querySelector("#mainGrid"),
@@ -214,17 +232,14 @@ export const dom = {
   btnAuthorImport: document.querySelector("#btnAuthorImport"),
   btnSettings: document.querySelector("#btnSettings"),
   menuStorage: document.querySelector("#menuStorage"),
-  rightSidebar: document.querySelector("#rightSidebar"),
   sidebar: document.querySelector("#sidebar"),
   sidebarBody: document.querySelector("#sidebarBody"),
   sidebarWorksGrid: document.querySelector("#sidebarWorksGrid"),
-  sidebarAuthorHead: document.querySelector("#sidebarAuthorHead"),
   sidebarAuthorAvatar: document.querySelector("#sidebarAuthorAvatar"),
   sidebarAuthorName: document.querySelector("#sidebarAuthorName"),
   sidebarAuthorStatus: document.querySelector("#sidebarAuthorStatus"),
   sidebarAuthorSub: document.querySelector("#sidebarAuthorSub"),
-  sidebarAuthorAddCandidate: document.querySelector("#sidebarAuthorAddCandidate"),
-  sidebarAuthorRemoveCandidate: document.querySelector("#sidebarAuthorRemoveCandidate"),
+  sidebarAuthorToggleCandidate: document.querySelector("#sidebarAuthorToggleCandidate"),
   sidebarAuthorImportWorks: document.querySelector("#sidebarAuthorImportWorks"),
   sidebarAuthorRefresh: document.querySelector("#sidebarAuthorRefresh"),
   sidebarAuthorClose: document.querySelector("#sidebarAuthorClose"),
@@ -244,6 +259,8 @@ export const dom = {
   sbType: document.querySelector("#sbType"),
   sbFollowFilters: document.querySelector("#sbFollowFilters"),
   sbFollowSort: document.querySelector("#sbFollowSort"),
+  sbReviewSource: document.querySelector("#sbReviewSource"),
+  sbReviewCount: document.querySelector("#sbReviewCount"),
   btnClearInBar: document.querySelector("#btnClearInBar"),
   btnSearchGo: document.querySelector("#btnSearchGo"),
   // 全局 Toast 容器（顶部居中堆叠；Dialog.showToast 按条创建）
@@ -472,7 +489,6 @@ export const store = {
   removeReviewItemsSilent(idSet, idKey) {
     state.review = state.review.filter((item) => !idSet.has(String(item[idKey])));
     state.dataVersion++;
-    this.notify("review-meta");
   },
 
 };
@@ -507,16 +523,6 @@ export const utils = {
     if (!cover || !still) return cover || still;
     const m = still.match(/~tplv-[^/:]+:(\d+):/);
     return m && Number(m[1]) < 2000 ? still : cover;
-  },
-  // 进度弹窗装配（syncDialogBodyTemplate 单一来源，三个 sync 类共用）：克隆 + 取三元素，
-  // 状态位预置 SYNCING，计数/摘要文案由调用方按域填写
-  buildSyncProgressBody() {
-    const body = document.getElementById("syncDialogBodyTemplate").content.cloneNode(true);
-    const countEl = body.querySelector(".sync-count");
-    const summaryEl = body.querySelector(".sync-summary");
-    const statusEl = body.querySelector(".sync-status");
-    statusEl.textContent = "SYNCING";
-    return { body, countEl, summaryEl, statusEl };
   },
   formatCount(num) {
     if (num == null || Number.isNaN(Number(num))) return "0";
@@ -823,7 +829,7 @@ export const services = {
   // （即视图序），首页落库前反转回域数组的 savedAt 降序；余页前插（prependWorkRecord）。
   // authorCount：页序即作者视图序，首页落库前按 savedAt 排序守 state[domain] 不变量，
   // 续页走 appendAuthorViewRecord（归并 + 维护 trusted 视图）
-  async loadDomainData(paging = state.pagingMode) {
+  async loadDomainData(paging) {
     const mode = paging || state.pagingMode;
     const { sort = "saved", direction = "desc", ascending = false } = mode;
     const groupId = state.currentGroupId;
@@ -880,7 +886,7 @@ export const services = {
       state.gridTotal = { domain, groupId, total };
       state.gridPending = false; // 首页已到：K 开始按已加载条数计数
       state.gridSlots = { domain, groupId, total };
-      // 立即校正当前分组 tab 数字（与搜索栏 0/Total 同源），不必等延后的 GET_STATS
+      // 立即校正当前分组 tab 数字（与搜索栏 0/Total 同源）
       store.notify("grid-total", { domain, groupId, total });
       const first = (res[meta.itemKey] || []).filter((w) => w && w.awemeId);
       // 域数组不变量 = savedAt 降序：saved 升序块反转；authorCount 页序是作者视图序，

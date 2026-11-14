@@ -2,7 +2,14 @@
 
 import { MSSDK_STR_DATA } from "./identity/crypto.js";
 import { RUNTIME_DEFAULTS } from "../shared/runtime-defaults.js";
-import { GRID_MOUNT_MAX } from "../shared/limits.js";
+import {
+  GRID_MOUNT_MAX,
+  EXPORT_CHUNK_CHARS,
+  TRANSFER_SESSION_TTL,
+  IMPORT_TRANSFER_THRESHOLD,
+  IMPORT_TRANSFER_CHUNK,
+  EXPORT_BATCH_KEYS,
+} from "../shared/limits.js";
 import { URL_BASE, tabUrl, profileUrl as buildProfileUrl } from "../shared/douyin-urls.js";
 import { STORAGE_KEYS, DEFAULT_GROUPS, GROUP_IDS, DOMAINS, WORK_RECORD_DOMAINS, AUTHOR_RECORD_DOMAINS } from "../shared/domains.js";
 // identity/independent-client.js 单向依赖本文件的 CONFIG；本模块不反向引用，避免无意义的循环依赖。
@@ -158,6 +165,15 @@ const CONFIG = {
     BATCH_PAUSE_MAX: RUNTIME_DEFAULTS.syncBatchPauseMax,
     KEEPALIVE_INTERVAL: RUNTIME_DEFAULTS.syncKeepaliveInterval,
     RETRY_MAX: RUNTIME_DEFAULTS.syncRetryMax,
+    // 四族长任务统一分块确认写块大小（扫描 upsert / 取消 deleteBatch / 同步 patchWorks /
+    // 作者入库 mergeAndSave）：每累计 N 条单事务静默落库，写后释放缓冲；设置面板
+    // scanChunkSize 可配（50~2000，过大则被杀残差窗口变大）
+    SCAN_CHUNK: RUNTIME_DEFAULTS.scanChunkSize,
+    // 限速退避：RATE_LIMITED / HTTP 429 不再立刻终止整批，先退避重试同一条；
+    // 连续命中达到上限才熔断（此时账号大概率已被风控，继续请求只会更糟）
+    RATE_LIMIT_RETRY_MAX: 3,
+    RATE_LIMIT_BACKOFF: 5000,
+    RATE_LIMIT_BACKOFF_MAX: 30000,
   },
   GROUPS: {
     ID_PREFIX: "custom_",
@@ -183,8 +199,17 @@ const CONFIG = {
   // 单次请求的最大物化条数（作者域分页由 DomainHandlers 统一钳制）
   AUTHOR_VIEW_CACHE_MAX: 3,
   // 导入分块落库块大小：单事务 10 万级 put 会长时间独占 SW 的 IndexedDB——按块
-  // mergeAndSave + IMPORT_PROGRESS 逐块回报（followings 域不分块，记录小单遍即可）
+  // mergeAndSave，块边界即 importData 任务坞 checkpoint（followings 域不分块，记录小单遍即可）
   IMPORT_CHUNK: 2000,
+  // 导入导出消息分块：单条 chrome.runtime 消息硬上限 64MiB——导出按 EXPORT_CHUNK_CHARS
+  // 分块拉取（键快照/导入缓冲会话 TRANSFER_SESSION_TTL 过期、块内按 EXPORT_BATCH_KEYS
+  // 逐批 getBatch），导入文件超 IMPORT_TRANSFER_THRESHOLD 时分块上行（块大小
+  // IMPORT_TRANSFER_CHUNK），值取自 shared/limits.js（两侧必须同值）
+  EXPORT_CHUNK_CHARS,
+  TRANSFER_SESSION_TTL,
+  IMPORT_TRANSFER_THRESHOLD,
+  IMPORT_TRANSFER_CHUNK,
+  EXPORT_BATCH_KEYS,
   // STORE_CHANGED 广播的点变化阈值：changed ≤ UPSERTS_MAX 时携带合并后记录（upserts），
   // options 局部应用；超过则发无载荷广播走整刷收口（批量变化逐条局部更新反而 thrash）
   BROADCAST: {
@@ -260,18 +285,19 @@ const runtimeConfig = {
   apply(cfg) {
     CONFIG.TIMEOUT.REQUEST = cfg.timeoutRequest ?? CONFIG.TIMEOUT.REQUEST;
     CONFIG.TIMEOUT.SECURITY_STATUS = cfg.timeoutSecurityStatus ?? CONFIG.TIMEOUT.SECURITY_STATUS;
-    CONFIG.DELAY.syncWorks = { MIN: cfg.syncWorksDelayMin ?? CONFIG.DELAY.syncWorks.MIN, MAX: cfg.syncWorksDelayMax ?? CONFIG.DELAY.syncWorks.MAX };
-    CONFIG.DELAY.syncFollowings = { MIN: cfg.syncFollowingsDelayMin ?? CONFIG.DELAY.syncFollowings.MIN, MAX: cfg.syncFollowingsDelayMax ?? CONFIG.DELAY.syncFollowings.MAX };
-    CONFIG.DELAY.syncFavorites = { MIN: cfg.syncFavoritesDelayMin ?? CONFIG.DELAY.syncFavorites.MIN, MAX: cfg.syncFavoritesDelayMax ?? CONFIG.DELAY.syncFavorites.MAX };
-    CONFIG.DELAY.syncCollection = { MIN: cfg.syncCollectionDelayMin ?? CONFIG.DELAY.syncCollection.MIN, MAX: cfg.syncCollectionDelayMax ?? CONFIG.DELAY.syncCollection.MAX };
-    CONFIG.DELAY.cancelFavorites = { MIN: cfg.cancelFavoritesDelayMin ?? CONFIG.DELAY.cancelFavorites.MIN, MAX: cfg.cancelFavoritesDelayMax ?? CONFIG.DELAY.cancelFavorites.MAX };
-    CONFIG.DELAY.cancelCollection = { MIN: cfg.cancelCollectionDelayMin ?? CONFIG.DELAY.cancelCollection.MIN, MAX: cfg.cancelCollectionDelayMax ?? CONFIG.DELAY.cancelCollection.MAX };
-    CONFIG.DELAY.importWorks = { MIN: cfg.importWorksDelayMin ?? CONFIG.DELAY.importWorks.MIN, MAX: cfg.importWorksDelayMax ?? CONFIG.DELAY.importWorks.MAX };
+    // 延迟档键名与 RUNTIME_DEFAULTS 严格遵循 <kind>DelayMin/Max 规则，表驱动（新增档自动纳入）
+    for (const kind of Object.keys(CONFIG.DELAY)) {
+      CONFIG.DELAY[kind] = {
+        MIN: cfg[kind + "DelayMin"] ?? CONFIG.DELAY[kind].MIN,
+        MAX: cfg[kind + "DelayMax"] ?? CONFIG.DELAY[kind].MAX,
+      };
+    }
     CONFIG.SYNC.BATCH_SIZE = cfg.syncBatchSize ?? CONFIG.SYNC.BATCH_SIZE;
     CONFIG.SYNC.BATCH_PAUSE_MIN = cfg.syncBatchPauseMin ?? CONFIG.SYNC.BATCH_PAUSE_MIN;
     CONFIG.SYNC.BATCH_PAUSE_MAX = cfg.syncBatchPauseMax ?? CONFIG.SYNC.BATCH_PAUSE_MAX;
     CONFIG.SYNC.KEEPALIVE_INTERVAL = cfg.syncKeepaliveInterval ?? CONFIG.SYNC.KEEPALIVE_INTERVAL;
     CONFIG.SYNC.RETRY_MAX = cfg.syncRetryMax ?? CONFIG.SYNC.RETRY_MAX;
+    CONFIG.SYNC.SCAN_CHUNK = cfg.scanChunkSize ?? CONFIG.SYNC.SCAN_CHUNK;
   },
   async reload() {
     const cfg = await this.load();
@@ -359,36 +385,22 @@ const utils = {
     return "";
   },
   asyncHandler(fn, sendResponse) {
-    // 调用方（main.js 路由）传入的恒为 async 方法调用，result 必为 Promise
-    fn().catch((err) => sendResponse({ error: err.message }));
+    // 调用方（main.js 路由）传入的恒为 async 方法调用，result 必为 Promise。
+    // 全部路由的唯一错误收口：非 Error 抛出（字符串等）也归一为文本；err.code
+    //（作者视图等业务错误码）随响应透传——处理器内不再各自 try/catch 包装
+    fn().catch((err) =>
+      sendResponse({ error: String(err?.message || err), ...(err?.code ? { code: err.code } : {}) }),
+    );
     return true;
-  },
-  sendSyncDone(requestId, result) {
-    chrome.runtime
-      .sendMessage({ type: "SYNC_DONE", requestId, ...result })
-      .catch((e) => console.warn("[DY] sync done send failed:", e));
   },
   // 分页端点 has_more 字段归一（宽松判定：服务端可能返回 true/1/"1"，缺判只会多拉一页空数据）
   hasMoreFlag(data) {
     return data.has_more === true || data.has_more === 1 || data.has_more === "1";
   },
   // 长任务循环的致命错误判定（tab/独立双模 syncWorks 共用）：缺 Cookie/限流空 body/401/429
-  // 等系统性失败重试无意义，命中即中止整批、剩余条目标 BATCH_TERMINATED
+  // 等系统性失败重试无意义，命中即中止整批、剩余条目计入 skipped
   isFatalTaskError(errMsg) {
     return CONFIG.FATAL_ERRORS.has(errMsg) || errMsg.startsWith("HTTP 429") || errMsg.startsWith("HTTP 401");
-  },
-  // 长任务取消信号守卫：注册 CANCEL_ACTIVE_TASK 监听，返回 { isCancelled, dispose }。
-  // 注意 scanTasks.syncWorks 的取消处理器有额外转发逻辑，不适用本 helper。
-  withCancelGuard() {
-    let cancelled = false;
-    const cancelHandler = (msg) => {
-      if (msg.type === "CANCEL_ACTIVE_TASK") cancelled = true;
-    };
-    chrome.runtime.onMessage.addListener(cancelHandler);
-    return {
-      isCancelled: () => cancelled,
-      dispose: () => chrome.runtime.onMessage.removeListener(cancelHandler),
-    };
   },
   sendMessageSafe(msg) {
     return chrome.runtime.sendMessage(msg).catch(() => {});
@@ -396,21 +408,40 @@ const utils = {
   // 长任务批量暂停 + SW keepalive 保活（syncWorks 共用；调用方已先判取消标志）。
   // index=已处理条目下标，total=本批总条数：末条之后没有下一次请求，批次暂停与
   // 条间节流都无意义——直接返回，避免 total 恰为 BATCH_SIZE 整数倍时多空等一轮
-  async pauseWithKeepalive(index, total, delayKind) {
+  // pace=false 供已接入全局请求闸门的循环使用：条间间隔由闸门按 runtimeConfig 值统一
+  // 施加（跨任务共享同一条车道），此处只保留批间长暂停与 SW 保活，避免双重延迟
+  // 纯等待 + SW 保活：限速退避用（退避期间释放请求车道，交互请求仍可插队）
+  async sleepWithKeepalive(ms) {
+    const deadline = Date.now() + Math.max(0, ms);
+    while (Date.now() < deadline) {
+      const step = Math.min(Math.max(200, CONFIG.SYNC.KEEPALIVE_INTERVAL), deadline - Date.now());
+      if (step <= 0) break;
+      await new Promise((r) => setTimeout(r, step));
+      await chrome.storage.local.get("keepalive");
+    }
+  },
+  async pauseWithKeepalive(index, total, delayKind, { pace = true, isCancelled = null } = {}) {
     if (index >= total - 1) return;
     const { BATCH_SIZE, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, KEEPALIVE_INTERVAL } = CONFIG.SYNC;
     if (BATCH_SIZE > 0 && (index + 1) % BATCH_SIZE === 0) {
       const deadline = Date.now() + BATCH_PAUSE_MIN + Math.random() * (BATCH_PAUSE_MAX - BATCH_PAUSE_MIN);
       while (Date.now() < deadline) {
+        // 批间长暂停也要响应取消：页面关闭后不必等满 10–20s 才退出
+        if (isCancelled && isCancelled()) return;
         await new Promise((r) => setTimeout(r, KEEPALIVE_INTERVAL));
         await chrome.storage.local.get("keepalive");
       }
-    } else {
+    } else if (pace) {
       await new Promise((r) => setTimeout(r, runtimeConfig.randomDelay(delayKind)));
     }
   },
-  emitCancelDone(requestId, payload) {
-    return utils.sendMessageSafe({ type: "CANCEL_DONE", requestId, ...payload });
+  // 任务坞统一进度上报（绝对值，由各循环按节流调用）
+  emitTaskProgress(taskId, payload) {
+    return utils.sendMessageSafe({ type: "TASK_PROGRESS", taskId, ...payload });
+  },
+  // 任务坞统一终态：落库与 STORE_CHANGED 之后发，所有 options 页（含只读观察页）据此收口
+  emitTaskDone(taskId, payload) {
+    return utils.sendMessageSafe({ type: "TASK_DONE", taskId, ...payload });
   },
 };
 

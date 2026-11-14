@@ -1,10 +1,34 @@
 // ---------- WorksGrid（作品/点赞/收藏三域共用） ----------
 import { config, dom, state, utils } from '../core.js';
 import { VirtualGrid, noteProgrammaticScroll } from './virtual-grid.js';
+import { createProbeQueue } from './probe-queue.js';
 import { search } from '../components/search-bar.js';
 import { batch } from '../data/batch.js';
 import { detail } from '../components/detail.js';
 import { sidebar } from '../components/sidebar.js';
+
+// 作品卡尺寸 CSS 变量单一出处：VirtualGrid 布局测量与滚动兜底估算共用（曾双写，改名即断）
+const WORKS_CARD_SIZE_VAR = "--dy-card-size";
+
+// 封面提交/失败语义（works 三域共用）：失败原样重试一次（dataset.retry 挂可见节点，
+// 随重填换新节点自然复位；熔断冷却中不重试），仍失败停留透明占位态
+function commitWorkCover(img, url, gen) {
+  if (!img.isConnected || img.dataset.coverGen !== gen) return;
+  detail.markMediaOk();
+  img.style.backgroundImage = utils.cssUrl(url);
+  img.classList.remove("media-loading");
+}
+
+function failWorkCover(img, url, gen) {
+  if (!img.isConnected || img.dataset.coverGen !== gen) return;
+  detail.markMediaFail();
+  if (img.dataset.retry || detail.mediaRetryBlocked()) return;
+  img.dataset.retry = "1";
+  const retryProbe = new Image();
+  retryProbe.onload = () => commitWorkCover(img, url, gen);
+  retryProbe.onerror = () => failWorkCover(img, url, gen);
+  retryProbe.src = url;
+}
 
 // ---------- WorksGrid ----------
 // 与 search-bar/batch/detail 存在循环 import（它们各自反向引用本模块）：单例引用全部发生在
@@ -12,8 +36,13 @@ import { sidebar } from '../components/sidebar.js';
 class WorksGrid extends VirtualGrid {
   #sliderRaf = 0;
   #workCardTmpl = document.getElementById("workCardTemplate");
-  #coverQueue = [];
-  #coverDrainRafId = 0;
+  // 封面探针分帧队列（probe-queue 共用壳）：代际防乱序回填
+  #probeQueue = createProbeQueue({
+    budget: config.GRID_IMG_PER_FRAME,
+    alive: (t) => t.img.isConnected && t.img.dataset.coverGen === t.gen,
+    commit: (t) => commitWorkCover(t.img, t.url, t.gen),
+    fail: (t) => failWorkCover(t.img, t.url, t.gen),
+  });
   #videoStates = new WeakMap();
   #currentMediaCard = null;
   #pointer = { x: 0, y: 0 }; // 最近指针客户端坐标（pointerover/out/move 保鲜）：滚动重判悬停用
@@ -26,7 +55,7 @@ class WorksGrid extends VirtualGrid {
       itemKey: "awemeId",
       emptyMsg,
       emptyHint,
-      cardSizeVar: "--dy-card-size",
+      cardSizeVar: WORKS_CARD_SIZE_VAR,
       sizeBandMin: config.WORK_CARD_SIZE_BAND_MIN,
       sizeBandMax: config.WORK_CARD_SIZE_BAND_MAX,
     });
@@ -41,8 +70,8 @@ class WorksGrid extends VirtualGrid {
   }
 
   renderCards(view) {
-    // 渲染取过滤后的视图列表（refreshGridView 注入现成视图，独立调用经视图函数
-    // 取——内部有阶段缓存）。筛选生效时空态文案区分"无数据"与"无匹配"。
+    // 渲染取过滤后的视图列表（refreshGridView 是唯一调用方，恒注入现成视图）。
+    // 筛选生效时空态文案区分"无数据"与"无匹配"。
     // 渐进加载首页渲染一次性消费预铺额度（state.gridSlots.total）：全量骨架预铺 +
     // 余页按槽回填；筛选态（封闭视图）预铺降档至 GRID_PREMOUNT_CAP_FILTER——每次筛选
     // 切换都全量拆建，预铺数直接决定切换的 DOM 成本，余量滚近底部键控扩容补齐
@@ -393,7 +422,7 @@ class WorksGrid extends VirtualGrid {
       const layout = this.getGridLayout();
       const cardW = layout
         ? layout.cardW
-        : parseInt(getComputedStyle(document.documentElement).getPropertyValue("--dy-card-size")) ||
+        : parseInt(getComputedStyle(document.documentElement).getPropertyValue(WORKS_CARD_SIZE_VAR)) ||
           config.CARD_SIZE_FALLBACK;
       const cols = layout
         ? layout.cols
@@ -550,44 +579,7 @@ class WorksGrid extends VirtualGrid {
   #enqueueCover(img, url) {
     const gen = String((Number(img.dataset.coverGen) || 0) + 1);
     img.dataset.coverGen = gen;
-    this.#coverQueue.push({ img, url, gen });
-    this.#scheduleCoverDrain();
-  }
-
-  // 探针预载：成功才提交背景图（div 无裂图载体）；失败原样重试一次，仍失败停留透明占位态
-  #scheduleCoverDrain() {
-    if (this.#coverDrainRafId) return;
-    this.#coverDrainRafId = requestAnimationFrame(() => {
-      this.#coverDrainRafId = 0;
-      let n = 0;
-      while (this.#coverQueue.length && n < config.GRID_IMG_PER_FRAME) {
-        const { img, url, gen } = this.#coverQueue.shift();
-        const alive = () => img.isConnected && img.dataset.coverGen === gen;
-        const commit = () => {
-          if (!alive()) return;
-          detail.markMediaOk();
-          img.style.backgroundImage = utils.cssUrl(url);
-          img.classList.remove("media-loading");
-        };
-        const fail = () => {
-          if (!alive()) return;
-          detail.markMediaFail();
-          // dataset.retry 挂在可见节点上，随重填换新节点自然复位；熔断冷却中不重试
-          if (img.dataset.retry || detail.mediaRetryBlocked()) return;
-          img.dataset.retry = "1";
-          const retryProbe = new Image();
-          retryProbe.onload = commit;
-          retryProbe.onerror = fail;
-          retryProbe.src = url;
-        };
-        const probe = new Image();
-        probe.onload = commit;
-        probe.onerror = fail;
-        probe.src = url;
-        n++;
-      }
-      if (this.#coverQueue.length) this.#scheduleCoverDrain();
-    });
+    this.#probeQueue.enqueue({ img, url, gen });
   }
 
   // 赋 src 前置三态：thumb 先透明，露出 .work-media 渐变占位底

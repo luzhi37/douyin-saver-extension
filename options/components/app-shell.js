@@ -11,6 +11,18 @@ import { sidebar } from './sidebar.js';
 import { settings } from './settings.js';
 import { dialog } from './dialog.js';
 
+// 七网格清单（clearActiveGrid 的 abort/attach 两轮共用；模块内私有不导出——
+// main.js:560 注释约束 SearchBar 不反向 import app-shell，避免模块图新增环）
+const ALL_GRIDS = [
+  worksGrid,
+  followingsGrid,
+  candidatesGrid,
+  favoritesGrid,
+  collectionsGrid,
+  reviewWorksGrid,
+  reviewAuthorsGrid,
+];
+
 // ---------- 应用壳：域切换 / 全局错误态 / 弹窗关闭入口 ----------
 class AppShell {
   constructor() {
@@ -36,13 +48,7 @@ class AppShell {
   // 「旧网格冻结-定格」变体已于 2026-09-27 用户定案否决：定格被感知为卡顿，必须先清空
   clearActiveGrid() {
     state.authorViewOrder = null;
-    worksGrid.abortRender();
-    followingsGrid.abortRender();
-    candidatesGrid.abortRender();
-    favoritesGrid.abortRender();
-    collectionsGrid.abortRender();
-    reviewWorksGrid.abortRender();
-    reviewAuthorsGrid.abortRender();
+    for (const grid of ALL_GRIDS) grid.abortRender();
     // 万级子树的同步 innerHTML="" 拆卸是大→小切组「慢一拍」的主源（整树脱离 +
     // LayoutObject 销毁 100-300ms，GC 再补一拍）：先 O(1) 换空壳让画面立即清空，
     // 旧子树脱离渲染树后由 #destroyDetached 分批销毁，拆卸与 GC 离开点击关键路径
@@ -51,14 +57,18 @@ class AppShell {
     fresh.className = "main-container";
     stale.replaceWith(fresh);
     dom.mainContainer = fresh;
-    worksGrid.attachContainer(fresh);
-    followingsGrid.attachContainer(fresh);
-    candidatesGrid.attachContainer(fresh);
-    favoritesGrid.attachContainer(fresh);
-    collectionsGrid.attachContainer(fresh);
-    reviewWorksGrid.attachContainer(fresh);
-    reviewAuthorsGrid.attachContainer(fresh);
+    for (const grid of ALL_GRIDS) grid.attachContainer(fresh);
     this.#destroyDetached(stale);
+  }
+
+  // 计数占位（三处共用：switchDomain / reloadCurrentDomain / currentGroupId 监听，见
+  // SearchBar.syncCount）：首屏未到前 K 恒 0（有同源分组缓存显示 0，无缓存显示「…」），
+  // 首页到达后由 loadDomainData 校正
+  markGridPending(domain, groupId = "all") {
+    const cachedTotal = state.gridTotals[`${domain}|${groupId}`];
+    state.gridPending = true;
+    state.gridTotal = cachedTotal != null ? { domain, groupId, total: cachedTotal } : null;
+    dom.sbCount.textContent = cachedTotal != null ? "0" : "…";
   }
 
   // 空闲分批销毁脱离渲染树的旧网格子树：每轮 8ms 预算、逐个移除直接子节点，
@@ -83,13 +93,8 @@ class AppShell {
     // refresh=false：网格随后即清场重载，此处重渲纯属浪费
     search.resetSearchState(false);
     state.selectedIds.clear();
-    // 计数占位（见 SearchBar.syncCount）：首屏未到前 K 恒 0（有同源分组缓存显示 0，
-    // 无缓存显示「…」），首页到达后由 loadDomainData 校正
-    const allTotal = state.gridTotals[`${domain}|all`];
-    state.gridPending = true;
-    state.gridTotal = allTotal != null ? { domain, groupId: "all", total: allTotal } : null;
-    dom.sbCount.textContent = allTotal != null ? "0" : "…";
     store.set("batchMode", false);
+    this.markGridPending(domain, "all");
 
     detail.closeDetail();
     // 域切换显式归零：尾部占位（#syncTailReserve）使 wipe clamp 不再触发（重渲任务内总高
@@ -134,11 +139,7 @@ class AppShell {
     this.clearActiveGrid();
     // 整域重载 = 结果集重定义：选区与 Shift 锚点作废（批量模式保留）
     batch.resetSelection();
-    const cachedTotal = state.gridTotals[`${domain}|${groupId}`];
-    state.gridPending = true;
-    state.gridTotal =
-      cachedTotal != null ? { domain, groupId, total: cachedTotal } : null;
-    dom.sbCount.textContent = cachedTotal != null ? "0" : "…";
+    this.markGridPending(domain, groupId);
     dom.mainGrid.scrollTop = 0;
     noteProgrammaticScroll();
     await this.loadDomainDataSafe();
@@ -182,14 +183,12 @@ class AppShell {
   }
 
   // 弹窗关闭请求统一入口：X 按钮与 Esc 共用（见 docs/11），作用于顶层弹窗。
-  // 短操作锁 preventDialogClose 期间不响应；长操作经 activeDialog 发取消信号
+  // 短操作锁 preventDialogClose 期间不响应；长任务进度已迁到非模态任务坞，
+  // 关闭弹窗不再广播取消信号（CANCEL_ACTIVE_TASK 无 taskId，会误杀在途注册任务）
   async requestDialogClose() {
     if (state.preventDialogClose) return;
     const depthBefore = dialog.depth;
-    if (state.activeDialog) {
-      state.activeDialog();
-      chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-    }
+    if (state.activeDialog) state.activeDialog();
     // onClose 已自行关层（回退到父层）时不继续关闭，避免一次请求连关两层
     if (dialog.depth !== depthBefore) return;
     // 设置面板在关闭前保存运行参数；校验失败则保持打开 —— 仅基层弹窗关闭时触发

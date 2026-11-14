@@ -22,4 +22,7 @@ export const RUNTIME_DEFAULTS = Object.freeze({
   syncBatchPauseMax: 20000,
   syncKeepaliveInterval: 2000,
   syncRetryMax: 2,
+  // 扫描族（关注/点赞/收藏）分块落库块大小：每累计 N 条单事务 upsert（静默确认写），
+  // 设置面板可配（50~2000 整数）
+  scanChunkSize: 200,
 });

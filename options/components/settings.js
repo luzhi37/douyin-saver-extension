@@ -1,8 +1,7 @@
 // ---------- Settings ----------
-import { config, dom, state, runtimeConfig, services, utils } from '../core.js';
+import { dom, state, runtimeConfig, services, utils } from '../core.js';
 import { dialog } from './dialog.js';
-import { SelectMenu } from './select-menu.js';
-import { randomReview } from './random-review.js';
+import { taskDock } from './task-dock.js';
 
 // 运行参数键（面板渲染与关闭保存共用单一来源，与 runtimeConfig.DEFAULTS 键一致）
 const CONFIG_FIELDS = [
@@ -16,23 +15,104 @@ const CONFIG_FIELDS = [
   "importWorksDelayMin", "importWorksDelayMax",
   "syncBatchSize", "syncBatchPauseMin", "syncBatchPauseMax",
   "syncKeepaliveInterval", "syncRetryMax",
+  "scanChunkSize",
 ];
+
+// 缓存条目单一来源：面板渲染（#renderCacheList）与刷新/复制分发（#bind）共用一张表。
+// cookie 的 hasCopyAll 依赖 rawCookie 存在性（其余恒可复制），time/copy 取数路径各异
+const CACHE_ITEMS = [
+  {
+    key: "cookie",
+    label: "Cookie",
+    refreshType: "COOKIE",
+    hasCopyAll: (ci) => !!ci?.rawCookie,
+    time: (ci, times) => ci?.time || times.cookie,
+    copy: async () => {
+      const ci = await services.bgMsg({ type: "GET_COOKIE_INFO" });
+      return ci?.rawCookie || "";
+    },
+  },
+  {
+    key: "mstoken",
+    label: "msToken",
+    refreshType: "MSTOKEN",
+    hasCopyAll: () => true,
+    time: (_ci, times) => times.msToken,
+    copy: async () => (await chrome.storage.local.get("savedMsToken")).savedMsToken || "",
+  },
+  {
+    key: "webid",
+    label: "webId",
+    refreshType: "WEBID",
+    hasCopyAll: () => true,
+    time: (_ci, times) => times.webId,
+    copy: async () => (await chrome.storage.local.get("savedWebId")).savedWebId || "",
+  },
+  {
+    key: "browser_features",
+    label: "浏览器特征",
+    refreshType: "BROWSER_FEATURES",
+    hasCopyAll: () => true,
+    time: (_ci, times) => times.browserFeatures,
+    copy: async () => {
+      const res = await services.bgMsg({ type: "GET_BROWSER_FEATURES" });
+      return res?.features ? JSON.stringify(res.features, null, 2) : "";
+    },
+  },
+];
+
+// 设置面板 7 行延迟 min/max 同构：模板只留容器、此处按表生成（data-key 命名与
+// CONFIG_FIELDS 一致，渲染/校验/保存零改动）
+const DELAY_ROWS = [
+  ["同步作品", "syncWorks"],
+  ["同步关注", "syncFollowings"],
+  ["扫描点赞", "syncFavorites"],
+  ["扫描收藏", "syncCollection"],
+  ["取消点赞", "cancelFavorites"],
+  ["取消收藏", "cancelCollection"],
+  ["作者入库", "importWorks"],
+];
+
+function buildSettingsDelayRows() {
+  const root = document.getElementById("settingsDelayRows");
+  if (!root || root.childElementCount > 0) return;
+  root.innerHTML = DELAY_ROWS.map(
+    ([label, kind]) =>
+      `<div class="kv-row"><label class="bf-label">${label} 延迟 min/max (ms)</label>` +
+      `<input class="bf-input config-input" data-key="${kind}DelayMin" type="number" style="width:80px" />` +
+      `<span style="margin:0 4px;color:var(--dy-text-muted)">~</span>` +
+      `<input class="bf-input config-input" data-key="${kind}DelayMax" type="number" style="width:80px" /></div>`,
+  ).join("");
+}
 
 // ---------- Settings ----------
 class Settings {
   #dialogBody = null;
   #pendingIndependent = null;
-  #reviewMenu = null;
-  #reviewSource = "works";
+
+  constructor() {
+    // 任务进行中：设置入口与设置面板整体不可交互（不再单独禁用模式开关）
+    taskDock.onRunningChange((busy) => this.setTaskLocked(busy));
+  }
 
   #$(id) {
     return this.#dialogBody.querySelector("#" + id);
   }
 
+  setTaskLocked(busy) {
+    if (dom.btnSettings) {
+      dom.btnSettings.disabled = busy;
+      dom.btnSettings.title = busy ? "任务运行中不可打开设置" : "";
+    }
+    const panel = this.#dialogBody?.querySelector(".settings-panel");
+    if (panel) panel.inert = busy;
+  }
+
   async openPanel() {
-    // 上一轮设置弹窗的回顾下拉实例（模板每次打开重建 DOM）：先移除其 document 监听
-    this.#reviewMenu?.destroy();
-    this.#reviewMenu = null;
+    if (taskDock.isAnyRunning()) {
+      dialog.showToast("任务运行中不可打开设置", "info");
+      return;
+    }
     const tmpl = document.getElementById("settingsDialogTemplate");
     const body = tmpl.content.cloneNode(true);
     dialog.showDialog("设置", body);
@@ -49,40 +129,20 @@ class Settings {
   }
 
   async #refresh() {
-    const [ci, { independentMode }, ct, reviewConfig] = await Promise.all([
+    const [ci, { independentMode }, ct] = await Promise.all([
       services.bgMsg({ type: "GET_COOKIE_INFO" }),
       chrome.storage.local.get("independentMode"),
       services.bgMsg({ type: "GET_CACHE_TIMES" }).catch(() => ({ ok: false, times: {} })),
-      randomReview.getConfig(),
     ]);
-    this.#$("settingsModeSwitch").checked = Boolean(this.#pendingIndependent ?? independentMode);
+    const modeSwitch = this.#$("settingsModeSwitch");
+    modeSwitch.checked = Boolean(this.#pendingIndependent ?? independentMode);
     // secUid
     const { secUid } = await chrome.storage.local.get("secUid");
     this.#$("settingsSecUid").value = secUid || "";
     // 缓存状态
     this.#renderCacheList(ci, ct);
-    // 回顾配置（来源下拉 + 抽取数量）
-    this.#renderReviewConfig(reviewConfig);
     // 运行参数
     this.#renderConfigSection();
-  }
-
-  // 回顾配置：首次渲染创建 SelectMenu；缓存刷新重入时只同步选中值，不重复绑定监听
-  #renderReviewConfig({ sourceDomain, count }) {
-    this.#reviewSource = sourceDomain;
-    const sourceEl = this.#$("settingsReviewSource");
-    if (sourceEl && !this.#reviewMenu) {
-      this.#reviewMenu = new SelectMenu(
-        sourceEl,
-        (opt) => {
-          this.#reviewSource = opt.dataset.source;
-        },
-        { optionAttr: "data-source" },
-      );
-    }
-    this.#reviewMenu?.sync(sourceDomain, config.DOMAINS_META[sourceDomain].label);
-    const countInput = this.#$("settingsReviewCount");
-    if (countInput) countInput.value = String(count);
   }
 
   #renderConfigSection() {
@@ -97,48 +157,17 @@ class Settings {
   #renderCacheList(ci, ct) {
     const list = this.#dialogBody.querySelector("#settingsCacheList");
     const times = ct?.times || {};
-    const hasRawCookie = !!(ci?.rawCookie);
-    const items = [
-      {
-        key: "cookie",
-        label: "Cookie",
-        time: ci?.time || times.cookie,
-        hasCopyAll: hasRawCookie,
-      },
-      {
-        key: "mstoken",
-        label: "msToken",
-        time: times.msToken,
-        hasCopyAll: true,
-      },
-      {
-        key: "webid",
-        label: "webId",
-        time: times.webId,
-        hasCopyAll: true,
-      },
-      {
-        key: "browser_features",
-        label: "浏览器特征",
-        time: times.browserFeatures,
-        hasCopyAll: true,
-      },
-    ];
-    list.innerHTML = items
-      .map(
-        (item) => {
-          const copyBtn = item.hasCopyAll
-            ? `<button class="cookie-copy-all-btn" data-copy-type="${item.key}">复制</button>`
-            : "";
-          return `<div class="cache-item">
+    list.innerHTML = CACHE_ITEMS.map((item) => {
+      const copyBtn = item.hasCopyAll(ci)
+        ? `<button class="cookie-copy-all-btn" data-copy-type="${item.key}">复制</button>`
+        : "";
+      return `<div class="cache-item">
         <span class="cache-label">${item.label}</span>
-        <span class="cache-time">${utils.formatCacheTime(item.time) || "未捕获"}</span>
+        <span class="cache-time">${utils.formatCacheTime(item.time(ci, times)) || "未捕获"}</span>
         ${copyBtn}
         <button class="cache-refresh-btn" data-refresh="${item.key}">刷新</button>
       </div>`;
-        },
-      )
-      .join("");
+    }).join("");
   }
 
   // min/max 成对即时校验：两端同亮同灭，避免只标一端造成误读
@@ -169,36 +198,17 @@ class Settings {
     modeSwitch.addEventListener("change", () => {
       this.#pendingIndependent = modeSwitch.checked;
     });
-    // 缓存刷新按钮
+    // 缓存刷新/复制按钮（分发按 CACHE_ITEMS 单表）
     const cacheList = this.#$("settingsCacheList");
     if (cacheList) {
-      const TYPE_MAP = { cookie: "COOKIE", mstoken: "MSTOKEN", webid: "WEBID", browser_features: "BROWSER_FEATURES" };
-      const COPY_MAP = {
-        cookie: async () => {
-          const ci = await services.bgMsg({ type: "GET_COOKIE_INFO" });
-          return ci?.rawCookie || "";
-        },
-        mstoken: async () => {
-          const { savedMsToken } = await chrome.storage.local.get("savedMsToken");
-          return savedMsToken || "";
-        },
-        webid: async () => {
-          const { savedWebId } = await chrome.storage.local.get("savedWebId");
-          return savedWebId || "";
-        },
-        browser_features: async () => {
-          const res = await services.bgMsg({ type: "GET_BROWSER_FEATURES" });
-          return res?.features ? JSON.stringify(res.features, null, 2) : "";
-        },
-      };
+      const byKey = new Map(CACHE_ITEMS.map((item) => [item.key, item]));
       cacheList.addEventListener("click", async (e) => {
         const copyBtn = e.target.closest("[data-copy-type]");
         if (copyBtn) {
           e.stopPropagation();
-          const type = copyBtn.dataset.copyType;
-          const fn = COPY_MAP[type];
-          if (fn) {
-            const text = await fn();
+          const copy = byKey.get(copyBtn.dataset.copyType)?.copy;
+          if (copy) {
+            const text = await copy();
             if (text) {
               navigator.clipboard.writeText(text).then(
                 () => dialog.showToast("已复制", "success")
@@ -209,12 +219,12 @@ class Settings {
         }
         const btn = e.target.closest(".cache-refresh-btn");
         if (!btn || btn.classList.contains("loading")) return;
-        const type = TYPE_MAP[btn.dataset.refresh];
-        if (!type) return;
+        const item = byKey.get(btn.dataset.refresh);
+        if (!item) return;
         btn.classList.add("loading");
         btn.textContent = "刷新中…";
         try {
-          const res = await services.bgMsg({ type: "REFRESH_" + type });
+          const res = await services.bgMsg({ type: "REFRESH_" + item.refreshType });
           if (res?.ok) {
             await this.#refresh();
           } else {
@@ -230,7 +240,7 @@ class Settings {
     }
   }
 
-  // X 关闭时校验并持久化运行参数、回顾配置与 secUid；返回 false 表示校验未通过、保持弹窗打开
+  // X 关闭时校验并持久化运行参数与 secUid；返回 false 表示校验未通过、保持弹窗打开
   async saveBeforeClose() {
     if (!this.#dialogBody) return true;
     const section = this.#dialogBody.querySelector("#settingsConfigSection");
@@ -266,24 +276,15 @@ class Settings {
       dialog.showToast("批次暂停最小值不能大于最大值", "error");
       return false;
     }
-    // 回顾配置：数量必须是 1–500 的整数；来源由下拉选择保证合法
-    const reviewCountInput = this.#dialogBody.querySelector("#settingsReviewCount");
-    const rawReviewCount = reviewCountInput?.value.trim() ?? "";
-    const reviewCount = Number(rawReviewCount);
-    if (
-      !rawReviewCount ||
-      !Number.isInteger(reviewCount) ||
-      reviewCount < 1 ||
-      reviewCount > config.RANDOM_REVIEW_MAX_COUNT
-    ) {
-      dialog.showToast(`回顾抽取数量需为 1–${config.RANDOM_REVIEW_MAX_COUNT} 的整数`, "error");
+    // 扫描分块大小：整数 + 上下界（过小则事务频繁，过大则内存峰值与取消残差变差）
+    if (!Number.isInteger(values.scanChunkSize) || values.scanChunkSize < 50 || values.scanChunkSize > 2000) {
+      dialog.showToast("扫描分块大小需为 50~2000 的整数", "error");
       return false;
     }
     try {
       await runtimeConfig.save(values);
       const secUidInput = this.#dialogBody.querySelector("#settingsSecUid");
       await chrome.storage.local.set({ secUid: secUidInput?.value.trim() || "" });
-      await randomReview.saveConfig({ sourceDomain: this.#reviewSource, count: reviewCount });
     } catch {
       dialog.showToast("保存失败", "error");
     }
@@ -292,7 +293,11 @@ class Settings {
     const { independentMode: savedOn } = await chrome.storage.local.get("independentMode");
     if (modeOn !== (savedOn === true)) {
       try {
-        await services.bgMsg({ type: "SET_MODE", enabled: modeOn });
+        const res = await services.bgMsg({ type: "SET_MODE", enabled: modeOn });
+        if (!res || res.ok !== true) {
+          dialog.showToast(res?.error === "BUSY" ? "任务运行中，模式未切换" : "独立模式切换失败", "error");
+          return false;
+        }
         this.#pendingIndependent = null;
       } catch {
         dialog.showToast("独立模式切换失败", "error");
@@ -304,3 +309,8 @@ class Settings {
 }
 
 export const settings = new Settings();
+
+// ---------- 模板占位填充 ----------
+// 模块载入即填充（options.html 脚本在 DOM 解析后执行）；openPanel 时惰性 clone 模板，
+// 生成时机只需早于首次打开设置面板
+buildSettingsDelayRows();

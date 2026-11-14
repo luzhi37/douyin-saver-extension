@@ -1,5 +1,8 @@
 # 06 · 独立模式（逆向）— 取消收藏
 
+> B6（2026-11-11）补充：本任务已接入任务队列——循环以 `waitForTurn`/`checkpoint` 两点挂起，支持「暂停（现场保留）/ 续跑（从检查点继续）」，详见 [plans/task-queue-pause-resume-2026-11-11.md](../plans/task-queue-pause-resume-2026-11-11.md)。
+
+> **任务坞迁移（2026-11-11）**：下述「`CANCEL_PROGRESS` / `CANCEL_DONE`、`withCancelGuard`、模态进度层」均为旧机制，现已改为：`CANCEL_COLLECTION { awemeIds, domain, taskId }`（`CANCEL_FAVORITES` 同构，Tab-only）登记 TaskRegistry（`exclusive`）→ 立即 ack → `TASK_PROGRESS`（`index/stepStatus/awemeId`）→ **分块确认删（远端成功进缓冲，满 `SYNC.SCAN_CHUNK` 条单事务 deleteBatch）** → 终态冲刷余块 + `STORE_CHANGED`（仅 deletedIds>0）→ `TASK_DONE`（`refreshed/failed/failedAwemeIds/deletedIds`，`refreshed`=实删数）；options 的 `onDone` 按 `deletedIds` 本地摘卡。端点/POST 机制不变。
 > 职责边界：`CANCEL_COLLECTION` 在**独立模式**下的完整链路——background 内直接循环 `fetch()` POST `/aweme/v1/web/aweme/collect/`，不经过任何标签页；侧边栏作品卡单作品收藏/取消（`SET_COLLECTION`）复用同一端点与 `independentTasks.setReaction`（`action` 由 active 决定，本地域落库/删除由路由层收口）。取消点赞（CANCEL_FAVORITES / SET_FAVORITES）**没有独立分支**，仅 Tab 模式 XHR 链路（见 [09](./09-inject-tab-mode.md)）；DNR 头注入依赖见 [08](./08-dnr-rules.md)。
 
 ## 概述
@@ -18,8 +21,8 @@ CANCEL_COLLECTION → independentClient.loadMode()
 - 前置校验：awemeIds 非空（`EMPTY`）、`savedCookie` 存在（`NO_COOKIE`）；当前仅收藏一个端点，无 `kind` 参数；
 - 密钥头 `bd-ticket-guard-ree-public-key` 取自 `browserFeatures.securityKey`——该值由 inject 在抖音页面采集 localStorage 而来（需用户曾访问过 douyin.com；采集机制见 [09](./09-inject-tab-mode.md)），缺失时**不带该头**继续尝试；
 - SW 的 `fetch()` 无法设置 Referer（forbidden header），精确 Referer 与 Sec-Fetch-* 同源元数据由 DNR rules 3/5 在网络层补齐；
-- 取消信号在 background 循环内自消化（`utils.withCancelGuard()` 监听 `CANCEL_ACTIVE_TASK`），不经 content→inject；
-- 移除 = 取消并删本地：远端取消成功的条目经 `scanTasks.deleteCancelled` 同步删除该域本地记录，`CANCEL_DONE` 载荷携带 `deletedIds` 供 options 增量移除网格卡片。
+- 取消信号经任务队列自消化（`waitForTurn`/`checkpoint` 两点挂起 + `isCancelled` 透传 RequestGate，见 B6），不经 content→inject；
+- 移除 = 取消并删本地（**分块确认删**）：循环内远端取消成功的 id 经 `createCancelWriter` 进缓冲、满 `SYNC.SCAN_CHUNK` 条单事务 `deleteBatch`（与扫描族分块确认写同构）——任务失败/被杀已删块不回滚、未删块保留本地，不产生「远端已取消、本地还在」的僵尸记录，未发送尾部条目本地保留；`TASK_DONE` 载荷携带 `deletedIds`（实删数）供 options 增量移除网格卡片。
 
 ## 核心流程图（文字描述）
 
@@ -31,8 +34,8 @@ options 批量操作「取消收藏」（选中条目）
           ├─ 校验：!Array||empty → { ok:false, error:"EMPTY" }
           ├─         !savedCookie → { ok:false, error:"NO_COOKIE" }
           ├─ key = browserFeatures.securityKey || ""
-          ├─ requestId = randomUUID()；guard = utils.withCancelGuard()
-          ├─ sendResponse({ ok:true, requestId, total })        // 立即 ack
+          ├─ requestId = taskRegistry.start(...)                // exclusive 全局单任务（B6 队列）
+          ├─ sendResponse({ ok:true, requestId, taskId, total })  // 立即 ack
           │
           └─ for i in awemeIds（&& !cancelled）:
                let ok = false;
@@ -47,13 +50,14 @@ options 批量操作「取消收藏」（选中条目）
                  });
                  ok = resp.ok;
                } catch (_) {}
-               if (!ok) errors.push({ awemeId, error: "FAILED" })
-               sendMessage(CANCEL_PROGRESS { index, total, status: ok?"ok":"error", awemeId })
+               if (ok) {
+                 await cancelWriter.push(awemeIds[i])  // 分块确认删：满 SCAN_CHUNK 条单事务 deleteBatch
+               } else errors.push({ awemeId, error: "FAILED" })
+               sendMessage(TASK_PROGRESS { index, total, status: ok?"ok":"error", awemeId })
                条目间延迟 cancelCollection MIN~MAX ms（末条不加）
-          ├─ guard.dispose()
-          ├─ deletedIds = scanTasks.deleteCancelled(domain, awemeIds, failedAwemeIds)
-          └─ sendMessage(CANCEL_DONE { requestId, ok:true, cancelled,
-                                        refreshed, failed, failedAwemeIds, deletedIds })
+          ├─ 终态冲刷余块 + STORE_CHANGED（仅 deletedIds>0；failed 路径同口径，已删部分不回滚）
+          └─ sendMessage(TASK_DONE { requestId, ok, cancelled,
+                                        refreshed: deletedIds.length, failed, failedAwemeIds, deletedIds })
 
 端点四要素（CONFIG.CANCEL.collection）：
   url      https://www.douyin.com/aweme/v1/web/aweme/collect/?aid=6383
@@ -68,8 +72,8 @@ options 批量操作「取消收藏」（选中条目）
 // background/tasks/independent-tasks.js
 async function independentTasks.cancel(awemeIds, persistDomain, sendResponse)
 // awemeIds: string[]；persistDomain: 取消成功后删本地记录的目标域（当前仅收藏端点）
-// 出参（ack）：{ ok:true, requestId, total }；后续结果仅经 CANCEL_PROGRESS / CANCEL_DONE 消息
-// 进度：CANCEL_PROGRESS*N → CANCEL_DONE
+// 出参（ack）：{ ok:true, requestId, taskId, total }；后续结果仅经 TASK_PROGRESS / TASK_DONE 消息
+// 进度：TASK_PROGRESS*N（逐条上报；远端 ok 进待删缓冲满块即删）→ TASK_DONE（refreshed=实删数）
 
 async function scanTasks.runCancelBatch(awemeIds, tabType, progressType, persistDomain, sendResponse)   // Tab模式对照分支
 ```
@@ -141,9 +145,10 @@ body: action=0&aweme_id=7267428670501915945&aweme_type=0
 |------|------|------|
 | securityKey 缺失（从未访问过抖音页面） | 请求不带 ticket-guard 头 | 仍发出请求；服务端按 401/403 拒绝（Tab 模式下同场景报 AUTH_FAILED） |
 | 密钥过期 | 服务端拒绝，`resp.ok=false` | options 弹 toast 提示刷新页面重新捕获；无效 ticket-guard 密钥有触发服务端登出的风险 |
-| 单条网络异常 | catch 后 ok 保持 false | 记入进度 error 状态，循环继续 |
-| 用户关闭弹窗 | `CANCEL_ACTIVE_TASK` | cancelled 置位；当前在途请求完成后停止（无法即时中断） |
-| 逐条失败计数的双通道 | `CANCEL_DONE.failed` 为汇总真值；`CANCEL_PROGRESS.status` 为逐条实时反馈 | 循环内 `if (!ok) errors.push({ awemeId, error:"FAILED" })` 填充 errors，`refreshed = 总数 - failed`；两条通道同源于同一循环 |
+| 单条网络异常 | catch 后 ok 保持 false | 记入进度 error 状态，循环继续；本地记录保留（远端也未取消，失败保留） |
+| 用户取消（`CANCEL_TASK`/关页） | cancelled 置位 | 在途条目先结算（远端成功仍删本地）后停止；未发送尾部条目本地保留（远端同样保留） |
+| 任务异常/被杀 | failed 终态或循环中断 | 已删块不回滚（分块确认删随远端成功按块生效，无僵尸记录）；终态与异常路径均冲刷余块后按 deletedIds>0 广播 `STORE_CHANGED` |
+| 逐条失败计数的双通道 | `TASK_DONE.failed` 为汇总真值；`TASK_PROGRESS.status` 为逐条实时反馈 | 循环内 `if (!ok) errors.push({ awemeId, error:"FAILED" })` 填充 errors，`refreshed = deletedIds.length`（实删数）；两条通道同源于同一循环 |
 
 ## 配置项说明
 
@@ -159,6 +164,6 @@ body: action=0&aweme_id=7267428670501915945&aweme_type=0
 | 编号 | 文档 | 关联内容 |
 |------|------|----------|
 | 01 | [01-project-architecture.md](./01-project-architecture.md) | 长任务协议、browserFeatures 缓存键 |
-| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 上游扫描（persistScan 落库）；同批 targets 的来源 |
+| 05 | [05-independent-scan-collection.md](./05-independent-scan-collection.md) | 上游扫描（createScanWriter 分块确认写落库）；同批 targets 的来源 |
 | 08 | [08-dnr-rules.md](./08-dnr-rules.md) | rule 5 全文（本流程可用性的根）、rule 3 兜底关系 |
 | 09 | [09-inject-tab-mode.md](./09-inject-tab-mode.md) | Tab模式 cancelOne XHR 实现、getSecurityKey、AUTH_FAILED 语义对照 |

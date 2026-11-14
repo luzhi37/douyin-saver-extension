@@ -9,7 +9,8 @@ import { storage } from "./storage.js";
 // 逐键浅比较（键取并集）：undefined 与缺失视为不同——旧格式记录缺新字段时判为有变化，
 // 借下一次合并一次性补写自愈。用于跳过「内容无变化的重复落库」
 function isSameRecord(a, b) {
-  // 两个调用点均已保证入参非空（mergeAndSave 经 Boolean(old) 短路；mergeAndSaveAuthors 位于 old 非空分支）
+  // 四个调用点均已保证入参非空：mergeAndSave 经 Boolean(old) 短路，patchWorks/
+  // patchAuthors 经 !old 短路，mergeAndSaveAuthors 位于 old 非空分支
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   for (const k of keys) {
     if (a[k] !== b[k]) return false;
@@ -49,7 +50,6 @@ class DomainStore {
       putBatch: (items) => storage.putBatch(cfg.storeName, items),
       deleteBatch: (keys) => storage.deleteBatch(cfg.storeName, keys),
       count: () => storage.count(cfg.storeName),
-      countByGroup: (groupId) => storage.countByIndex(cfg.storeName, "groupId", groupId),
       getGroups: () => storage.getGroups(cfg.groupsName),
       idField: cfg.idField,
     };
@@ -80,9 +80,6 @@ class DomainStore {
       merged.video = old.video;
       merged.videoExpireAt = old.videoExpireAt || 0;
     }
-    // 已废弃字段：旧版导入/历史记录仍可能携带，落库前统一剔除
-    delete merged.desc;
-    delete merged.authorFollowed;
     return merged;
   }
 
@@ -91,10 +88,10 @@ class DomainStore {
   // 不写库、不计入 changed——广播方据它决定是否发 STORE_CHANGED，options 不该为 no-op 重载。
   // written = 本次实际写入的合并后记录（点变化广播的 upserts 载荷），addedIds = 其中属于
   // 新增的记录 id（options 区分「原地更新」与「新增插入」）。
-  // stamps（persistScan 扫描落库专用）：Map<主键, savedAt> 覆盖戳——主页序 savedAt 重排要求
-  // 全部 valid 记录都写（含内容无变化者），写入集扩为全集；changed 仍按覆盖前的
-  // isSameRecord 口径（在戳覆盖前判定），updated 则统计命中的存量条数（不做内容差异过滤）。
-  // 缺省 null = 常规路径，仅写 changed 集
+  // stamps（扫描分块确认写专用，createScanWriter 传入）：Map<主键, savedAt> 覆盖戳——主页序
+  // savedAt 重排要求全部 valid 记录都写（含内容无变化者），写入集扩为全集；changed 仍按
+  // 覆盖前的 isSameRecord 口径（在戳覆盖前判定），updated 则统计命中的存量条数（不做内容
+  // 差异过滤）。缺省 null = 常规路径，仅写 changed 集
   async mergeAndSave(domain, works, { stamps = null } = {}) {
     const ds = this.facade(domain);
     const valid = (works || []).filter((w) => w && w[ds.idField]);
@@ -134,14 +131,56 @@ class DomainStore {
     return { added, updated, changed, total: totalCount, written: toWrite, addedIds };
   }
 
+  // 字段级补丁落库（同步等 update-only 路径）：old 缺失即跳过（删除永远赢），内容无变化
+  // 也跳过（不产生无意义写入与广播）。与 mergeAndSave 的差异只有两点：批量 get 与 put
+  // 在同一事务内完成、永不新增记录——因此可与用户的删除/移动并发执行而不互相覆盖。
+  // 返回 { patched, skipped, keysChanged, ids }（ids 仅含实际写入的主键）
+  async patchWorks(domain, works) {
+    const ds = this.facade(domain);
+    const valid = (works || []).filter((w) => w && w[ds.idField]);
+    if (valid.length === 0) return { patched: 0, skipped: 0, keysChanged: false, ids: [] };
+    return storage.patchBatch(
+      this.storeName(domain),
+      valid,
+      (old, w) => {
+        if (!old) return null;
+        const merged = this.mergeWork(w, old);
+        return isSameRecord(merged, old) ? null : merged;
+      },
+      { bumpRevOnKeyChange: true },
+    );
+  }
+
+  // 作者域字段级补丁（校准等 update-only 路径）：单事务 get → 合并白名单字段 → put。
+  // old 缺失即跳过（删除永远赢）；groupId/savedAt/uid 不参与合并——网络等待期间用户的
+  // 分组移动/删除不会被迟到的校准回包覆盖。返回与 storage.patchBatch 同构。
+  async patchAuthors(domain, items, buildFields) {
+    const valid = (items || []).filter((x) => x && x.uid != null && x.uid !== "");
+    if (valid.length === 0) return { patched: 0, skipped: 0, keysChanged: false, ids: [] };
+    return storage.patchBatch(
+      this.storeName(domain),
+      valid,
+      (old, item) => {
+        if (!old) return null;
+        const merged = { ...old, ...buildFields(item, old) };
+        return isSameRecord(merged, old) ? null : merged;
+      },
+    );
+  }
+
   // 作者域（followings/candidates）专用合并落库：计数仅由校准更新，常规列表同步携带的 0
   // 不覆盖已校准旧值。changed 同 mergeAndSave：内容全等的重复收录不写库、不计入 changed。
   // 分组归属与作品型域同一口径：本地既有记录优先，采集/导入仅在新记录时采用来值——
   // 用户手工整理不被同步或导入冲掉（旧 isImport 分支按文件分组覆盖本地，已定案移除）。
   // lostUids 仅对原生 followings 有意义（candidates 调用方忽略，不据此自动删除）。
-  // 旧记录经 getBatch 单事务按需读取（替代 getAll 全表物化——单条收录路径不再按全表付费），
-  // 丢失检测经 getAllKeys 键集差（不反序列化记录值），total = 存量键数 + 新增
-  async mergeAndSaveAuthors(domain, items) {
+  // 旧记录在写事务内逐条 get→merge→put（单事务字段合并），丢失检测经 getAllKeys 键集差。
+  // stamps（扫描分块落库专用）：Map<uid, savedAt> 为新记录提供跨块一致的戳——关注同步
+  // 分块落库时每块独立调用本函数，块内 Date.now() 漂移会让后抓的作者排到先抓的之前，
+  // 调用方用任务级 baseTime − 全局下标预先分配（savedAt desc = 主页关注序）。
+  // lost:false（分块确认写专用）：跳过 getAllKeys 与丢失计算——「确认写」每块 upsert，
+  // 丢失检测（结论写）由调用方在任务终态用起始键集快照统一执行，分块路径禁止在块边界
+  // 产生任何丢失结论。返回 total 仅在 lost:true 时有意义（键集快照不可得时为 0）。
+  async mergeAndSaveAuthors(domain, items, { lost = true, stamps = null } = {}) {
     const ds = this.facade(domain);
     // 同批重复 uid 取首次出现（列表接口不应产生重复，防御性收敛；与旧实现「putBatch 后写覆盖」
     // 相比仅重复条的 savedAt 毫秒差之别）
@@ -154,56 +193,56 @@ class DomainStore {
       incomingUids.add(uid);
       incoming.push({ f, uid });
     }
-    // 丢失检测与旧记录读取并行；getAllKeys 须在 putBatch 前取（键集反映写前状态）
-    const [olds, oldKeys] = await Promise.all([
-      ds.getBatch(incoming.map((x) => x.uid)),
-      ds.getAllKeys(),
-    ]);
+    // 丢失检测的键集必须在写事务前取（键集反映写前状态）；lost:false 分块路径跳过
+    const oldKeys = lost ? await ds.getAllKeys() : [];
+    const indexByUid = new Map(incoming.map((x, i) => [x.uid, i]));
 
     let added = 0,
       updated = 0,
       changed = 0;
-    const toWrite = [];
-
     const baseTime = Date.now();
-    for (let i = 0; i < incoming.length; i++) {
-      const { f, uid } = incoming[i];
-      const old = olds[i];
-      const merged = {
-        ...f,
-        // 计数仅由校准更新：常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
-        followerCount: f.followerCount > 0 ? f.followerCount : old?.followerCount || 0,
-        awemeCount: f.awemeCount > 0 ? f.awemeCount : old?.awemeCount || 0,
-        lastUpdateAt: f.lastUpdateAt > 0 ? f.lastUpdateAt : old?.lastUpdateAt || 0,
-        uid,
-        // 分组本地优先：既有记录保留原分组，仅新记录采用来值（缺省落「未分组」）
-        groupId: old?.groupId || f.groupId || CONFIG.GROUPS.DEFAULT_ID,
-        savedAt: old?.savedAt ?? baseTime - i,
-      };
-      if (!old) {
+    // 单事务 get→merge→put：与用户的 MOVE/DELETE 在同一 store 上串行。
+    // 禁止改回「先 getBatch、后 putBatch」的两次事务读改写——大域 getBatch 期间用户
+    // 提交的移动会落在读写窗口中间，被本函数用旧 groupId 快照覆盖（表现为卡片刷新回旧组）
+    await storage.patchBatch(
+      this.storeName(domain),
+      incoming.map(({ f, uid }) => ({ ...f, uid })),
+      (old, item) => {
+        const uid = String(item.uid);
+        const i = indexByUid.get(uid) ?? 0;
+        const merged = {
+          ...item,
+          // 计数仅由校准更新：常规列表同步携带的 0 不覆盖已校准旧值；校准结果/导入快照 >0 时正常写入
+          followerCount: item.followerCount > 0 ? item.followerCount : old?.followerCount || 0,
+          awemeCount: item.awemeCount > 0 ? item.awemeCount : old?.awemeCount || 0,
+          lastUpdateAt: item.lastUpdateAt > 0 ? item.lastUpdateAt : old?.lastUpdateAt || 0,
+          uid,
+          // 分组本地优先：既有记录保留原分组（含任务期间的用户移动），仅新记录采用来值
+          groupId: old?.groupId || item.groupId || CONFIG.GROUPS.DEFAULT_ID,
+          // 戳序：既有记录保留旧值；新记录取 stamps（分块路径跨块一致），缺省回落块内序
+          savedAt: old?.savedAt ?? stamps?.get(uid) ?? baseTime - i,
+        };
+        if (old) {
+          updated++;
+          if (isSameRecord(merged, old)) return null;
+          changed++;
+          return merged;
+        }
         added++;
         changed++;
-        toWrite.push(merged);
-      } else {
-        updated++;
-        if (!isSameRecord(merged, old)) {
-          changed++;
-          toWrite.push(merged);
-        }
-      }
-    }
+        return merged;
+      },
+    );
 
-    // Mark users not in new list as 'lost'
-    const lostUids = oldKeys.filter((uid) => !incomingUids.has(String(uid)));
-
-    if (toWrite.length > 0) await ds.putBatch(toWrite);
+    // Mark users not in new list as 'lost'（仅整批调用：分块确认写 lost:false 不产生结论）
+    const lostUids = lost ? oldKeys.filter((uid) => !incomingUids.has(String(uid))) : [];
     return {
       added,
       updated,
       changed,
       lost: lostUids.length,
       lostUids,
-      total: oldKeys.length + added,
+      total: lost ? oldKeys.length + added : 0,
     };
   }
 }

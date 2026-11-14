@@ -1,108 +1,57 @@
 // ---------- DomainScanSync（点赞/收藏域同步） ----------
-import { config, dom, services, utils } from '../core.js';
-import { sync } from './sync.js';
-import { authorImport } from './author-import.js';
+import { config, services } from '../core.js';
 import { dialog } from '../components/dialog.js';
-import { groups } from '../data/groups.js';
-import { appShell } from '../components/app-shell.js';
+import { taskDock } from '../components/task-dock.js';
 
 // ---------- 点赞/收藏域同步（DomainScanSync） ----------
-// 与 Sync 的差异：扫描结果由 background 直接合并落库 + 丢失检测，本类只驱动进度弹窗与 UI 刷新
+// 扫描结果由 background 直接合并落库 + 丢失检测；本类只负责登记任务坞、收口后置处理。
 class DomainScanSync {
-  #running = false;
-  #countEl = null;
-  #summaryEl = null;
-  #statusEl = null;
-
-  isRunning() {
-    return this.#running;
-  }
+  // 从点击到登记期间的防重入（isIndependentMode/findSecUid 为异步，双击窗口内不重复排队）
+  #starting = false;
 
   async syncDomain(domain) {
-    if (this.#running || sync.isRunning() || authorImport.isRunning()) return;
-    // 入口约束：main.js 仅在 works/followings 之外的域（favorites/collections）调用本方法
-
-    // 独立模式不支持点赞列表拉取（favorite 端点 Turing 风控），收藏不受限
-    if (domain === "favorites" && (await services.isIndependentMode())) {
-      dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
+    // B6 队列：同域去重（扫描进行中/暂停中不再重复排队），跨域任务正常入队
+    if (this.#starting || taskDock.isDomainBusy(domain)) {
+      taskDock.expand();
       return;
     }
 
-    this.#running = true;
-    this.#openDialog(domain);
-
-    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-
+    this.#starting = true;
     try {
-      // 点赞列表仅 Tab 模式；收藏双模均通。persist 让 background 直接落库并做丢失检测
-      const fetchType = domain === "favorites" ? "FETCH_FAVORITES" : "FETCH_COLLECTION";
-      const res = await services.bgMsg({
-        type: fetchType,
-        persist: domain,
-        ...(domain === "favorites" ? { secUid: await services.findSecUid() } : {}),
-      });
-      if (!this.#running) return; // 弹窗已关闭（取消）
-      if (!res || !res.ok) throw new Error(res?.error || "FETCH_FAILED");
-
-      await appShell.loadDomainDataSafe();
-      await groups.renderGroupTabs();
-
-      const saved = res.saved || { added: 0, updated: 0 };
-      const lostUids = res.lostUids || [];
-      this.#setSummary(`新增 ${saved.added} · 更新 ${saved.updated}${lostUids.length > 0 ? ` · 已取消 ${lostUids.length} 个` : ""}`);
-      if (this.#statusEl) this.#statusEl.textContent = res.timedOut ? "PARTIAL" : "DONE";
-
-      if (res.timedOut && dom.dialogBody.querySelector(".sync-timeout-hint") === null) {
-        const hint = document.createElement("p");
-        hint.className = "dy-text-danger sync-timeout-hint";
-        hint.textContent = "已中途取消，仅保留部分数据";
-        dom.dialogBody.appendChild(hint);
-      }
-      if (lostUids.length > 0) {
-        dialog.addTrashButton(() => this.moveLostToTrash(domain, lostUids), () => this.closeDialog());
-      }
-    } catch (err) {
-      if (!this.#running) return;
-      const msg = err.message || String(err);
-      if (msg.includes("NO_SIGNATURE")) {
-        this.closeDialog();
-        const url = config.URL_USER_SELF + (domain === "favorites" ? config.URL_FAVORITE_TAB : config.URL_COLLECTION_TAB);
-        dialog.showNoSignatureDialog(url, config.DOMAINS_META[domain].label, `同步${config.DOMAINS_META[domain].label}列表`);
+      // 独立模式不支持点赞列表拉取（favorite 端点 Turing 风控），收藏不受限
+      if (domain === "favorites" && (await services.isIndependentMode())) {
+        dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
         return;
       }
-      this.#setSummary("");
-      if (this.#statusEl) this.#statusEl.textContent = msg;
+      // favorites 的 secUid 在载荷构造内条件解析（独立模式守卫之后）
+      await taskDock.launchRemote({
+        begin: {
+          kind: domain === "favorites" ? "scanFavorites" : "scanCollections",
+          domain,
+          total: 0,
+          hint: config.DOMAINS_META[domain].label,
+          onTrash: (ids) => this.moveLostToTrash(domain, ids),
+          onDone: (msg) => this.#onDone(domain, msg),
+        },
+        payload: async () => ({
+          type: domain === "favorites" ? "FETCH_FAVORITES" : "FETCH_COLLECTION",
+          persist: domain,
+          ...(domain === "favorites" ? { secUid: await services.findSecUid() } : {}),
+        }),
+      });
+    } catch (err) {
+      dialog.showToast(`同步失败：${err.message || String(err)}`, "error");
     } finally {
-      this.#running = false;
+      this.#starting = false;
     }
   }
 
-  #openDialog(domain) {
-    const label = config.DOMAINS_META[domain].label;
-    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
-    this.#countEl = countEl;
-    this.#summaryEl = summaryEl;
-    this.#statusEl = statusEl;
-    this.#countEl.textContent = `已扫描作品 0`;
-    this.#summaryEl.textContent = `正在获取${label}…`;
-    dialog.showDialog(`同步${label}`, body, [], () => this.closeDialog());
-  }
-
-  closeDialog() {
-    dialog.closeDialog();
-    this.#running = false;
-  }
-
-  // 进度消息入口（options 全局 listener 分发）；三链路互斥保证不串线，按 #running 门控全收
-  onScanProgress(msg) {
-    if (!this.#running) return;
-    if (msg.type === "FAVORITES_PROGRESS" || msg.type === "COLLECTION_PROGRESS") {
-      if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected}`;
-    }
-  }
-
-  #setSummary(text) {
-    if (this.#summaryEl) this.#summaryEl.textContent = text || "";
+  // 终态后置处理：网格/分组刷新由 background 的 STORE_CHANGED（changed>0）统一承担，
+  // 这里只做必须弹窗的 NO_SIGNATURE 引导（坞内不承载）。
+  #onDone(domain, msg) {
+    if (msg.error !== "NO_SIGNATURE") return;
+    const url = config.URL_USER_SELF + (domain === "favorites" ? config.URL_FAVORITE_TAB : config.URL_COLLECTION_TAB);
+    dialog.showNoSignatureDialog(url, config.DOMAINS_META[domain].label, `同步${config.DOMAINS_META[domain].label}列表`);
   }
 
   // 丢失条目移入本域「稍后删除」分组（分组按需创建，与关注域 moveLostFollowings 同款）

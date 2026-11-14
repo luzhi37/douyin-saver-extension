@@ -3,6 +3,7 @@ import { config, dom, state, utils, services, store } from '../core.js';
 import { search } from '../components/search-bar.js';
 import { dialog } from '../components/dialog.js';
 import { detail } from '../components/detail.js';
+import { taskDock } from '../components/task-dock.js';
 import { createZip } from './zip.js';
 
 // ---------- 批量文案 ----------
@@ -23,8 +24,6 @@ function unitName({ labelForWork = false } = {}) {
 class Batch {
   // Shift 范围选择的锚点：上一次（非 Shift）点击的 id
   #lastSelectedId = null;
-  // 批量下载任务令牌：本地长任务取消（X/Esc → #cancelDownload）共用
-  #downloadTask = null;
 
   toggleSelect(id) {
     if (state.selectedIds.has(id)) {
@@ -72,6 +71,8 @@ class Batch {
     if (dom.batchTotal) dom.batchTotal.textContent = String(view.length);
     dom.batchCount.closest(".batch-bar-count")?.setAttribute("aria-label", `已选 ${count} / ${view.length} 项`);
     const noneSelected = count === 0;
+    // 回顾域禁用分组：批量「移动」入口整体隐藏（M 快捷键在 handleBatchMove 内再守卫）
+    dom.batchMove.classList.toggle("hidden", state.domain === config.REVIEW_DOMAIN);
     dom.batchMove.disabled = noneSelected;
     dom.batchDelete.disabled = noneSelected;
     this.syncSaveToWorksBtn();
@@ -326,24 +327,14 @@ class Batch {
     // 回顾域：只从回顾批次移除引用，来源域数据保留
     if (state.domain === config.REVIEW_DOMAIN) {
       const name = unitName();
-      const delBody = document.createElement("p");
-      delBody.className = "confirm-delete-msg";
-      delBody.textContent = `确定从回顾批次移除选中的 ${count} 个${name}？来源域数据不会被删除。`;
-      dialog.showDialog("确认移除", delBody, [
-        {
-          text: "移除",
-          danger: true,
-          callback: async () => {
-            await dialog.runTask({
-              progressTitle: "正在移除…",
-              progressHtml: `<p>正在移除 ${count} 个${name}…</p>`,
-              task: () => this.deleteSelected(),
-              successText: `已移除 ${count} 个${name}`,
-              failPrefix: "移除失败: ",
-            });
-          },
-        },
-      ]);
+      dialog.confirmTask({
+        title: "确认移除",
+        message: `确定从回顾批次移除选中的 ${count} 个${name}？来源域数据不会被删除。`,
+        progressTitle: "正在移除…",
+        progressHtml: `<p>正在移除 ${count} 个${name}…</p>`,
+        task: () => this.deleteSelected(),
+        successText: `已移除 ${count} 个${name}`,
+      });
       return;
     }
     // 点赞/收藏域：移除 = 取消远端点赞/收藏 + 删本地（长任务链路）
@@ -352,40 +343,33 @@ class Batch {
       return;
     }
     const name = unitName();
-    const delBody = document.createElement("p");
-    delBody.className = "confirm-delete-msg";
-    delBody.textContent = `确定移除选中的 ${count} 个${name}？此操作不可撤销。`;
-    dialog.showDialog("确认移除", delBody, [
-      {
-        text: "移除",
-        danger: true,
-        callback: async () => {
-          await dialog.runTask({
-            progressTitle: "正在移除…",
-            progressHtml: `<p>正在移除 ${count} 个${name}…</p>`,
-            task: () => this.deleteSelected(),
-            successText: `已移除 ${count} 个${name}`,
-            failPrefix: "移除失败: ",
-          });
-        },
-      },
-    ]);
+    dialog.confirmTask({
+      title: "确认移除",
+      message: `确定移除选中的 ${count} 个${name}？此操作不可撤销。`,
+      progressTitle: "正在移除…",
+      progressHtml: `<p>正在移除 ${count} 个${name}…</p>`,
+      task: () => this.deleteSelected(),
+      successText: `已移除 ${count} 个${name}`,
+    });
   }
 
-  // 点赞/收藏域批量「取消并移除」：CANCEL_FAVORITES/CANCEL_COLLECTION { awemeIds, domain }
-  // → background 逐条取消远端并对成功条目删本地 → CANCEL_DONE { deletedIds } 驱动 UI 刷新
+  // 点赞/收藏域批量「取消并移除」：CANCEL_FAVORITES/CANCEL_COLLECTION { awemeIds, domain, taskId }
+  // → 任务坞统一进度/终态 → TASK_DONE 的 onDone 做本地摘卡与结果 toast
   async cancelAndRemoveSelected() {
     const domain = state.domain;
     const isFavorites = domain === "favorites";
     const count = this.selectedCount();
     const ids = Array.from(state.selectedIds);
     const cancelType = isFavorites ? "CANCEL_FAVORITES" : "CANCEL_COLLECTION";
+    const kind = isFavorites ? "cancelFavorites" : "cancelCollections";
     const actionLabel = isFavorites ? "取消点赞" : "取消收藏";
 
     if (isFavorites && (await services.isIndependentMode())) {
       dialog.showToast("独立模式不支持点赞操作，请在设置中切换 Tab 模式", "error");
       return;
     }
+    // 不做任务坞闸：直接移除是纯本地 DELETE_* 写入，与任务队列无关；取消点赞/收藏
+    // 经 TaskRegistry FIFO 排队（队满 8 由 start 返回 null → QUEUE_FULL，在坞行 fail 收口）
 
     const confirmBody = document.createElement("p");
     confirmBody.className = "confirm-delete-msg";
@@ -411,87 +395,77 @@ class Batch {
         text: actionLabel,
         danger: true,
         callback: async () => {
-          dialog.updateDialog(`正在${actionLabel}…`, `<p>正在${actionLabel} 0 / ${count}…</p>`);
-          state.preventDialogClose = true;
-          try {
-            const res = await services.bgMsg({ type: cancelType, awemeIds: ids, domain });
-            if (!res || res.ok !== true) {
-              dialog.closeDialog();
-              dialog.showToast(`${actionLabel}失败: ${res?.error || "未知错误"}`, "error");
-              return;
-            }
-            const done = await new Promise((resolve) => {
-              const handler = (msg) => {
-                if (msg.requestId !== res.requestId) return;
-                if (msg.type === "CANCEL_PROGRESS") {
-                  // background 逐条回报，index 为 0-based，展示成 K / N
-                  dialog.updateDialog(
-                    `正在${actionLabel}…`,
-                    `<p>正在${actionLabel} ${msg.index + 1} / ${msg.total}…</p>`,
-                  );
-                } else if (msg.type === "CANCEL_DONE") {
-                  chrome.runtime.onMessage.removeListener(handler);
-                  resolve(msg);
-                }
-              };
-              chrome.runtime.onMessage.addListener(handler);
-              setTimeout(() => {
-                chrome.runtime.onMessage.removeListener(handler);
-                resolve(null);
-              }, Math.max(30000, ids.length * 3000));
-            });
-            const deletedIds = new Set(done?.deletedIds || []);
-            if (search.isAuthorOrderActive()) {
-              // authorCount：完整视图下本地摘卡并递减作者计数，不再整域重载；
-              // 视图不完整/加载中才回退重载兜底
-              // 超时未收到 CANCEL_DONE（done=null）无法得知实际删除集，必须重载校准
-              const patchable = Boolean(done) && search.isAuthorViewPatchable();
-              state.selectedIds.clear();
-              this.#clearAllCheckboxes();
-              this.#setSelectAllBtn(false);
-              if (patchable) {
-                store.removeWorkRecordSilent(domain, deletedIds, { preserveAuthorOrder: true });
-                search.activeWorkRecordGrid().removeItems(deletedIds);
-                search.syncCount();
-              }
-              store.refreshGroups();
-              this.syncSelectionUI();
-              dialog.closeDialog();
-              if (!patchable) search.reloadForPageOrder();
-              this.#showCancelResult(actionLabel, deletedIds, done, count);
-              return;
-            }
-            state.selectedIds.clear();
-            store.removeWorkRecordSilent(domain, deletedIds);
-            search.activeWorkRecordGrid().removeItems(deletedIds);
-            store.refreshGroups();
-            search.syncCount();
-            dialog.closeDialog();
-            this.#showCancelResult(actionLabel, deletedIds, done, count);
-          } catch (err) {
-            dialog.closeDialog();
-            dialog.showToast(`${actionLabel}失败: ` + (err.message || String(err)), "error");
-          } finally {
-            state.preventDialogClose = false;
-          }
+          // closeFirst：绑定端口后先关确认弹窗再发送（取消入口的时序约定）
+          await taskDock.launchRemote({
+            begin: {
+              kind, domain, total: ids.length,
+              hint: `已选 ${ids.length} 个作品`,
+              onDone: (msg) => this.#onCancelDone(domain, actionLabel, msg),
+            },
+            closeFirst: true,
+            payload: { type: cancelType, awemeIds: ids, domain },
+          });
         },
       },
     ]);
   }
 
-  // 取消并移除的终态 toast：done=null（超时未收到 CANCEL_DONE）时按差额估算失败数
-  #showCancelResult(actionLabel, deletedIds, done, count) {
-    const failedCount = done ? done.failed : count - deletedIds.size;
+  // 终态：按 deletedIds（实删数）本地摘卡（authorCount 视图走 preserveAuthorOrder），刷新计数并 toast
+  #onCancelDone(domain, actionLabel, msg) {
+    const deletedIds = new Set(msg.deletedIds || []);
+    if (search.isAuthorOrderActive()) {
+      const patchable = search.isAuthorViewPatchable();
+      state.selectedIds.clear();
+      this.#clearAllCheckboxes();
+      this.#setSelectAllBtn(false);
+      if (patchable) {
+        store.removeWorkRecordSilent(domain, deletedIds, { preserveAuthorOrder: true });
+        search.activeWorkRecordGrid().removeItems(deletedIds);
+        search.syncCount();
+      }
+      store.refreshGroups();
+      this.syncSelectionUI();
+      if (!patchable) search.reloadForPageOrder();
+      this.#showCancelResult(actionLabel, deletedIds, msg);
+      return;
+    }
+    state.selectedIds.clear();
+    store.removeWorkRecordSilent(domain, deletedIds);
+    search.activeWorkRecordGrid().removeItems(deletedIds);
+    store.refreshGroups();
+    search.syncCount();
+    this.#showCancelResult(actionLabel, deletedIds, msg);
+  }
+
+  // 结果 toast 三分支：cancelled=尾部未处理保留（processed<total 属正常，不计失败）；
+  // failed=中断（已删部分已按 deletedIds 摘卡，其余保留）；正常=失败条目「失败保留」
+  #showCancelResult(actionLabel, deletedIds, msg) {
+    if (msg.cancelled) {
+      dialog.showToast(`已${actionLabel}并移除 ${deletedIds.size} 个，其余未处理保留`, "info");
+      return;
+    }
+    if (msg.ok === false) {
+      dialog.showToast(
+        `已${actionLabel}并移除 ${deletedIds.size} 个，其余保留（${msg.error || "未知错误"}）`,
+        "error",
+      );
+      return;
+    }
+    const failed = msg.failed || 0;
     dialog.showToast(
-      failedCount > 0
-        ? `已${actionLabel} ${deletedIds.size} 个，${failedCount} 个失败保留`
+      failed > 0
+        ? `已${actionLabel} ${deletedIds.size} 个，${failed} 个失败保留`
         : `已${actionLabel}并移除 ${deletedIds.size} 个作品`,
-      failedCount > 0 ? "error" : "success",
+      failed > 0 ? "error" : "success",
     );
   }
 
   async handleBatchMove() {
     if (this.selectedCount() === 0) return;
+    if (state.domain === config.REVIEW_DOMAIN) {
+      dialog.showToast("回顾域不支持分组", "info");
+      return;
+    }
     const count = this.selectedCount();
     const name = unitName({ labelForWork: true });
     dialog.showGroupSelectDialog(`移动到分组...`, await services.loadGroups(), async (groupId) => {
@@ -579,7 +553,7 @@ class Batch {
     if (show) dom.batchSaveToCandidates.disabled = state.selectedIds.size === 0;
   }
 
-  // 「批量下载」按钮显隐与可用态：仅作品型三域（作品/点赞/收藏）且批量模式下显示，关注域无媒体可下
+  // 「批量下载」按钮显隐与可用态：作品记录域（作品/点赞/收藏，含回顾域作品批次）批量模式下显示
   syncDownloadBtn() {
     const show = utils.isWorkRecordDomain() && state.batchMode;
     dom.batchDownload.classList.toggle("hidden", !show);
@@ -588,12 +562,11 @@ class Batch {
 
   // 批量下载：作品/点赞/收藏域勾选条目取流后整体打包为单个 zip（复用 detail 取流+重试，失败/跳过聚合汇报）。
   // 无可用视频/图片链接的条目跳过不计入失败，仅在确认文案与结果 toast 中说明。
-  // 长任务不走 preventDialogClose（短操作锁会把关闭入口整体短路）：进度层登记 onClose=取消，
-  // X/Esc 经 requestDialogClose 调用 #cancelDownload，abort 在途 fetch 与 zip worker
+  // 进度走任务坞（本地任务不经 background 队列，不占 API 请求车道）：行按钮经
+  // onPause/onResume/onCancel 回调驱动循环；onProgress/onDone 复用坞行统一管线
   async handleBatchDownload() {
     if (this.selectedCount() === 0) return;
     if (!utils.isWorkRecordDomain()) return;
-    const count = this.selectedCount();
     const label = unitName({ labelForWork: true });
     const all = state[state.domain].filter((w) => state.selectedIds.has(w.awemeId));
     const targets = all.filter(
@@ -617,103 +590,127 @@ class Batch {
       {
         text: "下载",
         primary: true,
-        callback: async () => {
-          // 整个回调体纳入 try：async 点击回调一旦 reject 会以 Uncaught (in promise) 进扩展错误面板
-          const task = { cancelled: false, controller: new AbortController() };
-          this.#downloadTask = task;
-          const entries = [];
-          try {
-            // 进度层重挂基层并登记 onClose：X/Esc 经 requestDialogClose 触发取消（onClose 自行关层）
-            dialog.showDialog("正在下载…", `<p>正在下载 0 / ${targets.length}…</p>`, [], () =>
-              this.#cancelDownload(),
-            );
-            let ok = 0;
-            const failures = [];
-            const unavailable = [];
-            for (const [i, work] of targets.entries()) {
-              if (task.cancelled) return;
-              dialog.updateDialog("正在下载…", `<p>正在下载 ${i + 1} / ${targets.length}…</p>`);
-              try {
-                entries.push(...(await detail.fetchWorkMedia(work, task.controller.signal)));
-                ok++;
-              } catch (err) {
-                // 取消触发的 AbortError 与在途错误一律静默（#cancelDownload 已提示并关层）
-                if (task.cancelled) return;
-                // 诊断增强：日志带上作品身份与取流 URL，便于定位是哪条、哪个链接失败
-                const url = work.type === "video" ? utils.getVideoUrl(work) : (work.images?.[0] || "");
-                const message = err?.message || String(err);
-                // 404/410 = 作品已删除/私密/审核中/仅好友可见：用户已知，跳过且不计入失败。
-                // 日志用 info/debug：console.warn/error 会被 chrome://extensions 错误面板收录
-                if (err?.code === "MEDIA_UNAVAILABLE") {
-                  unavailable.push({ awemeId: work.awemeId, nickname: work.nickname || "", type: work.type, url });
-                  console.debug("[DY] media unavailable, skipped:", work.awemeId, url);
-                  continue;
-                }
-                failures.push({ awemeId: work.awemeId, nickname: work.nickname || "", type: work.type, url, error: message });
-                console.info("[DY] batch download work failed:", work.awemeId, message, url, err);
-              }
-            }
-            if (failures.length) console.info("[DY] batch download failures:", failures);
-            if (task.cancelled) return;
-            if (ok === 0) {
-              dialog.closeDialog();
-              if (failures.length) {
-                const failParts = ["下载失败", this.#failureIds(failures)];
-                if (unavailable.length) failParts.push(`${unavailable.length} 个不可用跳过`);
-                if (skipped > 0) failParts.push(`${skipped} 个无链接跳过`);
-                dialog.showToast(failParts.join("，"), "error");
-              } else {
-                const skipParts = ["所选作品均不可访问，已跳过"];
-                if (skipped > 0) skipParts.push(`${skipped} 个无链接跳过`);
-                dialog.showToast(skipParts.join("，"), "info");
-              }
-              return;
-            }
-            dialog.updateDialog("正在打包…", `<p>正在打包 0 / ${ok} 条…</p>`);
-            const zip = await createZip(
-              entries,
-              (done, total) => dialog.updateDialog("正在打包…", `<p>正在打包 ${done} / ${total} 条…</p>`),
-              task.controller.signal,
-            );
-            if (task.cancelled) return;
-            detail.triggerDownload(zip, `${label}批量下载_${this.#today()}.zip`);
-            dialog.closeDialog();
-            const failed = failures.length;
-            const parts = [`已下载 ${ok} 个${label}`];
-            if (failed > 0) parts.push(`${failed} 个失败：${this.#failureIds(failures)}`);
-            if (unavailable.length > 0) parts.push(`${unavailable.length} 个不可用跳过`);
-            if (skipped > 0) parts.push(`${skipped} 个无链接跳过`);
-            dialog.showToast(parts.join("，"), failed > 0 ? "error" : "success");
-          } catch (err) {
-            if (task.cancelled) return;
-            console.error("[DY] batch download failed:", err);
-            dialog.closeDialog();
-            dialog.showToast("批量下载失败: " + (err.message || String(err)), "error");
-          } finally {
-            // 取消后立即丢弃已下载条目引用（Blob 交给 GC），避免残留内存
-            if (task.cancelled) entries.length = 0;
-            if (this.#downloadTask === task) this.#downloadTask = null;
-          }
-        },
+        callback: () => this.#runDownloadTask(targets, skipped, label),
       },
     ]);
   }
 
-  // 取消批量下载（X/Esc 经 requestDialogClose → 顶层 onClose）：置令牌 + abort 在途
-  // fetch / zip worker，并自行关层（requestDialogClose 检测到 depth 变化后不再二次关闭）
-  #cancelDownload() {
-    const task = this.#downloadTask;
-    if (!task || task.cancelled) return;
-    task.cancelled = true;
-    task.controller.abort();
+  // 下载主循环（任务坞行）。暂停=条目边界协作让出：在途条目取流完成后计入 processed
+  // 再挂起（现场保留在 entries），继续后从下一条续跑；取消=abort 在途 fetch / zip worker，
+  // 已取条目丢弃（Blob 交给 GC）。zip 打包不可分片中止，暂停在打包完成后、保存前生效
+  #runDownloadTask(targets, skipped, label) {
+    const taskId = crypto.randomUUID();
+    const task = { cancelled: false, paused: false, controller: new AbortController(), wake: null };
+    const entries = [];
+    const failures = [];
+    const unavailable = [];
+    let ok = 0;
+    // 条目边界挂起点：已请求暂停则翻行走状态，等待继续/取消唤醒
+    const hold = async () => {
+      if (!task.paused || task.cancelled) return;
+      taskDock.setLocalStatus(taskId, "paused");
+      await new Promise((resolve) => { task.wake = resolve; });
+      task.wake = null;
+    };
+    const wake = () => {
+      const w = task.wake;
+      task.wake = null;
+      w?.();
+    };
+    const finish = (msg) => {
+      if (task.cancelled) entries.length = 0;
+      taskDock.onDone({
+        taskId,
+        total: targets.length,
+        processed: ok,
+        failed: failures.length,
+        unavailable: unavailable.length,
+        skipped,
+        ...msg,
+      });
+    };
+    taskDock.begin({
+      taskId,
+      kind: "batchDownload",
+      domain: state.domain,
+      total: targets.length,
+      hint: `已选 ${targets.length} 个${label}${skipped > 0 ? ` · ${skipped} 个无链接跳过` : ""}`,
+      onPause: () => { task.paused = true; },
+      onResume: () => { task.paused = false; wake(); },
+      onCancel: () => {
+        if (task.cancelled) return;
+        task.cancelled = true;
+        task.controller.abort();
+        wake();
+      },
+    });
     dialog.closeDialog();
-    dialog.showToast("已取消下载", "info");
+    (async () => {
+      try {
+        for (const work of targets) {
+          await hold();
+          if (task.cancelled) break;
+          try {
+            entries.push(...(await detail.fetchWorkMedia(work, task.controller.signal)));
+            ok++;
+          } catch (err) {
+            if (task.cancelled) break;
+            // 取消触发的 AbortError 已走取消收尾；诊断增强：日志带作品身份与取流 URL
+            const url = work.type === "video" ? utils.getVideoUrl(work) : (work.images?.[0] || "");
+            const message = err?.message || String(err);
+            // 404/410 = 作品已删除/私密/审核中/仅好友可见：用户已知，跳过且不计入失败。
+            // 日志用 info/debug：console.warn/error 会被 chrome://extensions 错误面板收录
+            if (err?.code === "MEDIA_UNAVAILABLE") {
+              unavailable.push(work.awemeId);
+              console.debug("[DY] media unavailable, skipped:", work.awemeId, url);
+            } else {
+              failures.push(work.awemeId);
+              console.info("[DY] batch download work failed:", work.awemeId, message, url, err);
+            }
+          }
+          taskDock.onProgress({ taskId, processed: ok, total: targets.length, phase: "fetch" });
+        }
+        await hold();
+        if (task.cancelled) {
+          finish({ ok: true, cancelled: true });
+          return;
+        }
+        if (ok === 0) {
+          finish({
+            ok: false,
+            error: failures.length ? `全部失败：${this.#failureIds(failures)}` : "所选作品均不可访问，已跳过",
+          });
+          return;
+        }
+        taskDock.onProgress({ taskId, processed: ok, total: targets.length, phase: "zip", zipDone: 0, zipTotal: ok });
+        const zip = await createZip(
+          entries,
+          (done, total) => taskDock.onProgress({ taskId, processed: ok, phase: "zip", zipDone: done, zipTotal: total }),
+          task.controller.signal,
+        );
+        await hold();
+        if (task.cancelled) {
+          finish({ ok: true, cancelled: true });
+          return;
+        }
+        detail.triggerDownload(zip, `${label}批量下载_${this.#today()}.zip`);
+        finish({ ok: true, failedIds: failures.length ? this.#failureIds(failures) : "" });
+      } catch (err) {
+        if (task.cancelled) {
+          finish({ ok: true, cancelled: true });
+          return;
+        }
+        console.error("[DY] batch download failed:", err);
+        finish({ ok: false, error: err?.message || String(err) });
+      }
+    })();
   }
 
-  // 批量下载失败条目标识串：最多列前 3 个 awemeId，超出以「等 N 个」收尾，避免 toast 过长
+  // 批量下载失败条目标识串（awemeId 数组）：最多列前 3 个，超出以「等 N 个」收尾，避免 toast 过长
   #failureIds(failures) {
-    const ids = failures.map((f) => f.awemeId);
-    return ids.length > 3 ? `${ids.slice(0, 3).join("、")} 等 ${ids.length} 个` : ids.join("、");
+    return failures.length > 3
+      ? `${failures.slice(0, 3).join("、")} 等 ${failures.length} 个`
+      : failures.join("、");
   }
 
   // 打包文件名日期后缀：yyyy-MM-dd

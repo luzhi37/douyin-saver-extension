@@ -58,6 +58,30 @@ class Dialog {
     }
   }
 
+  // 确认弹窗 + runTask 一体式：单 danger 主动作直接走 runTask（进度/收口/失败 toast 全托管）。
+  // message 为 string 时包 `.confirm-delete-msg` 段落，为 Node 时直接作 body（分组管理的
+  // 模板 fragment）；push=true 叠层打开（分组管理/维护弹窗之上的确认层）
+  confirmTask({ title, message, actionText = "移除", progressTitle, progressHtml, task, successText, failPrefix = "移除失败: ", push = false }) {
+    let body;
+    if (typeof message === "string") {
+      body = document.createElement("p");
+      body.className = "confirm-delete-msg";
+      body.textContent = message;
+    } else {
+      body = message;
+    }
+    const mount = push ? this.pushDialog.bind(this) : this.showDialog.bind(this);
+    mount(title, body, [
+      {
+        text: actionText,
+        danger: true,
+        callback: async () => {
+          await this.runTask({ progressTitle, progressHtml, task, successText, failPrefix });
+        },
+      },
+    ]);
+  }
+
   // 基层帧：容器即静态 #dialogOverlay，元素节点稳定（showDialog 只清空 body/footer 内部，不换节点）
   #baseLayer() {
     return this.#makeLayerState(
@@ -115,7 +139,8 @@ class Dialog {
     layer.onClose = onClose || null;
     layer.autoFocus = autoFocus;
     this.#syncTopDom();
-    // 顶层 onClose 登记给 requestDialogClose：X/Esc 关闭时调用并联动 CANCEL_ACTIVE_TASK
+    // 顶层 onClose 登记给 requestDialogClose：X/Esc 关闭时调用（短操作回调）。
+    // 长任务进度已迁到非模态任务坞，关闭弹窗不再联动取消信号
     state.activeDialog = layer.onClose;
 
     if (typeof body === "string") {
@@ -249,18 +274,6 @@ class Dialog {
     }
   }
 
-  addTrashButton(onClick, onClose) {
-    const btn = document.createElement("button");
-    btn.className = "dy-btn flex-inline-center dy-btn-ghost";
-    btn.textContent = "稍后删除";
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      await onClick();
-      onClose();
-    });
-    dom.dialogFooter.appendChild(btn);
-  }
-
   focusFirstControl() {
     const focusable = dom.dialogBody.querySelector(
       "button, input:not([type='hidden']), select, textarea, [tabindex]:not([tabindex='-1'])",
@@ -274,24 +287,6 @@ class Dialog {
     dom.dialogFooter.innerHTML = "";
     const top = this.#layers[this.#layers.length - 1];
     if (top) this.#resetFooterHotkeys(top);
-  }
-
-  addDialogBtn(text, type, cb) {
-    const btn = document.createElement("button");
-    btn.className = `dy-btn flex-inline-center dy-btn-${type}`;
-    btn.textContent = text;
-    btn.addEventListener("click", cb);
-    dom.dialogFooter.appendChild(btn);
-    const top = this.#layers[this.#layers.length - 1];
-    if (top) {
-      this.#applyBtnHotkey(top, { danger: type === "danger", primary: type === "primary" }, cb);
-      const resolved = top.enterExplicit || top.dangerAction || top.primaryAction;
-      if (cb === resolved) this.#applyHotkeyBadge(btn, "Enter");
-    }
-  }
-
-  showOkDialog() {
-    this.addDialogBtn("好的", "primary", () => this.closeDialog());
   }
 
   // 分型 toast：顶部居中堆叠（最多 3 条），info/success 短驻留、error 长驻留；

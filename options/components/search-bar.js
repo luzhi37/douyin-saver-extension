@@ -41,7 +41,7 @@ class SearchBar {
     sort: "saved", // saved 保存时间 | authorCount 作者作品数（仅作品型三域）
     followingsSort: "works", // works 作品数 | update 最近更新（仅关注域）
     workType: "all", // 作品类型（仅作品型三域）：all 全部 | video 视频 | note 图集
-    reverse: false, // 方向标志（false=(降) / true=(升)）：点激活排序键翻转、切键回默认。
+    reverse: false, // 方向标志（false=(降) / true=(升)）：随排序下拉 token（key-desc/key-asc）一次性设定。
     // 保存时间等键由 view 段整体翻转；authorCount 的方向改在 sorted 段比较器内生效（见 getWorksView）
   };
 
@@ -110,11 +110,6 @@ class SearchBar {
 
   syncPagingState() {
     state.pagingMode = this.fetchPagingMode();
-  }
-
-  // 取数方向：升序「保存时间(升)」需从最旧一端分页（loadDomainData 的方向参数）
-  fetchAscending() {
-    return this.fetchPagingMode().ascending;
   }
 
   // 页序是否与当前视图序单调一致（可逐页按视图下标续填，无需完成态整渲）：
@@ -365,11 +360,6 @@ class SearchBar {
     this.syncCount();
   }
 
-  // store.on("domain") 的搜索栏联动入口：搜索框常驻，域切换后必须同步域差异
-  onDomainChanged() {
-    this.syncForDomain();
-  }
-
   // 筛选变化后的统一入口：重渲当前域网格 + 刷新结果数。
   // 视图全程只计算一次，同一结果贯穿渲染与计数（历史实现经 renderCards/syncCount 各算
   // 一遍，大库下重复付出整段过滤+排序成本）；结果数组与上次实际渲染恒等时跳过重渲
@@ -432,7 +422,8 @@ class SearchBar {
   }
 
   syncFilterUI() {
-    // 下拉（类型/作品排序/作者域排序同构）：值文案随激活项，菜单项白字 + 红色 ✓
+    // 下拉（类型/作品排序/作者域排序同构）：值文案随激活项，激活项白字 600 字重，
+    // 选中语义由 aria-selected 承担（不显示 ✓，红字对比度不达 AA，2026-11-09 定案）
     this.#selects.type.sync(this.#searchState.workType, "全部");
     // 排序下拉：排序键与方向合并为单值（key-desc / key-asc），两域各自一套 token
     const dir = this.#searchState.reverse ? "asc" : "desc";

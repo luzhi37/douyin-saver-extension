@@ -1,5 +1,7 @@
 # 03 · 独立模式（逆向）— 同步关注
 
+> **任务坞迁移（2026-11-11）**：本册下述「进度消息 `FOLLOWING_PROGRESS`、终态 `sendResponse` 返回 followings 数组、options 自行发 `SAVE_FOLLOWINGS`、`withCancelGuard` 监听 `CANCEL_ACTIVE_TASK`」均为旧机制，现已改为：`FETCH_FOLLOWING { secUid, taskId }` 登记 TaskRegistry（`exclusive`）→ 立即 ack → `TASK_PROGRESS` → 收尾由 **background 直接** `mergeAndSaveAuthors` 落库 + STORE_CHANGED → `TASK_DONE`（含 `added/updated/changed/lost/lostUids`）；取消走 `CANCEL_TASK {taskId}` + 控制端口。取消时跳过整段落库（零落库）。端点/分页/签名/延迟机制不变。
+> B6（2026-11-11）补充：本任务已接入任务队列——循环以 `waitForTurn`/`checkpoint` 两点挂起，支持「暂停（现场保留）/ 续跑（从检查点继续）」，详见 [plans/task-queue-pause-resume-2026-11-11.md](../plans/task-queue-pause-resume-2026-11-11.md)。
 > 职责边界：`FETCH_FOLLOWING` 在**独立模式**下的完整链路——background 直接翻页拉取目标用户的关注列表。**同步与校准已彻底分离**：收集完成后不再自动校准，校准入口见 [04](./04-independent-calibrate-followings.md)；落库与丢失检测见 [10](./10-storage-write-and-import.md)。
 
 ## 概述
@@ -208,9 +210,9 @@ Tab 模式对照：inject `fetchFollowingPage` 只填 DEVICE_PARAMS + 业务键�
 | sec_uid 无法解析（self 且无存储值、im/user/info 失败） | `{ ok:false, error:"NO_SEC_UID" }` | options 弹窗引导打开抖音用户页面或填写独立模式 secUid |
 | 目标账号关注列表不可见（抖音 `status_code:2096`「由于该用户隐私设置，列表不可见」） | 独立模式 `IndependentClient.request` 抛 `API_ERROR` 并带 `statusCode:2096`，`independentTasks.fetchFollowing` 捕获后返回 `{ ok:false, error:"FOLLOWING_LIST_PRIVATE" }` | options 状态栏提示「关注列表不可见（账号隐私设置）」；最常见诱因是 self 解析落到他人 sec_uid（如独立模式仍打开了某 `/user/*` 标签页）——`vmSyncFollowings` 两模式统一先经 `services.findSecUid()` 解析完整本人 sec_uid（不再用 `"self"` 哨兵），已大幅收窄触发面 |
 | `savedCookie` 缺失 | 首次请求抛 `NO_COOKIE` | 设置面板刷新 Cookie |
-| 服务端返回非 0 status_code / HTTP 错误 | 抛 `API_ERROR` / `HTTP_*` | 外层 catch → `{ ok:false, error }`（此时 all 为空，无部分成功语义） |
-| 首页即失败但已收集部分数据 | Tab 模式分支特有 `lastError` 判定：`all.length===0 && lastError` 才报错，否则按部分结果返回 | 独立模式请求异常直接整体失败 |
-| 用户取消 | `CANCEL_ACTIVE_TASK` → cancelled | 已收集部分照常返回（`ok:true`） |
+| 服务端返回非 0 status_code / HTTP 错误 | 抛 `API_ERROR` / `HTTP_*` | 外层 catch → 冲刷余块（已抓部分保留）后 `TASK_DONE { ok:false, error }`，**不带 `lostUids`**（部分拉取不产生丢失结论） |
+| 中途页失败（已收集部分数据） | 双模同口径：`lastError` 记错误并以 `failed` 收尾 | 已写块保留（分块确认写），**不出丢失结论**；修复旧实现「部分数据误算 lostUids → 假判丢失移入回收站」的 bug |
+| 用户取消 | `CANCEL_TASK` → cancelled | 终态冲刷余块：已抓部分全部保留；`TASK_DONE` 不带 `lostUids`，回收站纹丝不动 |
 | 服务端重复推送同一页 | newItems 为空 | break 终止，防止死循环 |
 
 ## 配置项说明

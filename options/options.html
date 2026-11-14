@@ -15,8 +15,35 @@
 
 <body>
   <!-- ====== 固定顶栏（单行工具区：分组按钮组 → 搜索控件组 → 域特定控件组 → 批量；
-       宽度不足时按序折行；批量操作在内容区底部工具条） ====== -->
+       回顾域不显示分组按钮组；宽度不足时按序折行；批量操作在内容区底部工具条） ====== -->
   <header id="topBar" class="flex-row">
+    <!-- 回顾域专用：来源 + 本轮抽取数量（变更即持久化），占据分组按钮组隐藏后腾出的左侧位置 -->
+    <div id="sbReviewFilters" class="sb-domain-filters flex-row">
+      <div class="review-config-item">
+        <span class="bf-label">回顾来源</span>
+        <!-- aria 全套属性由 SelectMenu #initA11y 载入即重设（触发器 aria-label 只读不回写，必须保留） -->
+        <div id="sbReviewSource" class="sb-scope" aria-label="回顾数据来源">
+          <span class="sb-scope-value">作品</span>
+          <span class="sb-scope-arrow" aria-hidden="true">▾</span>
+          <div id="sbReviewSourceMenu" class="sb-scope-menu hidden">
+            <button class="sb-scope-option active" data-source="works">作品</button>
+            <button class="sb-scope-option" data-source="favorites">点赞</button>
+            <button class="sb-scope-option" data-source="collections">收藏</button>
+            <button class="sb-scope-option" data-source="followings">关注</button>
+            <button class="sb-scope-option" data-source="candidates">候选</button>
+          </div>
+        </div>
+      </div>
+      <div class="review-config-item">
+        <label class="bf-label" for="sbReviewCount">抽取数量</label>
+        <input class="bf-input review-count-field" id="sbReviewCount" type="number" inputmode="numeric" min="1" max="500"
+          step="1" aria-label="回顾抽取数量" />
+      </div>
+      <button id="btnReviewRandom" class="dy-btn flex-inline-center review-random-btn" type="button"
+        title="随机抽取一批回顾数据">
+        <span>随机</span>
+      </button>
+    </div>
     <div class="group-selector">
       <div class="group-tabs" id="groupTabs"></div>
     </div>
@@ -34,41 +61,42 @@
       <!-- 右侧尾部簇：域特定控件 + 批量作为一个整体，避免「批量」单独换行的孤立行 -->
       <div class="topbar-tail flex-row">
         <span id="sbWorkFilters" class="sb-domain-filters flex-row">
-          <div id="sbType" class="sb-scope" role="combobox" tabindex="0" aria-label="作品类型"
-            aria-haspopup="listbox" aria-expanded="false" aria-controls="sbTypeMenu">
+          <div id="sbType" class="sb-scope" aria-label="作品类型">
             <span class="sb-scope-value">全部</span>
             <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-            <div id="sbTypeMenu" class="sb-scope-menu hidden" role="listbox" aria-label="作品类型选项">
-              <button class="sb-scope-option active" role="option" data-type="all" aria-selected="true">全部</button>
-              <button class="sb-scope-option" role="option" data-type="video" aria-selected="false">视频</button>
-              <button class="sb-scope-option" role="option" data-type="note" aria-selected="false">图集</button>
+            <div id="sbTypeMenu" class="sb-scope-menu hidden">
+              <button class="sb-scope-option active" data-type="all">全部</button>
+              <button class="sb-scope-option" data-type="video">视频</button>
+              <button class="sb-scope-option" data-type="note">图集</button>
             </div>
           </div>
-          <div id="sbSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
-            aria-haspopup="listbox" aria-expanded="false" aria-controls="sbSortMenu">
+          <div id="sbSort" class="sb-scope" aria-label="排序方式">
             <span class="sb-scope-value">保存时间(降)</span>
             <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-            <div id="sbSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
-              <button class="sb-scope-option active" role="option" data-sort="saved-desc" aria-selected="true">保存时间(降)</button>
-              <button class="sb-scope-option" role="option" data-sort="saved-asc" aria-selected="false">保存时间(升)</button>
-              <button class="sb-scope-option" role="option" data-sort="authorCount-desc" aria-selected="false">作品数(降)</button>
-              <button class="sb-scope-option" role="option" data-sort="authorCount-asc" aria-selected="false">作品数(升)</button>
+            <div id="sbSortMenu" class="sb-scope-menu hidden">
+              <button class="sb-scope-option active" data-sort="saved-desc">保存时间(降)</button>
+              <button class="sb-scope-option" data-sort="saved-asc">保存时间(升)</button>
+              <button class="sb-scope-option" data-sort="authorCount-desc">作品数(降)</button>
+              <button class="sb-scope-option" data-sort="authorCount-asc">作品数(升)</button>
             </div>
           </div>
         </span>
         <span id="sbFollowFilters" class="sb-domain-filters flex-row hidden">
-          <div id="sbFollowSort" class="sb-scope" role="combobox" tabindex="0" aria-label="排序方式"
-            aria-haspopup="listbox" aria-expanded="false" aria-controls="sbFollowSortMenu">
+          <div id="sbFollowSort" class="sb-scope" aria-label="排序方式">
             <span class="sb-scope-value">作品数(降)</span>
             <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-            <div id="sbFollowSortMenu" class="sb-scope-menu hidden" role="listbox" aria-label="排序方式选项">
-              <button class="sb-scope-option active" role="option" data-fsort="works-desc" aria-selected="true">作品数(降)</button>
-              <button class="sb-scope-option" role="option" data-fsort="works-asc" aria-selected="false">作品数(升)</button>
-              <button class="sb-scope-option" role="option" data-fsort="update-desc" aria-selected="false">最近更新(降)</button>
-              <button class="sb-scope-option" role="option" data-fsort="update-asc" aria-selected="false">最近更新(升)</button>
+            <div id="sbFollowSortMenu" class="sb-scope-menu hidden">
+              <button class="sb-scope-option active" data-fsort="works-desc">作品数(降)</button>
+              <button class="sb-scope-option" data-fsort="works-asc">作品数(升)</button>
+              <button class="sb-scope-option" data-fsort="update-desc">最近更新(降)</button>
+              <button class="sb-scope-option" data-fsort="update-asc">最近更新(升)</button>
             </div>
           </div>
         </span>
+        <!-- 批量入口：顶栏最右，随尾部控件簇一起折行 -->
+        <button id="btnBatch" class="topbar-batch flex-inline-center" type="button" title="批量模式（B）">
+          <span>批量</span>
+        </button>
       </div>
     </div>
   </header>
@@ -119,13 +147,9 @@
                   title="导入该作者全部作品到作品域" aria-label="导入该作者全部作品到作品域">
                   <svg width="18" height="18"><use href="#icon-bookmark-line" /></svg>
                 </button>
-                <button id="sidebarAuthorAddCandidate" class="sidebar-author-action hidden" type="button"
+                <button id="sidebarAuthorToggleCandidate" class="sidebar-author-action hidden" type="button"
                   title="加入候选域" aria-label="将该作者加入候选域">
                   <svg width="18" height="18"><use href="#icon-user-plus" /></svg>
-                </button>
-                <button id="sidebarAuthorRemoveCandidate" class="sidebar-author-action hidden" type="button"
-                  title="从候选域移除" aria-label="将该作者从候选域移除">
-                  <svg width="18" height="18"><use href="#icon-user-minus" /></svg>
                 </button>
                 <button id="sidebarAuthorRefresh" class="sidebar-author-action" type="button"
                   title="刷新作品栏" aria-label="刷新作品栏">
@@ -152,11 +176,6 @@
   <!-- 域切换 + 功能菜单导航轨：位于最右，贯穿顶栏到页面底部（全高，固定 48px） -->
   <aside id="rightSidebar" class="right-sidebar">
     <div class="right-sidebar-inner">
-      <!-- 批量入口：位于导航轨顶部，与下方域切换以分隔线断开 -->
-      <button class="menu-item" id="btnBatch">
-        <svg class="rail-icon" width="18" height="18"><use href="#icon-select-all" /></svg><span>批量</span>
-      </button>
-      <div class="menu-divider"></div>
       <div class="domain-switch">
         <div class="ds-slider"></div>
         <button class="ds-btn active" data-domain="works">
@@ -256,7 +275,7 @@
         </div>
         <div id="detailImageContainer" class="hidden">
           <div class="detail-image-container flex-center">
-            <div id="detailImage" role="img" style="transition: opacity 0.2s"></div>
+            <div id="detailImage" role="img"></div>
             <audio id="detailAudio" style="display: none"></audio>
           </div>
         </div>
@@ -328,6 +347,28 @@
       </div>
     </div>
   </div>
+
+  <!-- ====== 任务坞：非模态长任务进度（同步任务），不参与 Esc/焦点层级 ====== -->
+  <div id="taskDock" class="task-dock hidden" role="region" aria-label="任务进度">
+    <div class="task-dock-head flex-row">
+      <span class="task-dock-dot"></span>
+      <span class="task-dock-title" id="taskDockTitle">任务</span>
+      <button class="task-dock-toggle icon-btn flex-center" id="taskDockToggle" type="button"
+        aria-label="收起任务面板" aria-expanded="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6" /></svg>
+      </button>
+    </div>
+    <div class="task-dock-body" id="taskDockBody"></div>
+  </div>
+  <template id="taskDockItemTemplate">
+    <div class="task-dock-item">
+      <div class="sync-line task-dock-line">
+        <span class="sync-count"></span>
+        <span class="sync-summary"></span>
+      </div>
+      <div class="task-dock-actions flex-row"><span class="sync-status"></span></div>
+    </div>
+  </template>
 
   <!-- ====== 自定义弹窗容器（抖音风格） ====== -->
   <div id="dialogOverlay" class="dialog-overlay hidden">
@@ -467,15 +508,6 @@
     </div>
   </template>
 
-  <!-- ====== 同步弹窗 body 骨架模板 ====== -->
-  <template id="syncDialogBodyTemplate">
-    <div class="sync-line">
-      <span class="sync-count"></span>
-      <span class="sync-summary"></span>
-      <span class="sync-status"></span>
-    </div>
-  </template>
-
   <!-- ====== 确认删除分组模板 ====== -->
   <template id="confirmDeleteGroupTemplate">
     <p class="confirm-delete-msg">
@@ -514,41 +546,16 @@
   <template id="settingsDialogTemplate">
     <div class="settings-panel">
       <div id="settingsConfigSection">
-        <div class="kv-row review-config-row">
-          <div class="review-config-item">
-            <span class="bf-label">回顾数据来源</span>
-            <div id="settingsReviewSource" class="sb-scope settings-select" role="combobox" tabindex="0"
-              aria-label="回顾数据来源" aria-haspopup="listbox" aria-expanded="false" aria-controls="settingsReviewSourceMenu">
-              <span class="sb-scope-value">作品</span>
-              <span class="sb-scope-arrow" aria-hidden="true">▾</span>
-              <div id="settingsReviewSourceMenu" class="sb-scope-menu hidden" role="listbox" aria-label="回顾数据来源选项">
-                <button class="sb-scope-option active" role="option" data-source="works" aria-selected="true">作品</button>
-                <button class="sb-scope-option" role="option" data-source="favorites" aria-selected="false">点赞</button>
-                <button class="sb-scope-option" role="option" data-source="collections" aria-selected="false">收藏</button>
-                <button class="sb-scope-option" role="option" data-source="followings" aria-selected="false">关注</button>
-                <button class="sb-scope-option" role="option" data-source="candidates" aria-selected="false">候选</button>
-              </div>
-            </div>
-          </div>
-          <div class="review-config-item">
-            <label class="bf-label" for="settingsReviewCount">回顾抽取数量</label>
-            <input class="bf-input review-count-field" id="settingsReviewCount" type="number" inputmode="numeric" min="1" max="500" step="1" aria-label="回顾抽取数量" />
-          </div>
-        </div>
         <div class="kv-row"><label class="bf-label">请求超时 (ms)</label><input class="bf-input config-input" data-key="timeoutRequest" type="number" /></div>
         <div class="kv-row"><label class="bf-label">安全状态超时 (ms)</label><input class="bf-input config-input" data-key="timeoutSecurityStatus" type="number" /></div>
-        <div class="kv-row"><label class="bf-label">同步作品 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncWorksDelayMax" type="number" style="width:80px" /></div>
-        <div class="kv-row"><label class="bf-label">同步关注 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFollowingsDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFollowingsDelayMax" type="number" style="width:80px" /></div>
-        <div class="kv-row"><label class="bf-label">扫描点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncFavoritesDelayMax" type="number" style="width:80px" /></div>
-        <div class="kv-row"><label class="bf-label">扫描收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="syncCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="syncCollectionDelayMax" type="number" style="width:80px" /></div>
-        <div class="kv-row"><label class="bf-label">取消点赞 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelFavoritesDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelFavoritesDelayMax" type="number" style="width:80px" /></div>
-        <div class="kv-row"><label class="bf-label">取消收藏 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="cancelCollectionDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="cancelCollectionDelayMax" type="number" style="width:80px" /></div>
-        <div class="kv-row"><label class="bf-label">作者入库 延迟 min/max (ms)</label><input class="bf-input config-input" data-key="importWorksDelayMin" type="number" style="width:80px" /><span style="margin:0 4px;color:var(--dy-text-muted)">~</span><input class="bf-input config-input" data-key="importWorksDelayMax" type="number" style="width:80px" /></div>
+        <!-- 7 行延迟 min/max 由 settings.js 按表生成（结构同构仅键名/文案差），data-key 命名规则不变 -->
+        <div id="settingsDelayRows"></div>
         <div class="kv-row"><label class="bf-label">同步批次大小</label><input class="bf-input config-input" data-key="syncBatchSize" type="number" /></div>
         <div class="kv-row"><label class="bf-label">批次暂停最小值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMin" type="number" /></div>
         <div class="kv-row"><label class="bf-label">批次暂停最大值 (ms)</label><input class="bf-input config-input" data-key="syncBatchPauseMax" type="number" /></div>
         <div class="kv-row"><label class="bf-label">保活间隔 (ms)</label><input class="bf-input config-input" data-key="syncKeepaliveInterval" type="number" /></div>
         <div class="kv-row"><label class="bf-label">最大重试次数</label><input class="bf-input config-input" data-key="syncRetryMax" type="number" /></div>
+        <div class="kv-row"><label class="bf-label">扫描分块大小（条）</label><input class="bf-input config-input" data-key="scanChunkSize" type="number" /></div>
         <div class="settings-mode-row"><label for="settingsModeSwitch">启用独立模式（无需抖音标签页）</label><input class="mode-toggle" type="checkbox" id="settingsModeSwitch" role="switch" /></div>
         <div class="kv-row bf-item" style="margin-top:6px">
           <label class="bf-label">secUid（用户身份）</label>
@@ -593,66 +600,8 @@
               <button class="sec-copy-btn hidden" data-copy="secKeyValueText">复制</button>
             </div>
             <div class="sec-hint hidden" id="secKeyHint"></div>
-            <div class="sec-item">
-              <span class="sec-label">详情捕获</span>
-              <span class="sec-value" id="secSigDetailStatus"></span>
-            </div>
-            <div class="sec-item sec-clickable" id="secSigDetail">
-              <span class="sec-value sec-truncate" id="secSigDetailValue"></span>
-              <span class="sec-expand-hint hidden">[展开]</span>
-              <button class="sec-copy-btn hidden" data-copy="secSigDetailValue">复制</button>
-            </div>
-            <div class="sec-hint hidden" id="secSigDetailHint"></div>
-            <div class="sec-item">
-              <span class="sec-label">关注捕获</span>
-              <span class="sec-value" id="secSigFollowingStatus"></span>
-            </div>
-            <div class="sec-item sec-clickable" id="secSigFollowing">
-              <span class="sec-value sec-truncate" id="secSigFollowingValue"></span>
-              <span class="sec-expand-hint hidden">[展开]</span>
-              <button class="sec-copy-btn hidden" data-copy="secSigFollowingValue">复制</button>
-            </div>
-            <div class="sec-hint hidden" id="secSigFollowingHint"></div>
-            <div class="sec-item">
-              <span class="sec-label">资料捕获</span>
-              <span class="sec-value" id="secSigProfileStatus"></span>
-            </div>
-            <div class="sec-item sec-clickable" id="secSigProfile">
-              <span class="sec-value sec-truncate" id="secSigProfileValue"></span>
-              <span class="sec-expand-hint hidden">[展开]</span>
-              <button class="sec-copy-btn hidden" data-copy="secSigProfileValue">复制</button>
-            </div>
-            <div class="sec-hint hidden" id="secSigProfileHint"></div>
-            <div class="sec-item">
-              <span class="sec-label">作品捕获</span>
-              <span class="sec-value" id="secSigPostStatus"></span>
-            </div>
-            <div class="sec-item sec-clickable" id="secSigPost">
-              <span class="sec-value sec-truncate" id="secSigPostValue"></span>
-              <span class="sec-expand-hint hidden">[展开]</span>
-              <button class="sec-copy-btn hidden" data-copy="secSigPostValue">复制</button>
-            </div>
-            <div class="sec-hint hidden" id="secSigPostHint"></div>
-            <div class="sec-item">
-              <span class="sec-label">点赞捕获</span>
-              <span class="sec-value" id="secSigFavoriteStatus"></span>
-            </div>
-            <div class="sec-item sec-clickable" id="secSigFavorite">
-              <span class="sec-value sec-truncate" id="secSigFavoriteValue"></span>
-              <span class="sec-expand-hint hidden">[展开]</span>
-              <button class="sec-copy-btn hidden" data-copy="secSigFavoriteValue">复制</button>
-            </div>
-            <div class="sec-hint hidden" id="secSigFavoriteHint"></div>
-            <div class="sec-item">
-              <span class="sec-label">收藏捕获</span>
-              <span class="sec-value" id="secSigCollectionStatus"></span>
-            </div>
-            <div class="sec-item sec-clickable" id="secSigCollection">
-              <span class="sec-value sec-truncate" id="secSigCollectionValue"></span>
-              <span class="sec-expand-hint hidden">[展开]</span>
-              <button class="sec-copy-btn hidden" data-copy="secSigCollectionValue">复制</button>
-            </div>
-            <div class="sec-hint hidden" id="secSigCollectionHint"></div>
+            <!-- 六组签名捕获行由 status.js 按表生成（同构仅键名/文案差），id 命名规则不变 -->
+            <div id="statusSigRows"></div>
             <div class="sec-item">
               <span class="sec-label">Fetch Hook</span>
               <span class="sec-value" id="secHookFetch">加载中…</span>
@@ -731,13 +680,6 @@
       <symbol id="icon-error" viewBox="0 0 24 24">
         <path fill="currentColor"
           d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
-      </symbol>
-      <symbol id="icon-toast-check" viewBox="0 0 24 24">
-        <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-      </symbol>
-      <symbol id="icon-info" viewBox="0 0 24 24">
-        <path fill="currentColor"
-          d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" />
       </symbol>
       <symbol id="icon-image-badge" viewBox="0 0 12 12">
         <path fill="currentColor"

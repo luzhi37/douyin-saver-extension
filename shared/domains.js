@@ -30,7 +30,7 @@ export const DEFAULT_GROUPS = [
   { id: "uncategorized", name: "未分组", fixed: true },
 ];
 
-export const GROUP_IDS = { ALL: "all", UNCATEGORIZED: "uncategorized" };
+export const GROUP_IDS = { UNCATEGORIZED: "uncategorized" };
 
 // 六域事实表：键序即 options「数据维护」按钮顺序（works → review），禁止随意调整
 export const DOMAINS = {
@@ -122,8 +122,4 @@ export function isWorkDomain(domain) {
 
 export function isAuthorDomain(domain) {
   return AUTHOR_RECORD_DOMAINS.includes(domain);
-}
-
-export function domainMeta(domain) {
-  return DOMAINS[domain] || null;
 }

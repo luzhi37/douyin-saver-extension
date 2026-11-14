@@ -1,5 +1,6 @@
 // ---------- Sidebar ----------
 import { config, dom, state, store, utils, services } from '../core.js';
+import { createProbeQueue } from '../grids/probe-queue.js';
 import { search } from './search-bar.js';
 import { detail } from './detail.js';
 import { dialog } from './dialog.js';
@@ -27,8 +28,20 @@ class Sidebar {
   #pendingSidebarWidthDirty = false;
   #pendingSidebarWidthRafId = 0;
   #scrollRafPending = false;
-  #imgQueue = [];
-  #imgDrainRafId = 0;
+  // 封面分帧探针化（probe-queue 共用壳）：失败 URL 不落可见节点（与关注头像同一不变量），
+  // 封面 div 保持透明由条目底色兜底；成功提交背景图并直接隐藏占位层
+  #probeQueue = createProbeQueue({
+    budget: config.SIDEBAR_IMG_PER_FRAME,
+    alive: (t) => t.cover.isConnected && t.cover.dataset.gen === t.gen,
+    commit: (t) => {
+      detail.markMediaOk();
+      t.cover.style.backgroundImage = utils.cssUrl(t.url);
+      if (t.placeholder && t.placeholder.isConnected) t.placeholder.style.display = "none";
+    },
+    fail: () => {
+      detail.markMediaFail();
+    },
+  });
   #sideFillObs = null;
   #sideUnloadObs = null;
   #workMeta = new WeakMap();
@@ -39,10 +52,11 @@ class Sidebar {
   #hoverRecheckRaf = 0;
   // 入库/移除进行中的作品 id 集：防双击重入 + 滚动重建后按钮禁用态回填
   #pendingSaves = new Set();
-  // 作者头「加入候选域」进行中：防双击重入
-  #pendingCandidateAdd = false;
-  // 作者头「导入作品域」进行中：禁用入口防重复发起（authorImport 内部互斥再兜一层）
-  #pendingImportWorks = false;
+  // 作者头双域动作（加入/移除关注、候选）进行中：防双击重入（两域共用单锁）
+  #pendingAuthorAction = false;
+  // 作者头「导入作品域」发起短锁：只保护「解析 secUid → 登记入坞」窗口，任务入坞即释放；
+  // 已在途的入库任务不再阻塞入口，同类型任务按任务坞队列排队（与工具弹窗入口语义一致）
+  #importStarting = false;
   // 点赞/收藏进行中的 `${domain}:${awemeId}` 集：防双击重入 + 指示按钮禁用态回填
   #pendingReactions = new Set();
   // 侧栏分页代际：切换作者时自增，作废上一作者在途回包（不得写入已清空的列表）
@@ -144,8 +158,7 @@ class Sidebar {
       if (!dom.sidebar.classList.contains("sidebar-zero")) this.toggleSidebar();
     });
     dom.sidebarAuthorImportWorks.addEventListener("click", () => this.#importAuthorWorks());
-    dom.sidebarAuthorAddCandidate.addEventListener("click", () => this.#addAuthorToCandidates());
-    dom.sidebarAuthorRemoveCandidate.addEventListener("click", () => this.#removeAuthorFromCandidates());
+    dom.sidebarAuthorToggleCandidate.addEventListener("click", () => this.#toggleCandidateAction());
     dom.sidebarAuthorRefresh.addEventListener("click", () => this.refreshAuthorWorks());
     dom.sidebarBody.addEventListener("scroll", () => {
       if (this.#scrollRafPending) return;
@@ -296,9 +309,6 @@ class Sidebar {
     this.#applyAuthorHead(author);
     // 作品型三域的摘要没有头像/统计；已打开作者域也可能缺少头像——都由后台按 uid 补一次
     this.#hydrateAuthorHead(author.uid);
-    // 作者域已由侧栏校准回写精准计数；其余域（作品型/回顾）并行取 profile 作品数/粉丝数补头，
-    // 不阻塞作品列表分页
-    if (!config.AUTHOR_RECORD_DOMAINS.includes(state.domain)) this.#hydrateAuthorStats(secUid);
 
     const needsExpand = dom.sidebar.classList.contains("sidebar-zero");
     if (needsExpand) {
@@ -312,8 +322,15 @@ class Sidebar {
 
     this.#resetSidebarGrid();
     this.loadSidebarWorks(state.currentAuthorSecUid, null, true);
-    // 校准只对作者域记录有效（作品型三域没有可回写的作者记录）
-    if (config.AUTHOR_RECORD_DOMAINS.includes(state.domain)) this.#calibrateFollowing(author);
+    // 作者头统计必须排在作品首屏之后：两者共用 background 请求闸门（单车道 FIFO），
+    // 先发作品页可让首屏少等一个 profile/other 往返；统计晚到只更新头部，不影响列表。
+    // 作者域已由侧栏校准回写精准计数（校准只对作者域记录有效）；其余域（作品型/回顾）
+    // 取 profile 作品数/粉丝数补头
+    if (config.AUTHOR_RECORD_DOMAINS.includes(state.domain)) {
+      this.#calibrateFollowing(author);
+    } else {
+      this.#hydrateAuthorStats(secUid);
+    }
   }
 
   // 作者身份头：作者域使用完整档案，作品型三域使用点击时已获得的作者摘要；
@@ -337,7 +354,6 @@ class Sidebar {
       info.avatarLarger || info.avatar || known?.avatarLarger || known?.avatar || "";
     this.#currentAuthor = info;
     this.#renderAuthorHead();
-    this.#syncCandidateAction();
   }
 
   #renderAuthorHead() {
@@ -347,9 +363,8 @@ class Sidebar {
     dom.sidebarAuthorName.textContent = `@${name}`;
     dom.sidebarAuthorAvatar.setAttribute("aria-label", name);
 
-    const status = state.domain === "followings" ? "关注" : state.domain === "candidates" ? "候选" : "";
-    dom.sidebarAuthorStatus.textContent = status;
-    dom.sidebarAuthorStatus.classList.toggle("hidden", !status);
+    // 成员资格 chip 与双域动作按钮统一收口（chip 显示真实成员域，不按当前域推断）
+    this.#syncAuthorDomainActions();
 
     // 昵称本身即作者主页入口，不再额外放独立主页按钮
     const profileUrl = info.profileUrl || "";
@@ -369,8 +384,11 @@ class Sidebar {
     if (!records || token !== this.#loadToken) return;
     const info = this.#currentAuthor;
     if (!info || String(info.uid) !== String(uid)) return;
-    // 档案主键直取结果即权威成员资格：关注/候选任一存在即隐藏「加入候选域」入口
-    this.#syncCandidateAction(Boolean(records.followings), Boolean(records.candidates));
+    // 档案主键直取结果即权威成员资格：同步本地主键集（兜底推断与网格作者 chip 同源，
+    // 只增不删——移除走显式删除链路），随后按权威值收口按钮态与 chip
+    if (records.followings) state.followedUids.add(String(uid));
+    if (records.candidates) state.candidateUids.add(String(uid));
+    this.#syncAuthorDomainActions(Boolean(records.followings), Boolean(records.candidates));
     const found = [records.candidates, records.followings].filter(Boolean);
     if (!found.length) return;
 
@@ -411,50 +429,73 @@ class Sidebar {
     dom.sidebarAuthorSub.textContent = info.lastUpdateAt ? `${count} · ${utils.formatUpdateTime(info.lastUpdateAt)}` : count;
   }
 
-  // 作者头候选域两入口：「加入候选域」只在作者既不在关注域也不在候选域时显示；
-  // 「从候选域移除」只在作者确在候选域时显示。followed/isCandidate 由 GET_AUTHOR_BY_UID
-  // 主键直取结果传入（权威）；取回前按当前域与作者主键集推断（作者域当前记录本身即成员资格）
-  #syncCandidateAction(followed = null, isCandidate = null) {
-    const addBtn = dom.sidebarAuthorAddCandidate;
-    const removeBtn = dom.sidebarAuthorRemoveCandidate;
-    if (!addBtn) return;
+  // 作者头成员资格推断（关注/候选两域各自独立）。followed/isCandidate 由 GET_AUTHOR_BY_UID
+  // 主键直取结果传入（权威）；未传入时按本地主键集推断（作者域当前记录本身即成员资格，
+  // 回顾作者批次回源自关注/候选两域，作者必在其中一个域）
+  #resolveAuthorMembership(followed = null, isCandidate = null) {
     const info = this.#currentAuthor;
-    if (!info?.uid) {
-      addBtn.classList.add("hidden");
-      removeBtn?.classList.add("hidden");
+    const uid = info?.uid != null ? String(info.uid) : "";
+    if (followed !== null || isCandidate !== null) {
+      // 主键集并集兜底：刚由本入口移除/收录的作者，档案回包可能仍早于落库（在途回包不得回退按钮态）
+      return {
+        followed: Boolean(followed) || state.followedUids.has(uid),
+        candidate: Boolean(isCandidate) || state.candidateUids.has(uid),
+      };
+    }
+    if (config.AUTHOR_RECORD_DOMAINS.includes(state.domain)) {
+      return {
+        followed: state.domain === "followings" || state.followedUids.has(uid),
+        candidate: state.domain === "candidates" || state.candidateUids.has(uid),
+      };
+    }
+    // 回顾作者批次与其余作品型域：成员资格只认主键集
+    return { followed: state.followedUids.has(uid), candidate: state.candidateUids.has(uid) };
+  }
+
+  // 作者头候选域动作按钮 + 成员资格 chip：候选域按钮按成员资格适配——非成员显示「加入」
+  // （user-plus），成员显示「移除」（user-minus，点击弹移除确认）；chip 文案 = 成员域标签
+  // （关注 / 候选 / 关注·候选），均非成员时隐藏（关注成员资格只展示，无动作入口）
+  #syncAuthorDomainActions(followed = null, isCandidate = null) {
+    const candidateBtn = dom.sidebarAuthorToggleCandidate;
+    if (!candidateBtn) return;
+    const info = this.#currentAuthor;
+    const hasUid = Boolean(info?.uid);
+    candidateBtn.classList.toggle("hidden", !hasUid);
+    if (!hasUid) {
+      dom.sidebarAuthorStatus.classList.add("hidden");
       return;
     }
-    const uid = String(info.uid);
-    let known;
-    let candidate;
-    if (followed !== null || isCandidate !== null) {
-      // 主键集并集兜底：刚由本入口收录的作者，档案回包可能仍早于入库（在途回包不得重新露出入口）
-      candidate = Boolean(isCandidate) || state.candidateUids.has(uid);
-      known = Boolean(followed) || candidate || state.followedUids.has(uid);
-    } else if (config.AUTHOR_RECORD_DOMAINS.includes(state.domain)) {
-      known = true;
-      candidate = state.domain === "candidates" || state.candidateUids.has(uid);
-    } else if (state.domain === config.REVIEW_DOMAIN && state.reviewKind === "authors") {
-      // 回顾作者批次回源自关注/候选两域，作者必在其中一个域；候选成员资格仍以主键集为准
-      known = true;
-      candidate = state.candidateUids.has(uid);
-    } else {
-      known = state.followedUids.has(uid) || state.candidateUids.has(uid);
-      candidate = state.candidateUids.has(uid);
-    }
-    addBtn.classList.toggle("hidden", known);
-    removeBtn?.classList.toggle("hidden", !candidate);
+    const member = this.#resolveAuthorMembership(followed, isCandidate);
+    this.#applyDomainToggle(candidateBtn, member.candidate, "候选域");
+    const labels = [member.followed ? "关注" : "", member.candidate ? "候选" : ""].filter(Boolean);
+    dom.sidebarAuthorStatus.textContent = labels.join("·");
+    dom.sidebarAuthorStatus.classList.toggle("hidden", labels.length === 0);
+  }
+
+  // 单个域按钮自适应：图标 + title/aria 按成员资格切换
+  #applyDomainToggle(btn, isMember, domainLabel) {
+    const useEl = btn.querySelector("use");
+    if (useEl) useEl.setAttribute("href", isMember ? "#icon-user-minus" : "#icon-user-plus");
+    btn.title = (isMember ? "从" : "加入") + domainLabel;
+    btn.setAttribute("aria-label", (isMember ? "将该作者从" : "将该作者加入") + domainLabel);
+  }
+
+  // header 候选域切换入口：按当前成员资格分流「加入」（快捷收录）或「移除」（确认弹窗）
+  #toggleCandidateAction() {
+    if (!this.#currentAuthor?.uid || this.#pendingAuthorAction) return;
+    if (this.#resolveAuthorMembership().candidate) this.#removeAuthorFromCandidates();
+    else this.#addAuthorToCandidates();
   }
 
   // header 快捷收录：IMPORT_CANDIDATE 单请求（与工具弹窗候选入库同一条链路）。
-  // 成功后同步本地候选主键集并隐藏入口；added=0（已在候选域）同样收口
+  // 成功后同步本地候选主键集与网格作者 chip 并刷新按钮态；added=0（已在候选域）同样收口
   async #addAuthorToCandidates() {
-    const btn = dom.sidebarAuthorAddCandidate;
+    const btn = dom.sidebarAuthorToggleCandidate;
     const secUid = state.currentAuthorSecUid;
     const info = this.#currentAuthor;
-    if (!btn || !secUid || !info?.uid || this.#pendingCandidateAdd) return;
+    if (!btn || !secUid || !info?.uid || this.#pendingAuthorAction) return;
     const uid = String(info.uid);
-    this.#pendingCandidateAdd = true;
+    this.#pendingAuthorAction = true;
     btn.disabled = true;
     try {
       const res = await services.bgMsg({ type: "IMPORT_CANDIDATE", secUid });
@@ -477,27 +518,13 @@ class Sidebar {
           : `作者已在候选域：${nick}（分组「${groupName}」）`,
         "success",
       );
+      if (config.WORK_RECORD_DOMAINS.includes(state.domain)) {
+        search.activeWorkRecordGrid().syncAuthorFlags();
+      }
       // 等待期间已切换作者：不改当前头（入口态由新作者的同步流程决定）
-      if (state.currentAuthorSecUid === secUid) this.#syncCandidateAction();
+      if (state.currentAuthorSecUid === secUid) this.#syncAuthorDomainActions();
     } finally {
-      this.#pendingCandidateAdd = false;
-      btn.disabled = false;
-    }
-  }
-
-  // header「导入作品域」：复用工具弹窗同一条 IMPORT_USER_WORKS 分页长任务（进度层/取消/
-  // 三链路互斥全在 AuthorImport 内），完成后重判本栏已挂载作品的作品域存在性
-  async #importAuthorWorks() {
-    const btn = dom.sidebarAuthorImportWorks;
-    const secUid = state.currentAuthorSecUid;
-    if (!btn || !secUid || this.#pendingImportWorks) return;
-    this.#pendingImportWorks = true;
-    btn.disabled = true;
-    try {
-      const res = await authorImport.startWorksImportFor(secUid);
-      if (res?.ok) await this.#refreshPresence();
-    } finally {
-      this.#pendingImportWorks = false;
+      this.#pendingAuthorAction = false;
       btn.disabled = false;
     }
   }
@@ -506,26 +533,17 @@ class Sidebar {
   // 不可撤销故先确认；成功后本地主键集/网格/作者 chip 一并收口（作者域删除不广播）
   #removeAuthorFromCandidates() {
     const info = this.#currentAuthor;
-    if (!info?.uid || this.#pendingCandidateAdd) return;
+    if (!info?.uid || this.#pendingAuthorAction) return;
     const uid = String(info.uid);
     const name = info.nickname || "未知作者";
-    const body = document.createElement("p");
-    body.className = "confirm-delete-msg";
-    body.textContent = `确定从候选域移除「${name}」？此操作不可撤销。`;
-    dialog.showDialog("确认移除", body, [
-      {
-        text: "移除",
-        danger: true,
-        callback: () =>
-          dialog.runTask({
-            progressTitle: "正在移除…",
-            progressHtml: `<p>正在移除「${name}」…</p>`,
-            task: () => this.#deleteCandidateRecord(uid),
-            successText: `已从候选域移除「${name}」`,
-            failPrefix: "移除失败: ",
-          }),
-      },
-    ]);
+    dialog.confirmTask({
+      title: "确认移除",
+      message: `确定从候选域移除「${name}」？此操作不可撤销。`,
+      progressTitle: "正在移除…",
+      progressHtml: `<p>正在移除「${name}」…</p>`,
+      task: () => this.#deleteCandidateRecord(uid),
+      successText: `已从候选域移除「${name}」`,
+    });
   }
 
   async #deleteCandidateRecord(uid) {
@@ -537,13 +555,33 @@ class Sidebar {
       this.#activeGrid().removeItems(new Set([uid]));
       store.refreshGroups();
       search.syncCount();
-      // 记录已删，头部「候选」状态随之失效（作品栏仍可用于浏览该作者作品）
-      dom.sidebarAuthorStatus.classList.add("hidden");
     }
     if (config.WORK_RECORD_DOMAINS.includes(state.domain)) {
       search.activeWorkRecordGrid().syncAuthorFlags();
     }
-    this.#syncCandidateAction();
+    this.#syncAuthorDomainActions();
+  }
+
+  // header「导入作品域」：复用工具弹窗同一条任务坞长任务。短锁只覆盖「登记入坞」窗口
+  // （startWorksImportFor 的异步 ack），入坞后按钮立即恢复可点——任务坞队列允许同类型
+  // 任务继续排队；presence 按各任务自己的 TASK_DONE 收口，且只作用于当前仍显示的作者
+  async #importAuthorWorks() {
+    const btn = dom.sidebarAuthorImportWorks;
+    const secUid = state.currentAuthorSecUid;
+    if (!btn || !secUid || this.#importStarting) return;
+    this.#importStarting = true;
+    btn.disabled = true;
+    try {
+      await authorImport.startWorksImportFor(secUid, {
+        hint: secUid.slice(-12),
+        onDone: async () => {
+          if (state.currentAuthorSecUid === secUid) await this.#refreshPresence();
+        },
+      });
+    } finally {
+      this.#importStarting = false;
+      btn.disabled = false;
+    }
   }
 
   // header「刷新」：代际自增作废在途回包后从第一页重取，并重取作者头计数/最近更新。
@@ -551,7 +589,7 @@ class Sidebar {
   // 否则新请求会在 loadSidebarWorks 首行被守卫挡回
   refreshAuthorWorks() {
     const secUid = state.currentAuthorSecUid;
-    if (!secUid || this.#pendingImportWorks) return;
+    if (!secUid) return;
     this.#loadToken++;
     state.sidebarLoading = false;
     state.sidebarCursor = null;
@@ -656,7 +694,7 @@ class Sidebar {
   // 重开作者前整体复位：在途探针作废、观察器断开重建，防止上一作者的条目观察残留
   #resetSidebarGrid() {
     this.stopAllMedia();
-    this.#clearImgQueue();
+    this.#probeQueue.clear();
     if (this.#sideFillObs) {
       this.#sideFillObs.disconnect();
       this.#sideFillObs = null;
@@ -1024,46 +1062,7 @@ class Sidebar {
   #enqueueCover(cover, url, placeholder) {
     const gen = String((Number(cover.dataset.gen) || 0) + 1);
     cover.dataset.gen = gen;
-    this.#imgQueue.push({ cover, url, placeholder, gen });
-    this.#scheduleImgDrain();
-  }
-
-  // 探针预载：失败 URL 不落可见节点（与关注头像同一不变量），封面 div 保持透明由条目底色兜底；
-  // 成功提交背景图并直接隐藏占位层
-  #scheduleImgDrain() {
-    if (this.#imgDrainRafId) return;
-    this.#imgDrainRafId = requestAnimationFrame(() => {
-      this.#imgDrainRafId = 0;
-      let n = 0;
-      while (this.#imgQueue.length && n < config.SIDEBAR_IMG_PER_FRAME) {
-        const { cover, url, placeholder, gen } = this.#imgQueue.shift();
-        // 已降级/已重建的条目直接丢弃，不再发探针请求
-        if (!cover.isConnected || cover.dataset.gen !== gen) continue;
-        const alive = () => cover.isConnected && cover.dataset.gen === gen;
-        const probe = new Image();
-        probe.onload = () => {
-          if (!alive()) return;
-          detail.markMediaOk();
-          cover.style.backgroundImage = utils.cssUrl(url);
-          if (placeholder && placeholder.isConnected) placeholder.style.display = "none";
-        };
-        probe.onerror = () => {
-          if (!alive()) return;
-          detail.markMediaFail();
-        };
-        probe.src = url;
-        n++;
-      }
-      if (this.#imgQueue.length) this.#scheduleImgDrain();
-    });
-  }
-
-  #clearImgQueue() {
-    if (this.#imgDrainRafId) {
-      cancelAnimationFrame(this.#imgDrainRafId);
-      this.#imgDrainRafId = 0;
-    }
-    this.#imgQueue = [];
+    this.#probeQueue.enqueue({ cover, url, placeholder, gen });
   }
 
   #createWorkItem(work, presence) {

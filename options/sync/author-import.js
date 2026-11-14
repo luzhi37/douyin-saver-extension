@@ -1,29 +1,21 @@
 // ---------- AuthorImport（工具） ----------
-import { config, dom, state, services, utils } from '../core.js';
+import { config, state, services } from '../core.js';
 import { dialog } from '../components/dialog.js';
-import { sync } from './sync.js';
-import { domainScanSync } from './domain-scan-sync.js';
+import { taskDock } from '../components/task-dock.js';
 
 // ---------- 工具弹窗（作者入库 + 作者域批量校准 + 清理 + uid 反查） ----------
 // 菜单「工具」弹窗：两行输入各配一个域入库按钮 + 一行两个批量校准按钮 + 两行清理按钮
 // + 底部 uid 反查区块。
 // 清理 = 本地短操作：关注全集比对后把点赞/收藏域未关注作者的作品、候选域已关注作者
 // 移入「稍后删除」（候选域无账号同步源，重叠比对即其原「同步」按钮功能，现归本弹窗）。
-// 作品域入库 = IMPORT_USER_WORKS 分页循环长任务（进度态复用 syncDialogBodyTemplate，关闭即取消）；
-// 候选域入库 = IMPORT_CANDIDATE 单请求收录作者档案（短操作，toast 反馈）；
-// 校准作品/粉丝数 = CALIBRATE_FOLLOWINGS / CALIBRATE_CANDIDATES 批量长任务（按域全部作者，
-// 进度层同款，关闭即取消）。
+// 作品域入库 / 批量校准 = 任务坞长任务（TASK_PROGRESS/TASK_DONE，取消走 CANCEL_TASK）；
+// 候选域入库 = IMPORT_CANDIDATE 单请求收录作者档案（短操作，不登记任务坞/队列：
+// 按钮 busy 态保护请求往返，终态 toast/签名引导就地收口，发出即清空输入）。
 // uid 反查 = RESOLVE_USER_PROFILE 只读短请求：数字 uid 经 profile/other 的 user_id
 // 换取 sec_uid 并拼主页链接，不写任何域；错误统一 toast。
 // 分组语义与「添加作品/添加关注」一致：已在域的保留原分组、新条目落「未分组」
 // （由 background mergeWork/mergeAndSaveAuthors 内建，本模块不做任何加工）。
 class AuthorImport {
-  #running = false;
-  #currentSecUid = "";
-  #countEl = null;
-  #summaryEl = null;
-  #statusEl = null;
-  #calibrateDomain = "followings";
   #worksInput = null;
   #candidatesInput = null;
   #btnCandidates = null;
@@ -40,21 +32,14 @@ class AuthorImport {
   // 弹窗代际：关闭/重开自增，清理短操作在 await 后校验，防止已关闭会话的迟到结果
   // 把确认层推进新的工具弹窗
   #cleanupGen = 0;
-  // 候选域入库单请求短锁：与 #running（作品域长任务）互不覆盖
+  // 候选域入库单请求短锁：保护整个请求往返（按钮 busy 态），防重复提交
   #candidatesBusy = false;
-  // uid 反查短锁：与 #running/#candidatesBusy 互不覆盖，查询结束即释放
+  // uid 反查短锁：与 #candidatesBusy 互不覆盖，查询结束即释放
   #uidBusy = false;
-
-  isRunning() {
-    return this.#running;
-  }
 
   // ---------- 工具弹窗（配置态，两行输入 + 两行校准按钮） ----------
   openDialog() {
-    if (this.#running) {
-      dialog.showToast("已有任务进行中", "info");
-      return;
-    }
+    // B6 队列：任务运行中仍可打开工具弹窗提交新的导入/校准任务（入队排队）
     this.#cleanupGen++;
     const body = document.createElement("div");
     body.className = "import-rows";
@@ -132,9 +117,6 @@ class AuthorImport {
   closeDialog() {
     dialog.closeDialog();
     this.#cleanupGen++;
-    this.#running = false;
-    this.#currentSecUid = "";
-    this.#countEl = this.#summaryEl = this.#statusEl = null;
     this.#worksInput = this.#candidatesInput = null;
     this.#btnCandidates = null;
     this.#uidInput = this.#uidBtn = this.#uidResult = null;
@@ -310,127 +292,87 @@ class AuthorImport {
     }
   }
 
-  // ---------- 作品域入库（长任务） ----------
-  // 工具弹窗入口：解析主页链接 → sec_uid 后交给 startWorksImportFor
+  // ---------- 作品域入库（任务坞长任务） ----------
+  // 工具弹窗入口：解析主页链接 → sec_uid 后交给 startWorksImportFor。
+  // 从点击到登记之间防重入（resolveSecUid 为异步，双击窗口内不重复排队）
+  #importStarting = false;
+
   async startWorksImport() {
-    if (!this.#worksInput || !this.#checkIdle()) return;
-    const parsed = this.#parseAuthorInput(this.#worksInput.value);
+    if (!this.#worksInput || this.#importStarting) return;
+    const inputEl = this.#worksInput;
+    const parsed = this.#parseAuthorInput(inputEl.value);
     if (!parsed) {
       dialog.showToast("请粘贴作者主页链接（douyin.com/user/…）", "error");
       return;
     }
-    const secUid = await this.#resolveSecUid(parsed);
-    if (!this.#worksInput) return; // 解析期间弹窗已被关闭
-    if (!secUid) {
-      dialog.showToast("无法解析该主页对应的 sec_uid", "error");
-      return;
-    }
-    await this.startWorksImportFor(secUid);
-  }
-
-  // 三条 background 循环链路（sync / 域扫描 / 本入库）互斥，避免叠加请求频率
-  #checkIdle() {
-    if (this.#running) {
-      dialog.showToast("已有任务进行中", "info");
-      return false;
-    }
-    if (sync.isRunning() || domainScanSync.isRunning()) {
-      dialog.showToast("同步进行中，请等待完成后再入库", "error");
-      return false;
-    }
-    return true;
-  }
-
-  // 作品域入库入口（工具弹窗路径）：解析主页链接 → sec_uid 后执行分页循环长任务。
-  // 互斥守卫拦截（已有同步/入库任务）与弹窗取消（#running 被 closeDialog 复位）都返回 null；
-  // 正常终态返回 `{ ok, ... }` 响应体，结果收口见 #showDone
-  async startWorksImportFor(secUid) {
-    if (!this.#checkIdle()) return null;
-    this.#running = true;
-    this.#currentSecUid = secUid;
-    // 清残留任务再开新循环（DomainScanSync 同款）
-    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-    this.#openProgressDialog("导入作者作品", "已扫描作品 0", "正在获取作者作品…");
-
+    const hint = inputEl.value.trim().slice(0, 24);
+    this.#importStarting = true;
     try {
-      const res = await services.bgMsg({ type: "IMPORT_USER_WORKS", secUid });
-      if (!this.#running) return null; // 弹窗已关闭（取消）：迟到的终态静默吞掉，已落库部分保留
-      if (!res || res.ok !== true) {
-        this.#showError(res?.error || "IMPORT_FAILED");
-        return res || null;
-      }
-      this.#showDone(res);
-      return res;
-    } catch (err) {
-      if (!this.#running) return null;
-      this.#showError(err.message || String(err));
-      return { ok: false, error: err.message || String(err) };
-    } finally {
-      // 终态复位与 closeDialog 的复位并存：finally 管完成/失败落地（允许原地再发起），closeDialog 管取消窗口期
-      this.#running = false;
-    }
-  }
-
-  // ---------- 作者域批量校准（长任务） ----------
-  // 校准入口：对指定作者域全部作者批量重取权威计数（CALIBRATE_FOLLOWINGS / CALIBRATE_CANDIDATES）。
-  // 与作品域入库共用 #running 长任务锁（弹窗重入守卫 / btnSync 与域扫描互斥 /
-  // 关进度层联动 CANCEL_ACTIVE_TASK 均随之生效）
-  async startCalibrate(domain) {
-    if (this.#running) {
-      dialog.showToast("已有任务进行中", "info");
-      return;
-    }
-    if (sync.isRunning() || domainScanSync.isRunning()) {
-      dialog.showToast("同步进行中，请等待完成后再校准", "error");
-      return;
-    }
-    this.#running = true;
-    this.#calibrateDomain = domain;
-    const label = domain === "candidates" ? "候选" : "关注";
-    // 清残留任务再开新循环（作品域入库同款）
-    chrome.runtime.sendMessage({ type: "CANCEL_ACTIVE_TASK" }).catch(() => {});
-    this.#openProgressDialog(`校准${label}数据`, `已校准${label}作者 0`, "正在校准作品/粉丝数…");
-
-    try {
-      const type = domain === "candidates" ? "CALIBRATE_CANDIDATES" : "CALIBRATE_FOLLOWINGS";
-      const res = await services.bgMsg({ type });
-      if (!this.#running) return; // 弹窗已关闭（取消）：迟到终态静默吞掉，已校准部分已落库
-      if (!res || res.ok !== true) {
-        this.#showError(res?.error || "CALIBRATE_FAILED");
+      const secUid = await this.#resolveSecUid(parsed);
+      if (!this.#worksInput) return; // 解析期间弹窗已被关闭
+      if (!secUid) {
+        dialog.showToast("无法解析该主页对应的 sec_uid", "error");
         return;
       }
-      this.#showCalibrateDone(res, domain);
-    } catch (err) {
-      if (!this.#running) return;
-      this.#showError(err.message || String(err));
+      // 入队即清空输入：任务已登记坞内（排队/进度/失败均由坞行收口），无需保留文本原地重试。
+      // startWorksImportFor 内 begin+bindPort 同步完成，未 await 前行已存在
+      const pending = this.startWorksImportFor(secUid, { hint });
+      if (this.#worksInput) this.#worksInput.value = "";
+      await pending;
     } finally {
-      this.#running = false;
+      this.#importStarting = false;
     }
   }
 
-  // 校准终态：完全成功走 toast 收口（关进度层回「工具」弹窗）；
-  // 中途取消保留弹窗确认已校准部分（就地改写进度层，作品域入库同款）
-  #showCalibrateDone(res, domain) {
-    const label = domain === "candidates" ? "候选" : "关注";
-    if (!res.cancelled) {
-      this.#closeProgressDialog();
-      dialog.showToast(
-        `校准完成：共 ${res.total ?? 0} 位${label}作者，更新 ${res.updated ?? 0} 条计数`,
-        "success",
-      );
-      return;
-    }
-    this.#showPartialDone(
-      `校准${label}数据`,
-      `已校准${label}作者 ${res.processed ?? res.total ?? 0}`,
-      "已校准部分已落库，未校准作者保留原计数",
-    );
+  // 作品域入库入口：工具弹窗与侧边栏共用；终态/进度全由任务坞收口。
+  // onDone 透传给侧边栏（复位按钮 / 刷新 presence），工具弹窗入口不传；
+  // hint 透传任务坞行（排队/暂停摘要显示作者标识）。返回约定：bindPort 失败 = null、
+  // 队列/异常失败 = { ok:false, error }、成功 = { ok:true, taskId }
+  async startWorksImportFor(secUid, { onDone = null, hint = "" } = {}) {
+    const result = await taskDock.launchRemote({
+      begin: {
+        kind: "importWorks",
+        domain: "works",
+        total: 0,
+        hint,
+        onDone: (msg) => this.#onImportDone(secUid, msg, onDone),
+      },
+      queueFullText: "任务队列已满，请稍后重试",
+      payload: { type: "IMPORT_USER_WORKS", secUid },
+    });
+    if (result.bindFailed) return null;
+    if (result.error) return { ok: false, error: result.error };
+    return { ok: true, taskId: result.response?.taskId || result.taskId };
   }
 
-  // ---------- 候选域入库（短操作） ----------
+  async #onImportDone(secUid, msg, onDone) {
+    // NO_SIGNATURE 需弹签名引导层（坞内不承载）；URL 指向作者主页
+    if (msg.error === "NO_SIGNATURE") {
+      dialog.showNoSignatureDialog(config.URL_BASE + "/user/" + secUid, "作品", "导入作品");
+    }
+    if (typeof onDone === "function") await onDone(msg);
+  }
+
+  // ---------- 作者域批量校准（任务坞长任务） ----------
+  async startCalibrate(domain) {
+    await taskDock.launchRemote({
+      begin: {
+        kind: domain === "candidates" ? "calibrateCandidates" : "calibrateFollowings",
+        domain,
+        total: 0,
+      },
+      queueFullText: "任务队列已满，请稍后重试",
+      payload: { type: domain === "candidates" ? "CALIBRATE_CANDIDATES" : "CALIBRATE_FOLLOWINGS" },
+    });
+  }
+
+  // ---------- 候选域入库（单请求短操作，不进任务坞） ----------
+  // IMPORT_CANDIDATE 不登记 TaskRegistry：与侧栏 header 候选按钮同一交互模型——按钮 busy
+  // 态保护全程，终态反馈（toast/签名引导/刷新候选域数据）就地收口；任务坞只承载长任务
   async startCandidateImport() {
     if (this.#candidatesBusy || !this.#candidatesInput) return;
-    const parsed = this.#parseAuthorInput(this.#candidatesInput.value);
+    const inputEl = this.#candidatesInput;
+    const parsed = this.#parseAuthorInput(inputEl.value);
     if (!parsed) {
       dialog.showToast("请粘贴作者主页链接（douyin.com/user/…）", "error");
       return;
@@ -444,6 +386,8 @@ class AuthorImport {
         dialog.showToast("无法解析该主页对应的 sec_uid", "error");
         return;
       }
+      // 发出即清空输入：结果由 toast/签名引导收口，无需保留文本原地重试
+      inputEl.value = "";
       const res = await services.bgMsg({ type: "IMPORT_CANDIDATE", secUid });
       if (!res || res.ok !== true) {
         const msg = res?.error || "未知错误";
@@ -452,7 +396,8 @@ class AuthorImport {
           dialog.showNoSignatureDialog(config.URL_BASE + "/user/" + secUid, "作品", "收录作者档案");
           return;
         }
-        dialog.showToast(msg.includes("2096") ? "该账号因隐私设置不可见" : "候选域入库失败: " + msg, "error");
+        const text = msg.includes("2096") ? "该账号因隐私设置不可见" : `候选域入库失败: ${msg}`;
+        dialog.showToast(text, "error");
         return;
       }
       const f = res.candidate || {};
@@ -464,7 +409,6 @@ class AuthorImport {
         res.added > 0 ? `已新增候选作者：${nick}（入「${groupName}」）` : `作者已在候选域：${nick}（分组「${groupName}」）`,
         "success",
       );
-      this.#candidatesInput.value = "";
       if (state.domain === "candidates") await services.loadDomainData();
     } finally {
       this.#candidatesBusy = false;
@@ -473,16 +417,10 @@ class AuthorImport {
   }
 
   // ---------- uid 反查主页链接（短操作，只读） ----------
+  // 无任务门禁：RESOLVE_USER_PROFILE 走 RequestGate priority 2（交互式车道），可插队于
+  // 长任务的 priority 1 请求之前，与任务并行不互相阻塞
   async startResolveUid() {
     if (!this.#uidInput || this.#uidBusy) return;
-    if (this.#running) {
-      dialog.showToast("已有任务进行中", "info");
-      return;
-    }
-    if (sync.isRunning() || domainScanSync.isRunning()) {
-      dialog.showToast("同步进行中，请等待完成后再查询", "error");
-      return;
-    }
     const uid = this.#uidInput.value.trim();
     if (!/^\d{5,20}$/.test(uid)) {
       dialog.showToast("请输入纯数字抖音 uid", "error");
@@ -554,96 +492,6 @@ class AuthorImport {
     if (!text && /3170/.test(msg)) text = map.UID_NOT_FOUND;
     if (!text && /HTTP\s*403/.test(msg)) text = map.RATE_LIMITED;
     dialog.showToast(text || `查询失败：${msg}`, "error");
-  }
-
-  // 进度消息入口（options 全局 listener 分发）；进度载荷虽带 requestId，但任务由
-  // 三链路互斥保证唯一（入口已挡并发发起），按 #running 门控全收即可（DomainScanSync 同款）
-  onProgress(msg) {
-    if (!this.#running) return;
-    if (msg.type === "IMPORT_WORKS_PROGRESS") {
-      const total = msg.total > 0 ? ` / 约 ${msg.total}` : "";
-      if (this.#countEl) this.#countEl.textContent = `已扫描作品 ${msg.collected ?? 0}${total} · 已入库 ${msg.saved ?? 0}`;
-    } else if (msg.type === "CALIBRATE_PROGRESS") {
-      const label = this.#calibrateDomain === "candidates" ? "候选" : "关注";
-      if (this.#countEl) this.#countEl.textContent = `已校准${label}作者 ${msg.collected ?? 0} / ${msg.total ?? 0}`;
-    }
-  }
-
-  // ---------- 私有：弹窗三态 ----------
-
-  // 进度层专用关闭：只复位任务态与进度层元素引用。基层「工具」弹窗的输入/按钮引用
-  // 必须保留（弹窗仍开着，原地可再次发起）——全量清空仅走 closeDialog（整窗关闭时）
-  #closeProgressDialog() {
-    dialog.closeDialog();
-    this.#running = false;
-    this.#countEl = this.#summaryEl = this.#statusEl = null;
-  }
-
-  #openProgressDialog(title, countText, summaryText) {
-    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
-    this.#countEl = countEl;
-    this.#summaryEl = summaryEl;
-    this.#statusEl = statusEl;
-    this.#countEl.textContent = countText;
-    this.#summaryEl.textContent = summaryText;
-    // 进度层叠于「工具」弹窗之上：关闭后回到弹窗继续操作（结果就地改写同层内容）
-    dialog.pushDialog(title, body, [], () => this.#closeProgressDialog());
-  }
-
-  #showDone(res) {
-    // 网格/分组数字刷新由 background 收尾的 STORE_CHANGED 统一承担（全部批次落库完才
-    // 发一次：refreshGroups 重算分组数字 + 当前域一致时 loadDomainData，含取消/部分失败）；
-    // 此处不再手动 loadDomainData，避免与广播的双重整网格重载
-    // 完全成功走 toast 收口（关进度层回「工具」弹窗）；PARTIAL 保留弹窗确认部分落库结果
-    if (!res.timedOut) {
-      this.#closeProgressDialog();
-      // 成功后清空输入（候选域入库同款）；timedOut/取消保留文本便于原地重试
-      if (this.#worksInput) this.#worksInput.value = "";
-      dialog.showToast(
-        `作品域入库完成：已扫描 ${res.collected ?? 0} 个作品，新增 ${res.added ?? 0} · 更新 ${res.updated ?? 0}`,
-        "success",
-      );
-      return;
-    }
-    this.#showPartialDone(
-      "导入作者作品",
-      `已扫描作品 ${res.collected ?? 0}`,
-      `新增 ${res.added ?? 0}（入「未分组」）· 更新 ${res.updated ?? 0}（保留原分组）`,
-    );
-  }
-
-  // PARTIAL 终态共用装配：进度层就地改写为部分结果确认。showDialog 会清栈重建基层、
-  // 摧毁「工具」弹窗不可用；经 updateDialog 收口（footer 增清与键盘直达槽位同步），body 节点随后补挂
-  #showPartialDone(title, countText, summaryText) {
-    const { body, countEl, summaryEl, statusEl } = utils.buildSyncProgressBody();
-    this.#countEl = countEl;
-    this.#summaryEl = summaryEl;
-    this.#statusEl = statusEl;
-    countEl.textContent = countText;
-    summaryEl.textContent = summaryText;
-    statusEl.textContent = "PARTIAL";
-    const hint = document.createElement("p");
-    hint.className = "dy-text-danger sync-timeout-hint";
-    hint.textContent = "已中途取消，仅保留部分数据";
-    body.appendChild(hint);
-    dialog.updateDialog(title);
-    dom.dialogBody.appendChild(body);
-    dialog.showOkDialog();
-  }
-
-  // 错误展示：进度弹窗内联（summary 清空 + status 显示错误，DomainScanSync 同款）；
-  // NO_SIGNATURE 关弹窗换签名引导（URL 指向作者主页，浏览作品列表即完成捕获）。
-  // 关闭进度层（✕/Esc）即取消并退出
-  #showError(errorMsg) {
-    const msg = errorMsg || "UNKNOWN";
-    if (msg === "NO_SIGNATURE") {
-      const url = config.URL_BASE + "/user/" + (this.#currentSecUid || "");
-      this.closeDialog();
-      dialog.showNoSignatureDialog(url, "作品", "导入作品");
-      return;
-    }
-    if (this.#statusEl) this.#statusEl.textContent = msg.includes("2096") ? "账号作品因隐私设置不可见" : msg;
-    if (this.#summaryEl) this.#summaryEl.textContent = "";
   }
 
   #setCandidatesBtn(busy) {

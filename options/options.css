@@ -95,6 +95,9 @@ optgroup {
   --dy-brand-16: rgba(254, 44, 85, 0.16);
   --dy-brand-30: rgba(254, 44, 85, 0.3);
 
+  /* 状态色（作者关注旗标/侧栏状态共用） */
+  --dy-c-mint: #35d6b0;
+
   /* 字号（8 档） */
   --dy-fs-10: 10px;
   --dy-fs-11: 11px;
@@ -121,17 +124,13 @@ optgroup {
   --dy-r-12: 12px;
   --dy-r-pill: 999px;
 
-  /* 动效（4 档） */
+  /* 动效（2 档） */
   --dy-t-100: 0.1s cubic-bezier(0.4, 0, 0.2, 1);
-  --dy-t-150: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --dy-t-250: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  --dy-t-300: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* 阴影（4 档） */
-  --dy-sh-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* 阴影（2 档） */
   --dy-sh-md: 0 4px 16px rgba(0, 0, 0, 0.5);
   --dy-sh-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --dy-sh-pop: 0 4px 16px rgba(0, 0, 0, 0.16), inset 0 1px 0 var(--dy-w-12);
 }
 
 /* L2 semantic：保留旧名，值只引用 L1（消费点零改动） */
@@ -240,8 +239,8 @@ optgroup {
 }
 
 
-/* ===== 顶栏（单行工具区：分组按钮组 → 搜索控件组 → 域特定控件组；
-   批量入口在右侧导航轨顶部） =====
+/* ===== 顶栏（单行工具区：分组按钮组 → 搜索控件组 → 域特定控件组 → 批量；
+   批量入口在顶栏最右） =====
    宽度不足时按 DOM 顺序折行（两行/三行），行内控件统一 34px 高；
    底边线把顶栏与下方网格画布分开 */
 #topBar {
@@ -271,6 +270,58 @@ optgroup {
   max-width: 100%;
   overflow: hidden;
   position: relative;
+}
+
+/* 回顾域顶栏不出现分组按钮组：整条隐藏（右栏「分组」入口另行置灰） */
+body[data-domain="review"] .group-selector {
+  display: none;
+}
+
+/* 回顾来源/数量配置：回顾域占据左侧（分组按钮组原位置），变更即持久化 */
+#sbReviewFilters {
+  display: none;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: var(--dy-sp-16);
+  min-width: 0;
+}
+
+body[data-domain="review"] #sbReviewFilters {
+  display: flex;
+}
+
+/* 回顾来源/数量配置（顶栏回顾域控件）：两组按内容取宽、左对齐紧挨 */
+.review-config-item {
+  display: flex;
+  align-items: center;
+  gap: var(--dy-sp-8);
+  min-width: 0;
+}
+
+.review-config-item .bf-label {
+  min-width: auto;
+}
+
+#sbReviewFilters .review-count-field {
+  flex: 0 0 84px;
+  width: 84px;
+  height: 34px;
+}
+
+/* 回顾域随机入口：与同行控件统一 34px 高 */
+#sbReviewFilters .review-random-btn {
+  height: 34px;
+  font-size: var(--dy-font-size-sm);
+}
+
+/* 数量输入只保留键入/步进语义，隐藏原生上下箭头（与设置面板内的运行参数一致） */
+#sbReviewFilters input[type="number"] {
+  -moz-appearance: textfield;
+}
+#sbReviewFilters input[type="number"]::-webkit-inner-spin-button,
+#sbReviewFilters input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .group-tabs {
@@ -400,7 +451,28 @@ optgroup {
   height: 34px;
 }
 
-/* 批量底部工具条：操作对象是内容，操作条贴着主内容区底缘；批量入口在右侧导航轨顶部。
+/* 批量入口：顶栏最右，与同行控件统一 34px 高 */
+.topbar-batch {
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px solid var(--dy-border);
+  border-radius: var(--dy-radius);
+  background: var(--dy-w-04);
+  color: var(--dy-text);
+  font-size: var(--dy-fs-12);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--dy-t-ctl);
+}
+
+.topbar-batch:hover {
+  background: var(--dy-w-08);
+  color: var(--dy-text);
+}
+
+/* 批量底部工具条：操作对象是内容，操作条贴着主内容区底缘；批量入口在顶栏最右。
    left:50% + transform 扣除右侧导航轨 / --sidebar-live-width / 6px 分割条，
    侧边作品栏开合后自动落在主网格中心；width:max-content 防窄窗 shrink-to-fit 折行 */
 .batch-bar {
@@ -524,7 +596,7 @@ body.batch-mode #mainGrid {
   color: var(--dy-c-white);
 }
 
-/* 批量模式激活时右侧导航轨「批量」入口高亮 */
+/* 批量模式激活时顶栏「批量」入口高亮 */
 body.batch-mode #btnBatch {
   color: var(--dy-primary);
   background: var(--dy-brand-16);
@@ -675,6 +747,14 @@ body.batch-mode #btnBatch {
   background: var(--dy-w-08);
 }
 
+/* 导航轨入口禁用（如任务运行中的「设置」）：保持布局、弱化并阻断悬停反馈 */
+.menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  color: var(--dy-text-muted);
+  background: transparent;
+}
+
 /* 容量使用：功能区最后一行（两行式——数值在上、单位在下，适配窄栏） */
 .menu-storage {
   display: flex;
@@ -793,8 +873,10 @@ body[data-domain="review"][data-review-kind="authors"] .state-message {
 }
 
 /* 骨架静态高光：曾为 shimmer 扫光动画，万级预铺骨架下动画元素各自晋升合成层
-   + 逐帧重绘成本过高，静态化；圆角裁切由卡片根 overflow:hidden 负责 */
-.work-skeleton .work-media::after {
+   + 逐帧重绘成本过高，静态化；圆角裁切由卡片根 overflow:hidden 负责。
+   作品/作者两域骨架同款高光，一处声明 */
+.work-skeleton .work-media::after,
+.following-skeleton::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -858,45 +940,17 @@ body[data-domain="review"][data-review-kind="authors"] .state-message {
 }
 
 /* 显隐由 body.batch-mode 纯 CSS 驱动（见批量模式规则区），禁止逐元素写 inline display——
-   万级域滚动后勾选框可达数千，逐个 style 写入会让进/出批量模式秒级卡顿 */
-.work-checkbox {
-  display: none;
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 5;
-  width: var(--dy-avatar-size);
-  height: var(--dy-avatar-size);
-  border-radius: 50%;
-  border: 2px solid var(--dy-w-55);
-  background: var(--dy-b-55);
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: var(--dy-t-ctl);
-  color: transparent;
-  font-size: var(--dy-fs-14);
-}
-
-.work-checkbox:hover {
-  border-color: var(--dy-c-white);
-  background: var(--dy-brand-30);
-}
-
-.work-checkbox.checked {
-  background: var(--dy-primary);
-  border-color: var(--dy-primary);
-  color: var(--dy-c-white);
-}
-
+   万级域滚动后勾选框可达数千，逐个 style 写入会让进/出批量模式秒级卡顿。
+   作品/作者两域同构：尺寸/字号差异经自定义属性区分（作品 28=头像径/fs14，作者 22/fs12） */
+.work-checkbox,
 .following-checkbox {
   display: none;
   position: absolute;
   top: 8px;
   left: 8px;
   z-index: 5;
-  width: 22px;
-  height: 22px;
+  width: var(--cb-size, var(--dy-avatar-size));
+  height: var(--cb-size, var(--dy-avatar-size));
   border-radius: 50%;
   border: 2px solid var(--dy-w-55);
   background: var(--dy-b-55);
@@ -905,14 +959,21 @@ body[data-domain="review"][data-review-kind="authors"] .state-message {
   cursor: pointer;
   transition: var(--dy-t-ctl);
   color: transparent;
-  font-size: var(--dy-fs-12);
+  font-size: var(--cb-fs, var(--dy-fs-14));
 }
 
+.following-checkbox {
+  --cb-size: 22px;
+  --cb-fs: var(--dy-fs-12);
+}
+
+.work-checkbox:hover,
 .following-checkbox:hover {
   border-color: var(--dy-c-white);
   background: var(--dy-brand-30);
 }
 
+.work-checkbox.checked,
 .following-checkbox.checked {
   background: var(--dy-primary);
   border-color: var(--dy-primary);
@@ -1080,7 +1141,7 @@ body[data-domain="review"][data-review-kind="authors"] .state-message {
 }
 
 .work-author-flag-following {
-  color: #35d6b0;
+  color: var(--dy-c-mint);
   background: rgba(53, 214, 176, 0.12);
 }
 
@@ -1149,7 +1210,9 @@ body.batch-mode .work-media {
   border-color: var(--dy-primary);
 }
 
-.following-avatar {
+/* 头像与首字占位圆同构（48px 圆、占位底、可点击）：fallback 只补首字居中与字色 */
+.following-avatar,
+.following-avatar-fallback {
   width: 48px;
   height: 48px;
   border-radius: 50%;
@@ -1157,6 +1220,9 @@ body.batch-mode .work-media {
   cursor: pointer;
   /* 加载中/失败的占位底，与骨架占位同色系；头像本体是 div+background-image（见 options.html 模板注释） */
   background: var(--dy-surface-elevated);
+}
+
+.following-avatar {
   background-size: cover;
   background-position: center;
   transition: opacity 0.3s ease, box-shadow 0.15s ease;
@@ -1167,12 +1233,6 @@ body.batch-mode .work-media {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  cursor: pointer;
-  background: var(--dy-surface-elevated);
   color: var(--dy-text-secondary);
   font-size: var(--dy-fs-18);
   user-select: none;
@@ -1403,7 +1463,7 @@ body.batch-mode .work-media {
   padding: 1px 5px;
   border-radius: var(--dy-radius-sm);
   background: rgba(53, 214, 176, 0.12);
-  color: #35d6b0;
+  color: var(--dy-c-mint);
   font-size: var(--dy-fs-10);
   font-weight: 500;
   line-height: 14px;
@@ -1482,7 +1542,7 @@ body.batch-mode .work-media {
   /* 描边把卡片从面板底色上分离出来（主网格卡片是无底容器，两者形态本就不同） */
   border: 1px solid var(--dy-border);
   transition: var(--dy-t-border);
-  /* 纵向两段：封面链接按 3:4 定高、信息条固定 30px（日期 + ♥/★ + 存入 四元素行） */
+  /* 纵向两段：封面链接按 3:4 定高、信息条固定 24px（日期 + ♥/★ + 存入 四元素行） */
   display: flex;
   flex-direction: column;
   /* 不用 content-visibility:auto：媒体生命周期由 Sidebar 的显式升降级（IntersectionObserver）
@@ -1495,7 +1555,7 @@ body.batch-mode .work-media {
   display: block;
   width: 100%;
   flex: 0 0 auto;
-  /* 封面 3:4 与作品域 .work-media 同构：卡片高 = 卡宽×4/3 + 信息条 30px */
+  /* 封面 3:4 与作品域 .work-media 同构：卡片高 = 卡宽×4/3 + 信息条 24px */
   aspect-ratio: 3 / 4;
   /* 图集条目悬浮 zoom 裁在封面区内（不越界压到下方信息条），与作品域 .work-media 同义 */
   overflow: hidden;
@@ -1552,16 +1612,15 @@ body.batch-mode .work-media {
   font-size: var(--dy-fs-24);
 }
 
-/* 信息条：发布日期 + 点赞/收藏状态按钮 + 「存入」按钮。高度仍对齐作品域 .work-info（30px），
-   但纵向内边距压到 3px：内容行 24px 全部交给可点控件，按钮上下各留 3px，
-   避免 16px 小控件居中后四周大片死区、难以点中 */
+/* 信息条：发布日期 + 点赞/收藏状态按钮 + 「存入」按钮。比作品域 .work-info（30px）更矮的
+   侧栏专属 24px：纵向内边距 2px、内容行 20px 全部交给可点控件，紧凑不挤压封面可视面积 */
 .sidebar-work-info {
   display: flex;
   align-items: center;
   gap: var(--dy-sp-4);
-  height: var(--dy-card-info-height);
+  height: 24px;
   flex: 0 0 auto;
-  padding: 3px var(--dy-card-pad-x);
+  padding: 2px var(--dy-card-pad-x);
   font-size: var(--dy-fs-11);
   line-height: 16px;
   background: var(--dy-surface-elevated);
@@ -1581,8 +1640,8 @@ body.batch-mode .work-media {
   display: inline-flex;
   align-items: center;
   gap: var(--dy-sp-2);
-  height: 24px;
-  padding: 0 6px;
+  height: 20px;
+  padding: 0 4px;
   border: 0;
   border-radius: var(--dy-radius-sm);
   background: none;
@@ -1629,8 +1688,8 @@ body.batch-mode .work-media {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 24px;
-  padding: 0 6px;
+  height: 20px;
+  padding: 0 4px;
   border: 0;
   border-radius: var(--dy-radius-sm);
   background: none;
@@ -1808,10 +1867,9 @@ body.batch-mode .work-media {
   border-color: var(--dy-border);
 }
 
+/* primary 悬停仅背景不同（border/transform 沿用 .dy-btn:hover）：靠后声明覆盖 background */
 .dy-btn-primary:hover {
   background: var(--dy-w-08);
-  border-color: var(--dy-border-light);
-  transform: scale(1.03);
 }
 
 .dy-btn-ghost {
@@ -2214,17 +2272,18 @@ body.batch-mode .work-media {
   height: 5px;
 }
 
-#detailProgress .track-buffered {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 0%;
-  background: var(--dy-w-35);
-}
-
+#detailProgress .track-buffered,
 #detailProgress .track-played {
   position: absolute;
   inset: 0 auto 0 0;
   width: 0%;
+}
+
+#detailProgress .track-buffered {
+  background: var(--dy-w-35);
+}
+
+#detailProgress .track-played {
   background: var(--dy-c-white);
 }
 
@@ -2388,11 +2447,7 @@ body.batch-mode .work-media {
   flex-shrink: 0;
 }
 
-.detail-bar-time {
-  color: var(--dy-w-72);
-  font-variant-numeric: tabular-nums;
-}
-
+.detail-bar-time,
 /* 图集顺序位（K/N）：bar-controls 内、时间位旁 */
 .detail-bar-order {
   color: var(--dy-w-72);
@@ -2772,8 +2827,12 @@ body.batch-mode .work-media {
   margin-bottom: 16px;
 }
 
-.group-mgmt-input input {
+/* 分组管理与导入行的文本输入同规格（38px/边框/圆角/内距）：一处声明。
+   min-width:0 对分组输入是 flex 项压缩下限放行（原为 auto），视觉无差异 */
+.group-mgmt-input input,
+.import-row .import-input {
   flex: 1;
+  min-width: 0;
   height: 38px;
   border: 1px solid var(--dy-border);
   border-radius: var(--dy-radius);
@@ -2785,7 +2844,8 @@ body.batch-mode .work-media {
   transition: var(--dy-t-border);
 }
 
-.group-mgmt-input input:focus {
+.group-mgmt-input input:focus,
+.import-row .import-input:focus {
   border-color: var(--dy-primary);
 }
 
@@ -2953,24 +3013,7 @@ body.batch-mode .work-media {
   color: var(--dy-text-secondary);
 }
 
-.import-row .import-input {
-  flex: 1;
-  min-width: 0;
-  height: 38px;
-  border: 1px solid var(--dy-border);
-  border-radius: var(--dy-radius);
-  padding: 0 14px;
-  font-size: var(--dy-font-size-sm);
-  outline: none;
-  background: var(--dy-bg);
-  color: var(--dy-text);
-  transition: var(--dy-t-border);
-}
-
-.import-row .import-input:focus {
-  border-color: var(--dy-primary);
-}
-
+/* 输入框规格与分组管理共用（见 .group-mgmt-input input 组合选择器） */
 .import-row .dy-btn {
   white-space: nowrap;
 }
@@ -3010,10 +3053,6 @@ body.batch-mode .work-media {
   align-items: center;
   gap: var(--dy-sp-8);
   flex-shrink: 0;
-}
-
-.dy-text-danger {
-  color: var(--dy-danger);
 }
 
 .spinner {
@@ -3121,31 +3160,9 @@ body.batch-mode .work-media {
   padding: 4px 0;
 }
 
-/* 设置面板内的自绘下拉（回顾数据来源）：宽度随当前选项内容，不拉伸占满整行 */
-#settingsConfigSection .settings-select {
-  flex: 0 0 auto;
-}
-
-/* 回顾配置合并为单行：两组均按内容取宽、左对齐紧挨（须压过后面 .kv-row 的 space-between） */
-#settingsConfigSection .review-config-row {
-  justify-content: flex-start;
-  gap: var(--dy-sp-16);
-}
-
-.review-config-item {
-  display: flex;
-  align-items: center;
-  gap: var(--dy-sp-8);
-  min-width: 0;
-}
-
-.review-config-item .bf-label {
-  min-width: auto;
-}
-
-.review-config-item .review-count-field {
-  flex: 0 0 84px;
-  width: 84px;
+/* 任务运行中已打开的设置面板整体 inert（关闭按钮在面板外，仍可退出） */
+.settings-panel[inert] {
+  opacity: 0.45;
 }
 
 .settings-section {
@@ -3649,3 +3666,152 @@ body.batch-mode .work-media {
 /* 回顾域无顶栏动作按钮：来源域/抽取数量在设置弹窗配置，随机入口并入右侧导航轨「同步」按钮 */
 
 /* 回顾域作者批次复用作者卡布局（作品批次走默认作品网格） */
+
+/* ===== 任务坞（非模态长任务进度：同步） ===== */
+/* 层级 150：低于详情（200）与弹窗（1000），高于网格/批量条（90）；不参与 Esc 层级 */
+.task-dock {
+  position: fixed;
+  right: 64px;
+  bottom: 16px;
+  z-index: 150;
+  width: 380px;
+  max-width: calc(100vw - 96px);
+  padding: 12px;
+  border: 1px solid var(--dy-w-12);
+  border-radius: var(--dy-r-12);
+  background: var(--dy-surface-elevated);
+  box-shadow: var(--dy-sh-lg), inset 0 1px 0 var(--dy-w-08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.task-dock.hidden {
+  display: none;
+}
+/* 坞固定在右下角，不随批量条出现而移动。宽窗下批量条保持原居中布局（两者
+   本来就不相交）；仅当居中会与坞相撞的窄窗，才把批量条贴到坞左侧
+   （right = 64 坞右边距 + 380 坞宽 + 12 间距）。body.task-dock-open 由 TaskDock 维护。 */
+@media (max-width: 1500px) {
+  body.task-dock-open .batch-bar {
+    left: auto;
+    right: 456px;
+    transform: none;
+    max-width: calc(100vw - 468px);
+  }
+}
+.task-dock-head {
+  align-items: center;
+  gap: var(--dy-sp-8);
+  padding: 0 var(--dy-sp-2);
+}
+.task-dock-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dy-text-muted);
+  flex: none;
+}
+.task-dock[data-status="running"] .task-dock-dot {
+  background: var(--dy-primary);
+  animation: taskDockPulse 1.8s var(--dy-ease-out) infinite;
+}
+@keyframes taskDockPulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--dy-brand-30);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+.task-dock[data-status="done"] .task-dock-dot {
+  background: var(--dy-c-success);
+}
+.task-dock[data-status="cancelled"] .task-dock-dot {
+  background: var(--dy-text-muted);
+}
+.task-dock[data-status="failed"] .task-dock-dot {
+  background: var(--dy-c-brand-hover);
+}
+.task-dock-title {
+  font-size: var(--dy-fs-14);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--dy-text);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-dock-toggle {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: var(--dy-sp-2);
+  border-radius: var(--dy-r-6);
+  color: var(--dy-text-secondary);
+}
+.task-dock-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--dy-t-250);
+}
+.task-dock.collapsed .task-dock-toggle svg {
+  transform: rotate(180deg);
+}
+.task-dock-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dy-sp-10);
+}
+.task-dock.collapsed .task-dock-body {
+  display: none;
+}
+.task-dock-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dy-sp-8);
+}
+.task-dock-item + .task-dock-item {
+  padding-top: var(--dy-sp-10);
+  border-top: 1px solid var(--dy-w-08);
+}
+/* 内容行直接复用同步弹窗的 .sync-line（14px / 12px gap），
+   坞内只补换行，保证与「同步关注」弹窗同一套排版 */
+.task-dock-line {
+  flex-wrap: wrap;
+  row-gap: var(--dy-sp-4);
+}
+/* 状态徽标驻留动作行首位：左对齐（margin-right:auto 吸收右侧自由空间），
+   动作按钮保持 flex-end 右聚；沿用 14px 口径与超长截断 */
+.task-dock-actions .sync-status {
+  margin-left: 0;
+  margin-right: auto;
+  font-size: var(--dy-fs-14);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-dock-actions {
+  gap: var(--dy-sp-6);
+  justify-content: flex-end;
+}
+.task-dock-actions:empty {
+  display: none;
+}
+.task-dock-actions .task-dock-external {
+  margin-right: auto;
+  font-size: var(--dy-fs-12);
+  color: var(--dy-c-text-2);
+}
+.task-dock-actions .dy-btn {
+  padding: 4px var(--dy-sp-10);
+  border-radius: var(--dy-r-6);
+  font-size: var(--dy-fs-12);
+}

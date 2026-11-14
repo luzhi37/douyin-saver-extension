@@ -10,6 +10,7 @@ import { groups } from "./data/groups.js";
 import { dataTools } from "./data/data-tools.js";
 import { scanTasks } from "./tasks/scan-tasks.js";
 import { independentTasks } from "./tasks/independent-tasks.js";
+import { taskRegistry, PORT_NAME } from "./tasks/task-registry.js";
 import { storage } from "./data/storage.js";
 
 // 作品型三域 GET 的公共分页参数（消息载荷投影，字段名与 GET_* 协议一致）
@@ -68,6 +69,11 @@ class App {
     });
 
     chrome.runtime.onStartup.addListener(() => this.setupDeclarativeNetRequest());
+
+    // 发起页控制端口：任务寿命 = 页面寿命，port 断开即取消（关页/刷新/SW 回收）
+    chrome.runtime.onConnect.addListener((port) => {
+      if (port.name === PORT_NAME) taskRegistry.bindPort(port);
+    });
 
     chrome.action.onClicked.addListener(() => {
       const url = chrome.runtime.getURL("options/options.html");
@@ -153,7 +159,7 @@ class App {
       MOVE_REVIEW: (m, r) => reviewHandlers.moveBySource(m.sourceDomain, m.sourceIds, m.targetGroupId, r),
 
       // —— 授权域：关注（账号原生镜像）/ 候选（扩展自建池）——
-      SAVE_FOLLOWINGS: (m, r) => followingsHandlers.save(m.followings, r),
+      // 关注域无 SAVE_*：扫描落库由 background createScanWriter 承接（options 侧无发送方）
       GET_FOLLOWINGS: (m, r) => followingsHandlers.get({ groupId: m.groupId }, r),
       DELETE_FOLLOWINGS: (m, r) => followingsHandlers.delete(m.uids, r),
       MOVE_FOLLOWINGS: (m, r) => followingsHandlers.move(m.uids, m.targetGroupId, r),
@@ -200,43 +206,59 @@ class App {
       REORDER_GROUPS: (m, r) => groups.reorder(m.domain, m.groupIds, r),
 
       // —— 数据工具（域感知）——
-      IMPORT_DATA: (m, r) => dataTools.import(m.text, m.domain || CONFIG.STORAGE_KEYS.WORKS, r),
-      EXPORT_DATA: (m, r) => dataTools.export(m.domain, r),
-      RESET_DOMAIN: (m, r) => dataTools.reset(m.domain, r),
+      // 整域导入/重置与同域同步任务互斥：两者都是整批读改写，并发会让导入的旧快照
+      // 覆盖刚刷新的直链、或让重置后的域被 checkpoint 半复活
+      IMPORT_DATA: (m, r) => {
+        const domain = m.domain || CONFIG.STORAGE_KEYS.WORKS;
+        if (taskRegistry.isBusy(domain)) return r({ ok: false, error: "BUSY" });
+        if (m.transfer) return dataTools.importChunk(m, r); // 大文件分块上行，末块拼回走 import()
+        return dataTools.import(m.text, domain, r, m.taskId); // taskId 透传：options 预建坞行
+      },
+      // 导出会话式分块拉取：EXPORT_DATA 建会话（键快照 + header/footer），EXPORT_CHUNK
+      // 逐块拉文本。导出纯只读，不参与 BUSY 互斥（与导入/重置的整批读改写不同）
+      EXPORT_DATA: (m, r) => dataTools.exportStart(m.domain, r),
+      EXPORT_CHUNK: (m, r) => dataTools.exportChunk(m, r),
+      RESET_DOMAIN: (m, r) => {
+        if (taskRegistry.isBusy(m.domain)) return r({ ok: false, error: "BUSY" });
+        return dataTools.reset(m.domain, r);
+      },
       GET_STATS: (m, r) => dataTools.getStats(r, m),
 
       // —— 扫描 / 校准 / 双模长任务 ——
       FETCH_FOLLOWING: (m, r) =>
-        this.#byMode(() => independentTasks.fetchFollowing(m.secUid, r), () => scanTasks.fetchFollowing(m.secUid, r)),
+        this.#byMode(() => independentTasks.fetchFollowing(m.secUid, r, m.taskId), () => scanTasks.fetchFollowing(m.secUid, r, m.taskId)),
       CALIBRATE_FOLLOWING: (m, r) => scanTasks.calibrateOne(m.uid, m.secUid, CONFIG.STORAGE_KEYS.FOLLOWINGS, r),
-      CALIBRATE_FOLLOWINGS: (m, r) => scanTasks.calibrateAll(CONFIG.STORAGE_KEYS.FOLLOWINGS, r),
+      CALIBRATE_FOLLOWINGS: (m, r) => scanTasks.calibrateAll(CONFIG.STORAGE_KEYS.FOLLOWINGS, r, m.taskId),
       CALIBRATE_CANDIDATE: (m, r) => scanTasks.calibrateOne(m.uid, m.secUid, CONFIG.STORAGE_KEYS.CANDIDATES, r),
-      CALIBRATE_CANDIDATES: (m, r) => scanTasks.calibrateAll(CONFIG.STORAGE_KEYS.CANDIDATES, r),
+      CALIBRATE_CANDIDATES: (m, r) => scanTasks.calibrateAll(CONFIG.STORAGE_KEYS.CANDIDATES, r, m.taskId),
       // 点赞列表无独立模式分支（favorite 端点 Turing 风控，见 docs/05）
-      FETCH_FAVORITES: (m, r) => scanTasks.fetchFavorites(m.secUid, m.persist, r),
+      FETCH_FAVORITES: (m, r) => scanTasks.fetchFavorites(m.secUid, m.persist, r, m.taskId),
       FETCH_COLLECTION: (m, r) =>
-        this.#byMode(() => independentTasks.fetchCollection(m.persist, r), () => scanTasks.fetchCollection(m.persist, r)),
+        this.#byMode(() => independentTasks.fetchCollection(m.persist, r, m.taskId), () => scanTasks.fetchCollection(m.persist, r, m.taskId)),
       SYNC_WORKS: (m, r) =>
-        this.#byMode(() => independentTasks.syncWorks(m.awemeIds, r), () => scanTasks.syncWorks(m.awemeIds, r)),
+        this.#byMode(
+          () => independentTasks.syncWorks(m.awemeIds, r, m.taskId),
+          () => scanTasks.syncWorks(m.awemeIds, r, m.taskId),
+        ),
       FETCH_WORKS_PAGE: (m, r) =>
         this.#byMode(
           () => independentTasks.fetchWorksPage(m.secUid, m.cursor || "", r),
           () => tabBridge.fetchWorksPage(m, r),
         ),
       IMPORT_USER_WORKS: (m, r) =>
-        this.#byMode(() => independentTasks.importUserWorks(m.secUid, r), () => scanTasks.importUserWorks(m.secUid, r)),
+        this.#byMode(() => independentTasks.importUserWorks(m.secUid, r, m.taskId), () => scanTasks.importUserWorks(m.secUid, r, m.taskId)),
       IMPORT_CANDIDATE: (m, r) => scanTasks.importCandidate(m.secUid, r),
       RESOLVE_USER_PROFILE: (m, r) => scanTasks.resolveUserProfile(m.uid, r),
       RESOLVE_AUTHOR_STATS: (m, r) => scanTasks.resolveAuthorStats(m.secUid, r),
       // 点赞取消无独立模式分支（a_bogus 与 XHR 原型链深度绑定，见 docs/06）
       CANCEL_FAVORITES: async (m, r) => {
         if (await independentClient.loadMode()) return r({ ok: false, error: "UNSUPPORTED_INDEPENDENT" });
-        return scanTasks.runCancelBatch(m.awemeIds, "CANCEL_ONE_FAVORITES", "CANCEL_PROGRESS", m.domain, r);
+        return scanTasks.runCancelBatch(m.awemeIds, "CANCEL_ONE_FAVORITES", m.domain, r, m.taskId);
       },
       CANCEL_COLLECTION: (m, r) =>
         this.#byMode(
-          () => independentTasks.cancel(m.awemeIds, m.domain, r),
-          () => scanTasks.runCancelBatch(m.awemeIds, "CANCEL_ONE_COLLECTION", "CANCEL_PROGRESS", m.domain, r),
+          () => independentTasks.cancel(m.awemeIds, m.domain, r, m.taskId),
+          () => scanTasks.runCancelBatch(m.awemeIds, "CANCEL_ONE_COLLECTION", m.domain, r, m.taskId),
         ),
 
       // —— 侧栏单条反应：远端成功后落库/删本地，失败保持原状 ——
@@ -259,7 +281,12 @@ class App {
       GET_SECURITY_STATUS: (m, r) => {
         tabBridge.getSecurityStatus(r);
       },
-      SET_MODE: (m, r) => independentClient.setMode(m, r),
+      // 模式开关是全局行为：队列（含 queued/paused）里的任务启动时按当前模式分流，
+      // 切换会让队列语义失真；只要有未终态任务就拒绝，等队列清空再切
+      SET_MODE: (m, r) => {
+        if (taskRegistry.hasPending()) return r({ ok: false, error: "BUSY" });
+        return independentClient.setMode(m, r);
+      },
       CAPTURE_BROWSER_FEATURES: (m, r) => credentials.captureBrowserFeatures(m, r),
       GET_COOKIE_INFO: (m, r) => credentials.getCookieInfo(r),
       GET_BROWSER_FEATURES: (m, r) => credentials.getBrowserFeatures(r),
@@ -272,9 +299,25 @@ class App {
       REFRESH_WEBID: (m, r) => credentials.refreshWebId(r),
       REFRESH_BROWSER_FEATURES: (m, r) => credentials.refreshBrowserFeatures(r),
       REFRESH_COOKIE: (m, r) => credentials.refreshCookie(r),
-      CANCEL_ACTIVE_TASK: (m, r) => {
-        tabBridge.cancelActiveTask(r);
+      CANCEL_TASK: (m, r) => {
+        const task = taskRegistry.get(m.taskId);
+        const ok = taskRegistry.cancel(m.taskId);
+        // 仅取消「正在执行循环体」的 Tab 任务时转发页面侧中断（queued/paused 无在途请求）；
+        // 页面侧中断无 taskId，多任务并存会误杀，故保持单一 active
+        if (ok && task && task.mode === "tab" && task.status === "running") {
+          tabBridge.cancelActiveTask(() => {});
+        }
+        r({ ok });
       },
+      PAUSE_TASK: (m, r) => r({ ok: taskRegistry.pause(m.taskId) }),
+      RESUME_TASK: (m, r) => r({ ok: taskRegistry.resume(m.taskId) }),
+      GET_TASK_STATE: (m, r) => {
+        // 只读观察页接管进度展示：只消费非终态快照（busy/activeId 无消费方，
+        // 域级闸门走 taskRegistry.isBusy 直查）
+        r({ tasks: taskRegistry.snapshot() });
+      },
+      // 长任务只认 CANCEL_TASK；页面侧中断由其转发（tabBridge.cancelActiveTask），
+      // SW 路由不再处理 CANCEL_ACTIVE_TASK——options 侧发送点已随 B6 迁移移除
       RELOAD_CONFIG: async (m, r) => {
         await runtimeConfig.reload();
         r({ ok: true });
@@ -283,6 +326,9 @@ class App {
   }
 
   route(message, sendResponse) {
+    // B6 任务队列：启动类消息不再 BUSY 拒绝，一律入队排队（全局单任务由
+    // TaskRegistry 的单一 active 保证；队满由 start 返回 null 回 QUEUE_FULL，
+    // 域互斥闸门——导入/重置/模式切换——仍回 BUSY）
     const handler = this.#routes[message.type];
     if (!handler) {
       sendResponse({ error: "Unknown message type: " + message.type });

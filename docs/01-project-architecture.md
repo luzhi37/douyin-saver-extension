@@ -38,13 +38,13 @@ manifest 要点：SW 为 `type: "module"`；content script 仅匹配 `*://*.douy
 chrome.runtime.onMessage (background/main.js App.route switch)
   │
   ├─ 与模式无关的数据操作 ──→ SAVE_WORKS / GET_WORKS / DELETE_WORKS / MOVE_WORKS / GET_WORKS_BY_IDS（`{ domain, ids }`）
-  │                            SAVE_FOLLOWINGS / GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS
+  │                            GET_FOLLOWINGS / DELETE_FOLLOWINGS / MOVE_FOLLOWINGS（关注域无 SAVE_*：落库经 createScanWriter）
   │                            SAVE_CANDIDATES / GET_CANDIDATES / DELETE_CANDIDATES / MOVE_CANDIDATES
   │                            GET_FAVORITES / DELETE_FAVORITES / MOVE_FAVORITES / GET_COLLECTIONS / DELETE_COLLECTIONS / MOVE_COLLECTIONS
   │                            GET_GROUPS / GET_DOMAIN_GROUPS / ADD_GROUP / RENAME_GROUP / DELETE_GROUP / REORDER_GROUPS
   │                            IMPORT_DATA / EXPORT_DATA / RESET_DOMAIN / GET_STATS / GET_AUTHOR_UID_SETS / RELOAD_CONFIG
   │     （作品型三域 GET_* 分页：saved 排序 page:0 经复合索引 savedAt_id / groupId_savedAt_id
-  │       （DB v12，无改名迁移；升级回填缺失 savedAt/groupId/uid/createTime、回填 *_groups.count 并剔除废弃标题字段 desc）keyset 游标直出首页 + hasMore/nextCursor；
+  │       （DB v12；升级路径仅补建缺失 store/索引，不携带数据迁移）keyset 游标直出首页 + hasMore/nextCursor；
   │       cursor 以上页末条索引键（含主键，全序唯一）为开区间边界续页，免疫并发增删位移；
   │       ascending:true 改 next 方向、从最旧一端分页（「保存时间(升)」用，页序即视图序）；
   │       sort:"authorCount" 走 background 作者视图：索引键扫描构建 SW 内存视图，cursor 为
@@ -53,7 +53,7 @@ chrome.runtime.onMessage (background/main.js App.route switch)
   │       无全量读取；作者域两域单发全量）
   │
   ├─ 按模式分支（读 independentClient.loadMode()）──→
-  │     SYNC_WORKS          → im ? independentTasks.syncWorks         : scanTasks.syncWorks（逐条 tabBridge.sendAsync）
+  │     SYNC_WORKS          → im ? independentTasks.syncWorks         : scanTasks.syncWorks（TaskRegistry + 逐条请求 + checkpoint）
   │     FETCH_FOLLOWING     → im ? independentTasks.fetchFollowing   : scanTasks.fetchFollowing
   │     FETCH_COLLECTION    → im ? independentTasks.fetchCollection  : scanTasks.fetchCollection
   │     FETCH_WORKS_PAGE    → im ? independentTasks.fetchWorksPage   : tabBridge.fetchWorksPage
@@ -76,19 +76,24 @@ chrome.runtime.onMessage (background/main.js App.route switch)
   │
   └─ 凭据/配置管理 ──→ SET_MODE / CAPTURE_BROWSER_FEATURES / GET_COOKIE_INFO / REFRESH_COOKIE
                        GET_BROWSER_FEATURES / REFRESH_BROWSER_FEATURES / GET_CACHE_TIMES
-                       RESOLVE_SEC_UID / REFRESH_MSTOKEN / REFRESH_WEBID / CANCEL_ACTIVE_TASK
+                       RESOLVE_SEC_UID / REFRESH_MSTOKEN / REFRESH_WEBID
 ```
 
 ### 长任务通用时序
 
 ```
-options 触发（如 SYNC_WORKS）
-  → background 立即 ack { ok, requestId, total }（SYNC_WORKS / 取消类）
-  → background 循环 handler：逐条(页)请求 → chrome.runtime.sendMessage(进度消息) → 页间随机延迟
-  → 结束发完成消息（SYNC_DONE / CANCEL_DONE）或一次性返回全量结果（FETCH_* 类）
-取消：options 弹窗关闭 → CANCEL_ACTIVE_TASK
-       ├─ Tab 模式：background → tabBridge.find → content → DY_CANCEL_ACTIVE_TASK → inject activeTask.abort()
-       └─ 独立模式：background 循环内自挂 cancelHandler 监听同名消息，置 cancelled 标志
+options 触发（SYNC_WORKS / FETCH_* / CALIBRATE_* / IMPORT_USER_WORKS / CANCEL_* / IMPORT_DATA 共 10 类）
+  → background TaskRegistry.start({ taskId, kind, mode, domain, exclusive:true })
+    （全局单任务：任一任务在跑 → { ok:false, error:"BUSY" }）
+  → 立即 ack { ok, requestId:taskId, taskId, total }（终态不再靠 sendResponse）
+  → 循环 handler：逐条(页)请求经全局 RequestGate 串行，isCancelled 透传给闸门
+    → 进度节流发 TASK_PROGRESS（绝对值计数，逐 kind 附加字段）
+  → 结束：落库 + STORE_CHANGED → TaskRegistry.finish → TASK_DONE（唯一终态来源，广播给所有 options 页）
+取消：CANCEL_TASK { taskId }（精确取消；Tab 模式额外转发页面侧中断）
+      控制端口断开（关页/刷新/SW 回收）→ 自动取消（cancelReason=PAGE_CLOSED）
+      CANCEL_ACTIVE_TASK 的 SW 路由已移除——页面侧中断仅经 CANCEL_TASK 转发
+     （tabBridge.cancelActiveTask）与 send 超时补发两条 background→tab 通道
+取消时落库语义按族保持：扫描族分块确认写（取消/失败保留已写块，丢失结论仅完整扫描的终态产出），校准/导入保留已写入部分，取消并移除分块确认删（远端成功进缓冲满块即删，失败/被杀无僵尸记录）。扫描族异常收尾与完成收尾同函数 `finishScanTask`——取消口径统一读 `isCancelled`，排队等待期被取消的异常终态如实报 `cancelled`（不再强制 `failed`）
 ```
 
 ### 模式标志生命周期
@@ -111,7 +116,7 @@ options 设置面板开关 → SET_MODE { enabled }
 | `savedCookie` 为空 | `independentClient.request` 抛 `NO_COOKIE`（各流程首请求即失败） |
 | Cookie 过期 | 抛 `` `HTTP ${status}` `` 形态（`HTTP 401`/`HTTP 429` 前缀经 `isFatalTaskError` 判致命）；`AUTH_FAILED` 仅 Tab 模式 inject 抛出 |
 | msToken 刷新失败 | 兜底随机假 token，严格端点（listcollection）403 |
-| 取消信号路径差异 | Tab：options→background→content→inject；独立：background 循环内自挂监听消化 |
+| 取消信号路径差异 | Tab：`CANCEL_TASK` → `taskRegistry.cancel` + background→content→inject 转发页面侧中断（taskId-less 全局单槽）；独立：`taskRegistry.isCancelled` + RequestGate 排队票作废（自持 AbortController） |
 
 ### 独立模式的选型依据
 
@@ -156,15 +161,10 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 
 | 消息类型 | 载荷 |
 |----------|------|
-| `SYNC_PROGRESS` | `{ requestId, index, total, status:"ok"\|"error", awemeId }` |
-| `SYNC_DONE` | `{ requestId, ok, refreshed?, failed?, failedAwemeIds?, error? }` |
-| `FOLLOWING_PROGRESS` | `{ collected, hasMore, total, requestId }` |
-| `CALIBRATE_PROGRESS` | `{ domain, phase:"calibrate", collected, total, hasMore:false, requestId }`（工具弹窗批量校准逐条回报；domain 区分关注/候选域） |
-| `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` | `{ collected, hasMore, total, requestId }` |
-| `CANCEL_PROGRESS` | `{ requestId, index, total, status, awemeId }` |
-| `CANCEL_DONE` | `{ requestId, ok, cancelled, refreshed, failed, failedAwemeIds, deletedIds }` |
-| `IMPORT_WORKS_PROGRESS` | `{ requestId, collected, saved, total, hasMore }`（IMPORT_USER_WORKS 作者作品分页入库过程回报） |
-| `IMPORT_PROGRESS` | `{ domain, processed, total }`（IMPORT_DATA 作品域分块落库逐块回报） |
+| `TASK_PROGRESS` | 公共 `{ type, taskId, kind, domain, processed, total, elapsed }`（绝对值计数；`syncWorks`/`cancel*` 逐条上报，其余按页/按条）；逐 kind 附加：`syncWorks` 带 `ok/failed/skipped/changed/rateLimited`（`rateLimited` 恒在：普通上报 `false`，限速退避分支覆写 `true`，下一条普通上报复位）；`scan*` / `syncFollowings` 带 `collected/hasMore`；`calibrate*` 带 `collected/phase:"calibrate"`；`importWorks` 带 `collected/savedCount/hasMore`；`importData` 无附加字段（processed/total 即块边界计数）；`cancel*` 带 `index/stepStatus/awemeId/failed` |
+| `TASK_DONE` | 公共 `{ type, taskId, kind, domain, ok, cancelled, timedOut, error, processed, total, elapsed }`（落库与 STORE_CHANGED 之后发，**唯一终态来源**，所有 options 页据此收口）；逐 kind 附加：`syncWorks` 带 `refreshed/failed/skipped/changed/failedAwemeIds`（`processed`=已判定数 ok+failed，cancelled/熔断时 < total）；`scan*` 带 `saved:{added,updated,changed}/lostUids`；`syncFollowings` 带 `added/updated/changed/lost/lostUids`；`calibrate*` 带 `updated/changed`；`importWorks` 带 `collected/added/updated`；`importData` 带 `added/updated/invalid`；`cancel*` 带 `refreshed/failed/failedAwemeIds/deletedIds`（`refreshed`=实删数，`processed`=已处理数，cancelled 时 < total） |
+
+> 旧的 `FOLLOWING_PROGRESS` / `CALIBRATE_PROGRESS` / `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `IMPORT_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE` 已全部并入 `TASK_PROGRESS` / `TASK_DONE`（`IMPORT_PROGRESS` 随整域导入登记 `importData` 任务坞于 2026-11-14 退役）；取消类的 `deletedIds` 现由 `TASK_DONE` 携带。坞内按 `kind` 用各自原弹窗文案渲染 `.sync-line`，见 [docs/11](./11-options-ui.md)。
 
 ## 消息类型总表（App.route 全量分发）
 
@@ -172,20 +172,20 @@ function requestResponse(requestEvent, resultEvent, timeoutMs, buildDetail)
 
 | 类别                       | 消息类型                                                                                                                                                                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道 + 侧边栏作品域存在性批量判据，见 docs/11）/ `GET_RANDOM_RECORDS`（`{ domain, groupId:"all", count, excludeIds? }`：随机回顾按主键抽样，返回 `items/poolSize/eligible/remaining`；不写存储、不广播）/ `GET_REVIEW`（`{ groupId }`：回顾引用回源 hydration）/ `SAVE_REVIEW_BATCH`（`{ sourceDomain, sourceIds, groupId }`：清空旧引用后整批替换回顾批次，受 500 条上限约束，只写引用）/ `DELETE_REVIEW` / `MOVE_REVIEW`（按 `sourceDomain + sourceIds` 删除/移动回顾引用，不触碰源域） / `SAVE_FOLLOWINGS` / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `SAVE_CANDIDATES` / `GET_CANDIDATES` / `DELETE_CANDIDATES` / `MOVE_CANDIDATES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`persistScan`）；作品型三域 `GET_*` 必须分页（`page:0` 首页 / `cursor` keyset 续页 / `ascending:true` 升序取数（保存时间(升)用，页序即视图序），缺省分页参数返回 `BAD_PARAMS`，机制见本册「接口 / 方法签名」）；`sort:"authorCount"` + `direction:"desc|asc"` 走 background 作者视图（page0 附 `authorMeta`，续页 cursor 为 `{ token, dir, ai, off }`；错误码 `VIEW_EXPIRED` / `BAD_CURSOR` / `AUTHOR_VIEW_INCOMPLETE`；视图为 SW 内存快照，写入使 rev 前进后旧游标失效）；作者域（followings/candidates）`GET_*` 单发全量 |
-| 分组管理                   | `GET_GROUPS` / `GET_DOMAIN_GROUPS`（`{ domain }`：只读对应 `*_groups` 一张小表，返回 `{ groups, counts, total }`，O(分组数)；计数为分组记录的 `count` 字段，由 `putBatch/deleteBatch/clear` 与数据写入同事务维护，升级 v11 时回填） / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
-| 工具                       | `IMPORT_DATA` / `EXPORT_DATA` / `RESET_DOMAIN` / `GET_STATS`（`{ domain }` 只统计该域分组计数、`{ bytesOnly:true }` 只回存储字节；两者均缺省返回 `BAD_PARAMS`，不再提供全域快照；分组 tab 的原子快照见 `GET_DOMAIN_GROUPS` 与 docs/11）/ `GET_AUTHOR_UID_SETS`（关注/候选两域主键集，`getAllKeys` 不物化记录，作品卡作者状态 chip 用，见 docs/11）/ `GET_AUTHOR_BY_UID`（`{ uid }`：关注/候选两域按主键各取一条作者档案；侧栏作者头在作品摘要缺头像/统计时跨域补齐，见 docs/11） / `RESOLVE_AUTHOR_STATS`（`{ secUid }`：侧栏作者头取平台精准作品数/粉丝数，只读不落库，见 docs/11）/ `GET_RECORD_STATUS`（`{ awemeId, uid }`：抖音标签页保存按钮状态角标；works/candidates 两域主键直读，不物化整域，返回 `work: { exists }` 与 `author: { uid, candidate }`，不解析分组，见 docs/09）/ `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（关注域单用户校准，见 docs/04）/ `CALIBRATE_FOLLOWINGS`（工具弹窗批量校准关注域，见 docs/04）/ `CALIBRATE_CANDIDATE`（候选域单用户校准）/ `CALIBRATE_CANDIDATES`（工具弹窗批量校准候选域）/ `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `RESOLVE_USER_PROFILE` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
-| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION` — options 触发 background 循环扫描、逐页透传进度（同步与校准已分离，`FETCH_FOLLOWING` 收集后不再自动校准，见 docs/04）                              |
-| 入库                       | `IMPORT_USER_WORKS` / `IMPORT_CANDIDATE` — 作者作品分页入作品域 + 作者档案单请求入候选域，均双模支持（分组/去重语义见 docs/07）；过程消息 `IMPORT_WORKS_PROGRESS`。入口为菜单「工具」弹窗（`AuthorImport`） |
+| 数据操作                   | `SAVE_WORKS` / `GET_WORKS` / `DELETE_WORKS` / `MOVE_WORKS` / `SYNC_WORKS` / `GET_WORKS_BY_IDS`（bulk 广播收口的补拉通道 + 侧边栏作品域存在性批量判据，见 docs/11）/ `GET_RANDOM_RECORDS`（`{ domain, groupId:"all", count, excludeIds? }`：随机回顾按主键抽样，返回 `items/poolSize/eligible/remaining`；不写存储、不广播）/ `GET_REVIEW`（`{ groupId }`：回顾引用回源 hydration）/ `SAVE_REVIEW_BATCH`（`{ sourceDomain, sourceIds, groupId }`：清空旧引用后整批替换回顾批次，受 500 条上限约束，只写引用）/ `DELETE_REVIEW` / `MOVE_REVIEW`（按 `sourceDomain + sourceIds` 删除/移动回顾引用，不触碰源域） / `GET_FOLLOWINGS` / `DELETE_FOLLOWINGS` / `MOVE_FOLLOWINGS` / `SAVE_CANDIDATES` / `GET_CANDIDATES` / `DELETE_CANDIDATES` / `MOVE_CANDIDATES` / `GET_FAVORITES` / `DELETE_FAVORITES` / `MOVE_FAVORITES` / `GET_COLLECTIONS` / `DELETE_COLLECTIONS` / `MOVE_COLLECTIONS`（followings 无 `SAVE_*`：扫描落库经 `createScanWriter` 分块确认写；favorites/collections 无独立保存消息，落库经 `SAVE_WORKS`/`createScanWriter` 分块确认写）；作品型三域 `GET_*` 必须分页（`page:0` 首页 / `cursor` keyset 续页 / `ascending:true` 升序取数（保存时间(升)用，页序即视图序），缺省分页参数返回 `BAD_PARAMS`，机制见本册「接口 / 方法签名」）；`sort:"authorCount"` + `direction:"desc|asc"` 走 background 作者视图（page0 附 `authorMeta`，续页 cursor 为 `{ token, dir, ai, off }`；错误码 `VIEW_EXPIRED` / `BAD_CURSOR` / `AUTHOR_VIEW_INCOMPLETE`；视图为 SW 内存快照，写入使 rev 前进后旧游标失效）；作者域（followings/candidates）`GET_*` 单发全量 |
+| 分组管理                   | `GET_GROUPS` / `GET_DOMAIN_GROUPS`（`{ domain }`：只读对应 `*_groups` 一张小表，返回 `{ groups, counts, total }`，O(分组数)；计数为分组记录的 `count` 字段，由 `putBatch/deleteBatch/clear` 与数据写入同事务维护） / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `REORDER_GROUPS`                                                                                                                                                                                                                  |
+| 工具                       | `IMPORT_DATA`（小文件单条全文 `text`；超 `IMPORT_TRANSFER_THRESHOLD` 时 options 分块上行 `transfer:{ id, seq, total, text }`，SW 按 `transferId` 缓冲、末块拼回全文走既有 import() 流程，错误码 `IMPORT_TRANSFER_EXPIRED`；作品型三域校验全部通过后登记 `importData` 任务坞长任务并 ack `{ ok, taskId }`——响应不再携带导入计数，作者域保持同步响应计数，机制见 docs/10）/ `EXPORT_DATA`（会话式分块导出：响应 `{ exportId, total, header, footer }` 建键快照会话，纯只读不参与 BUSY 互斥；options 拉取循环走任务坞本地任务 `exportData`——不经队列/不占 RequestGate 车道，暂停=块边界让出，取消=丢弃已拉文本不保存文件）/ `EXPORT_CHUNK`（`{ exportId, offset }` 逐块拉记录文本，返回 `{ text, next, done }`；文件格式与整体 `JSON.stringify(…, null, 2)` 逐字节一致，格式知识全留 SW；会话过期回 `EXPORT_SESSION_EXPIRED`，机制见 docs/10）/ `RESET_DOMAIN` / `GET_STATS`（`{ bytesOnly:true }` 只回存储字节，缺省返回 `BAD_PARAMS`；域分组计数由 `GET_DOMAIN_GROUPS` 承接，分组 tab 的原子快照见 `GET_DOMAIN_GROUPS` 与 docs/11）/ `GET_AUTHOR_UID_SETS`（关注/候选两域主键集，`getAllKeys` 不物化记录，作品卡作者状态 chip 用，见 docs/11）/ `GET_AUTHOR_BY_UID`（`{ uid }`：关注/候选两域按主键各取一条作者档案；侧栏作者头在作品摘要缺头像/统计时跨域补齐，见 docs/11） / `RESOLVE_AUTHOR_STATS`（`{ secUid }`：侧栏作者头取平台精准作品数/粉丝数，只读不落库，见 docs/11）/ `GET_RECORD_STATUS`（`{ awemeId, uid }`：抖音标签页保存按钮状态角标；works/candidates 两域主键直读，不物化整域，返回 `work: { exists }` 与 `author: { uid, candidate }`，不解析分组，见 docs/09）/ `GET_SECURITY_STATUS` / `CALIBRATE_FOLLOWING`（关注域单用户校准，见 docs/04）/ `CALIBRATE_FOLLOWINGS`（工具弹窗批量校准关注域，见 docs/04）/ `CALIBRATE_CANDIDATE`（候选域单用户校准）/ `CALIBRATE_CANDIDATES`（工具弹窗批量校准候选域）/ `SET_MODE` / `CAPTURE_BROWSER_FEATURES` / `GET_COOKIE_INFO` / `GET_BROWSER_FEATURES` / `GET_CACHE_TIMES` / `RESOLVE_SEC_UID` / `RESOLVE_USER_PROFILE` / `REFRESH_MSTOKEN` / `REFRESH_WEBID` / `REFRESH_BROWSER_FEATURES` / `REFRESH_COOKIE` / `RELOAD_CONFIG` |
+| 扫描入口                   | `FETCH_FOLLOWING` / `FETCH_FAVORITES` / `FETCH_COLLECTION`（均带 `taskId`）— 任务坞长任务：三扫描统一 `createScanWriter` 分块确认写（每累计 `SYNC.SCAN_CHUNK` 条单事务 upsert 静默落库，savedAt 戳全局下标分配保主页序），丢失检测仅完整扫描的终态执行（中途失败/取消保留已写块、不出结论），数据广播仅终态一次裸载荷。逐页进度走 `TASK_PROGRESS`，见 docs/03 / docs/05 / docs/10 |
+| 入库                       | `IMPORT_USER_WORKS`（带 `taskId`，任务坞长任务）/ `IMPORT_CANDIDATE` — 作者作品分页入作品域 + 作者档案单请求入候选域，均双模支持（分组/去重语义见 docs/07）；`IMPORT_USER_WORKS` 分块确认写（页结果进缓冲，满 `SYNC.SCAN_CHUNK` 条单事务 `mergeAndSave`）、终态一次 `STORE_CHANGED` 裸载荷。入口为菜单「工具」弹窗（`AuthorImport`）与侧边栏 header |
 | uid 反查主页               | `RESOLVE_USER_PROFILE { uid }` — 工具弹窗只读短请求：数字 uid 经 `profile/other` 的 `user_id` 分支换 `sec_uid` 并拼主页链接，双模（独立直连 / Tab 转发），不落库、不广播；错误统一 toast（含 `NO_SIGNATURE`/`NO_DOUYIN_TAB`，不走签名引导弹窗） |
 | 作者精准统计               | `RESOLVE_AUTHOR_STATS { secUid }` — 侧栏作者头只读短请求：`profile/other` 取权威作品数/粉丝数（与作品列表分页并行），双模（独立直连 / Tab 转发），不落库、不广播；作者域的落库仍由 `CALIBRATE_*` 负责；失败静默保留已存摘要 |
-| 清理                       | 工具弹窗三个按钮（`AuthorImport`）：①点赞/收藏域未关注作品：`GET_FOLLOWINGS { groupId:"all" }` 建关注全集 + `GET_FAVORITES`/`GET_COLLECTIONS`（`groupId:"all"`、`page:0` + keyset `cursor` 逐页、只留 awemeId）筛 `uid` 不在全集的作品 → 确认后 `GET_GROUPS`/`ADD_GROUP`（缺「稍后删除」时建组）+ `MOVE_FAVORITES`/`MOVE_COLLECTIONS` 移入；无 `uid` 作品不参与判定，关注域为空时拒绝执行。②候选域已关注作者（原候选域「同步」按钮功能，2026-11-05 迁入）：同一关注全集 + `GET_CANDIDATES { groupId:"all" }` 本地重叠比对 → 确认后 `MOVE_CANDIDATES` 移入「稍后删除」，判定口径同①（已在该组不重复计入）。候选域「同步」按钮改为与回顾域一致的指引 toast |
-| 存储广播                   | `STORE_CHANGED { domain, upserts?, addedIds?, changedIds? }` — 落库成功后 background 广播（发送方可能是抖音标签页等外部上下文），**仅在 `changed>0` 时发**（no-op 不广播）。两种载荷：**point**（作品型三域的单发保存/状态切换，`changed ≤ BROADCAST.UPSERTS_MAX`=8 时附带合并后记录 `upserts` 与新增 id 集 `addedIds`）；**bulk**（入库循环收尾等批量变化，附带轻量 id 集 `changedIds`/`addedIds`——禁止改回全量记录载荷防消息膨胀；关注/候选域无载荷，options 整域重载）。载荷语义见 [docs/10](./10-storage-write-and-import.md)；options 侧去抖/flush/头插收口管线与红线见 [docs/11](./11-options-ui.md)「STORE_CHANGED 增量收口」 |
-| 取消入口                   | `CANCEL_FAVORITES` / `CANCEL_COLLECTION` — options 触发 background 批量取消：tab 模式逐条派发 `CANCEL_ONE_*` 到 inject；独立模式仅 `CANCEL_COLLECTION` 在 background 循环 POST（细节见 docs/06）                                                                                                     |
+| 清理                       | 工具弹窗三个按钮（`AuthorImport`）：①点赞/收藏域未关注作品：`GET_FOLLOWINGS { groupId:"all" }` 建关注全集 + `GET_FAVORITES`/`GET_COLLECTIONS`（`groupId:"all"`、`page:0` + keyset `cursor` 逐页、只留 awemeId）筛 `uid` 不在全集的作品 → 确认后 `GET_GROUPS`/`ADD_GROUP`（缺「稍后删除」时建组）+ `MOVE_FAVORITES`/`MOVE_COLLECTIONS` 移入；无 `uid` 作品不参与判定，关注域为空时拒绝执行。②候选域已关注作者（原候选域「同步」按钮功能，2026-11-05 迁入）：同一关注全集 + `GET_CANDIDATES { groupId:"all" }` 本地重叠比对 → 确认后 `MOVE_CANDIDATES` 移入「稍后删除」，判定口径同①（已在该组不重复计入）。候选域「同步」按钮置灰禁用（无账号同步源） |
+| 存储广播                   | `STORE_CHANGED { domain, upserts?, addedIds?, changedIds?, dataOnly? }` — 落库成功后 background 广播（发送方可能是抖音标签页等外部上下文），**仅在 `changed>0` 时发**（no-op 不广播）。两种载荷：**point**（作品型三域的单发保存/状态切换，`changed ≤ BROADCAST.UPSERTS_MAX`=8 时附带合并后记录 `upserts` 与新增 id 集 `addedIds`）；**bulk**（入库循环收尾等批量变化，附带轻量 id 集 `changedIds`/`addedIds`——禁止改回全量记录载荷防消息膨胀；关注/候选域无载荷，options 整域重载）。载荷语义见 [docs/10](./10-storage-write-and-import.md)；options 侧去抖/flush/头插收口管线与红线见 [docs/11](./11-options-ui.md)「STORE_CHANGED 增量收口」 |
+| 取消入口                   | `CANCEL_FAVORITES` / `CANCEL_COLLECTION`（均带 `taskId`，任务坞长任务）— options 触发 background 批量取消：tab 模式逐条派发 `CANCEL_ONE_*` 到 inject；独立模式仅 `CANCEL_COLLECTION` 在 background 循环 POST；分块确认删（远端成功进缓冲，每 `SYNC.SCAN_CHUNK` 条单事务 deleteBatch），终态 `STORE_CHANGED` 仅 deletedIds>0 时发（细节见 docs/06） |
 | 单作品状态切换             | `SET_FAVORITES` / `SET_COLLECTION { awemeId, active, work? }` — 侧边栏作品卡 ♥/★ 点击：远端设置成功后才把作品写入对应域（active=true）或删本地记录（false）；tab 模式派发 `SET_ONE_FAVORITES` / `SET_ONE_COLLECTION`，独立模式仅收藏直连 POST（`action=1/0`），点赞返回 `UNSUPPORTED_INDEPENDENT` |
-| 取消信号                   | `CANCEL_ACTIVE_TASK` — tab 模式下经 options→background→content→inject 触发 `activeTask.abort()`；独立模式下直接在 background 取消循环。弹窗关闭路径仅在存在 `state.activeDialog` 时发送；各长任务入口（同步/扫描/入库/校准）也会先发一次清残留任务 |
+| 取消信号                   | `CANCEL_TASK { taskId }` — 全部 10 类注册任务的唯一取消入口：`taskRegistry.cancel` + Tab 模式转发页面侧 `activeTask.abort()`（页面侧中断无 taskId，故保持全局单任务）；`isCancelled` 透传 RequestGate 让排队票作废，控制端口断线（关页/刷新/SW 回收）自动触发 `PAGE_CLOSED` 取消。`CANCEL_ACTIVE_TASK` 已退役（仅无注册任务时转发页面侧残留请求，任务运行中直接返回 ok）。`GET_TASK_STATE` 回运行中/最近终态任务快照 |
 | Tab 转发（background→tab） | `FETCH_WORK_DETAIL` / `FETCH_FOLLOWING_PAGE` / `FETCH_PROFILE_OTHER`（`{ secUid? , uid? }` 二选一，`uid` 走 `user_id` 分支）/ `FETCH_FAVORITES_PAGE` / `FETCH_COLLECTION_PAGE` / `CANCEL_ONE_FAVORITES` / `CANCEL_ONE_COLLECTION` / `SET_ONE_FAVORITES` / `SET_ONE_COLLECTION` / `FETCH_WORKS_PAGE` / `GET_SECURITY_STATUS`（tab 模式经 content→inject；独立模式由 background 直接请求（GET/POST 按端点），见 docs/07） |
-| 进度消息                   | `SYNC_PROGRESS` / `FOLLOWING_PROGRESS` / `CALIBRATE_PROGRESS`（工具弹窗批量校准逐条回报，见 docs/04）/ `FAVORITES_PROGRESS` / `COLLECTION_PROGRESS` / `IMPORT_WORKS_PROGRESS` / `CANCEL_PROGRESS` / `CANCEL_DONE`（载荷含 `deletedIds`：取消成功条目已同步删除该域本地记录）/ `IMPORT_PROGRESS`（IMPORT_DATA 分块落库逐块回报） — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发                                                                                                |
+| 进度消息                   | `TASK_PROGRESS` / `TASK_DONE`（**全部 10 类 API 长任务**统一走任务坞，逐 kind 载荷见本册「进度消息」表；`TASK_DONE` 为唯一终态、广播给所有 options 页） — 由 background 循环 handler 直接发出到 options，不再经 content.js 转发 |
 
 > 长任务链路原语（`tabBridge.send`/`sendAsync`/`requestResponse`）与同步/扫描/取消的完整链路、时序差异、分页参数见本册「接口 / 方法签名」与 docs/02–09 各分册。
 
@@ -234,7 +234,7 @@ const timer = setTimeout(() => {
 
 ## 六域存储模型（五数据域 + 回顾引用域）
 
-### IndexedDB（data/storage.js 封装，库名 `douyin-saver`，DB_VERSION = 12；无改名迁移——低版本旧库升级前须先在旧版导出备份）
+### IndexedDB（data/storage.js 封装，库名 `douyin-saver`，DB_VERSION = 12；升级路径仅做 schema 收敛，不携带数据迁移——低版本旧库升上来数据不可见，升级前须先在旧版导出备份）
 
 | store | keyPath | 索引 | 内容 |
 |-------|---------|------|------|
@@ -297,7 +297,7 @@ DOMAIN_CONFIG = {
 
 ### 设置/状态面板与凭据缓存刷新链
 
-设置面板含运行参数区（独立模式开关 + secUid 输入 + 缓存列表 + 延迟/超时参数）；Cookie 配置、浏览器特征、Tab 模式捕获状态三个只读 section 位于「状态」面板（2026-11-08 自设置迁出）。缓存列表各项的「刷新」按钮经 `TYPE_MAP = { cookie:"COOKIE", mstoken:"MSTOKEN", webid:"WEBID", browser_features:"BROWSER_FEATURES" }` 映射为消息：
+设置面板含运行参数区（独立模式开关 + secUid 输入 + 缓存列表 + 延迟/超时参数）；任务进行中导航轨「设置」按钮 disabled、已打开面板 `inert`（整体禁用，不再单独禁用模式开关；`SET_MODE` 保留 BUSY 兜底）；Cookie 配置、浏览器特征、Tab 模式捕获状态三个只读 section 位于「状态」面板（2026-11-08 自设置迁出）。缓存列表各项的「刷新」按钮经 `TYPE_MAP = { cookie:"COOKIE", mstoken:"MSTOKEN", webid:"WEBID", browser_features:"BROWSER_FEATURES" }` 映射为消息：
 
 | 面板项 | 消息 | 行为 |
 |--------|------|------|
@@ -316,7 +316,8 @@ DOMAIN_CONFIG = {
 
 | 类别 | 错误码 | 处理 |
 |------|--------|------|
-| 致命（终止整批） | `NO_DOUYIN_TAB` / `TAB_QUERY_FAILED` / `NO_LISTENER` / `EMPTY_RESPONSE` / `RATE_LIMITED` / `CANCELLED`，HTTP 401/429 | `CONFIG.FATAL_ERRORS.has(err)` 判定，剩余条目记 `BATCH_TERMINATED` |
+| 限速背压 | `RATE_LIMITED` / HTTP 429（空 body / 状态码） | 非终止信号：`sleepWithKeepalive(5s→10s→20s)` 退避后重试同一条（立即上报 `rateLimited:true`），连续 `RATE_LIMIT_RETRY_MAX`(3) 次熔断才按致命收尾 |
+| 致命（终止整批） | `NO_DOUYIN_TAB` / `TAB_QUERY_FAILED` / `NO_LISTENER` / `EMPTY_RESPONSE` / 限速熔断后的 `RATE_LIMITED` / `CANCELLED`，HTTP 401 | `CONFIG.FATAL_ERRORS.has(err)` 判定即早退；在途条目与剩余条目一并计入 `skipped`（从未判定 ≠ 作品无效，不计 `failed`/`failedAwemeIds`） |
 | 非致命（跳过当前继续） | `TIMEOUT`、HTTP 403/5xx、`status_code` 非零、网络异常、`DELETED` | 记入 errors，继续下一条 |
 
 ### 其他全局异常路径
@@ -334,9 +335,10 @@ DOMAIN_CONFIG = {
 |------|----|
 | TIMEOUT | `REQUEST:30000` / `SECURITY_STATUS:5000` |
 | DELAY | 七类任务各 `{MIN:500, MAX:1000}`：syncWorks / syncFollowings / syncFavorites / syncCollection / cancelFavorites / cancelCollection / importWorks |
-| SYNC | `BATCH_SIZE:40` / `BATCH_PAUSE_MIN/MAX:10000/20000` / `KEEPALIVE_INTERVAL:2000` / `RETRY_MAX:2` |
+| SYNC | `BATCH_SIZE:40` / `BATCH_PAUSE_MIN/MAX:10000/20000` / `KEEPALIVE_INTERVAL:2000` / `RETRY_MAX:2` / `SCAN_CHUNK:200`（**四族统一**分块确认写块大小——扫描 upsert / 取消 deleteBatch / 同步 patchWorks / 作者入库 mergeAndSave，每累计 N 条单事务静默落库、暂停/终态/异常冲刷余块；设置面板 `scanChunkSize` 可配 50~2000） |
 | PAGE | 各列表端点页大小，均 20（FAVORITE/COLLECTION/POST/FOLLOWING）；`GRID: 1000`（网格渐进加载续页大小，keyset 游标串行依赖上一页末键；较 2000 减半把单页反序列化长任务切碎，配合 options 侧首屏错峰）/ `GRID_FIRST: 600`（网格首屏页大小，= options 侧活动 DOM 上限 GRID_MOUNT_MAX：首帧只等铺满活动窗口的条数，余页按 GRID 续传） |
-| IMPORT_CHUNK | `2000`（导入分块落库块大小：单事务 10 万级 put 长时间独占 SW 的 IDB，按块 mergeAndSave + IMPORT_PROGRESS 逐块回报） |
+| IMPORT_CHUNK | `2000`（导入分块落库块大小：单事务 10 万级 put 长时间独占 SW 的 IDB，按块 mergeAndSave，块边界即 `importData` 任务坞 checkpoint） |
+| 分块传输（值取自 shared/limits.js，两侧必须同值） | `IMPORT_TRANSFER_THRESHOLD: 16M 字符`（导入文件超过时分块上行）/ `IMPORT_TRANSFER_CHUNK: 8M 字符`（导入单块大小）/ `EXPORT_CHUNK_CHARS: 8M 字符`（导出每块目标长度）/ `EXPORT_BATCH_KEYS: 500`（导出块内逐批 getBatch 键批大小）/ `TRANSFER_SESSION_TTL: 5min`（导出键快照/导入缓冲会话过期，滑动续期；依据：chrome.runtime 单条消息硬上限 64MiB，大文本双向传输必须分块，见 docs/10） |
 | GROUPS | `ID_PREFIX:"custom_"` / `DEFAULT_ID:"uncategorized"` |
 | STORAGE_KEYS | 六域 store 与分组名常量（12 键，唯一来源） |
 | BROADCAST / AUTHOR_VIEW_CACHE_MAX / AWEME_TYPE_NOTE | `UPSERTS_MAX:8`（point 载荷阈值）/ `3`（作者视图 LRU 上限）/ `68`（图集类型码） |
@@ -348,7 +350,7 @@ DOMAIN_CONFIG = {
 
 ### `runtimeConfig`（chrome.storage.local，设置面板可改，RELOAD_CONFIG 热加载进 CONFIG）
 
-键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax`（默认值同上表）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数随存随恢复，重开扩展（非重载）不回退编译期默认值。
+键与 CONFIG 一一对应加 Min/Max 后缀：`timeoutRequest / timeoutSecurityStatus / syncWorksDelayMin..Max / … / syncBatchSize / syncBatchPauseMin..Max / syncKeepaliveInterval / syncRetryMax / scanChunkSize`（默认值同上表）。SW 冷启动（background `App.init`）补一次 `runtimeConfig.reload()`，全部运行参数随存随恢复，重开扩展（非重载）不回退编译期默认值。
 
 ### options/core.js 顶层 `config`（UI 侧，64 键，权威键表）
 

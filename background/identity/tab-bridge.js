@@ -1,9 +1,11 @@
 // background/identity/tab-bridge.js — 抖音标签页查找/转发（find/send/sendAsync + 3 个吸收分支）
 
 import { CONFIG } from "../core.js";
+import { requestGate } from "../tasks/request-gate.js";
 
 // ---------- TabBridge ----------
-// 抖音标签页查找与转发；吸收 route 内 CANCEL_ACTIVE_TASK / GET_SECURITY_STATUS / FETCH_WORKS_PAGE 非独立分支。
+// 抖音标签页查找与转发；吸收 route 内 GET_SECURITY_STATUS / FETCH_WORKS_PAGE 非独立分支
+//（CANCEL_TASK 的页面侧中断转发与 send 超时补发均经 cancelActiveTask / CANCEL_ACTIVE_TASK 消息直达 Tab）。
 class TabBridge {
   async find() {
     const tabs = await chrome.tabs.query({ url: CONFIG.DOUYIN_URL_PATTERN });
@@ -47,10 +49,19 @@ class TabBridge {
       });
   }
 
-  sendAsync(type, data) {
-    return new Promise((resolve) => {
-      this.send(type, data, (resp) => resolve(resp || { ok: false, error: "EMPTY_RESPONSE" }));
-    });
+  // 所有 Tab 侧异步请求共用全局请求车道：长任务循环即便各自带延迟，也不会在
+  // 「某个任务刚发完、另一个任务立刻发」的间隙叠出双倍速率。
+  // 任务循环可传 interval 让闸门承担条间节奏；交互式单条用默认 0（插队等一个在途请求）
+  async sendAsync(type, data, { priority = 1, interval = 0, isCancelled = null } = {}) {
+    const release = await requestGate.acquire({ priority, interval, isCancelled });
+    if (!release) return { ok: false, error: "CANCELLED" };
+    try {
+      return await new Promise((resolve) => {
+        this.send(type, data, (resp) => resolve(resp || { ok: false, error: "EMPTY_RESPONSE" }));
+      });
+    } finally {
+      release();
+    }
   }
 
   getSecurityStatus(sendResponse) {
